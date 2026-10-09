@@ -1,0 +1,24 @@
+# runtime outputs and local data (large, or captures of real networks: never publish)
+captures/
+backup/
+*.pcap
+*.pcapng
+*.sc16
+*.iq
+*.ts
+passation.txt
+# CableLabs / ETSI / ITU specifications: copyrighted, not redistributable
+ref/
+# receive-only tools for an operator's network: kept out of the public repository by default
+count_modems.py
+network_load.py
+sfr_capture.py
+upstream_analysis.py
+# build products
+__pycache__/
+*.pyc
+cmts/_*.so
+*.so.*.tmp
+
+# lab captures the tests replay (own modem)
+!tests/data/**/*.pcap
