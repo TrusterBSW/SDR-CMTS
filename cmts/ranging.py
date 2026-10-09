@@ -88,6 +88,7 @@ class CmtsCore:
         self.bonding = None   # [(DCID, frequency)] when several downstream channels are bonded
         self.next_dsid = 0x1001
         self.bonded = {}      # modem MAC -> DSID of its bonded unicast traffic, once online
+        self.bonded_channels = {}   # modem MAC -> DCIDs it acquired (REG-ACK partial service)
 
     # ------------------------------------------------------------ MAP hook (downstream thread)
     def schedule(self, start_ms, free_ms):
@@ -230,6 +231,7 @@ class CmtsCore:
                          f"{lost or '?'}")
                 if self.bonding and getattr(m, "dsid", None):
                     kept = [c for c, _ in self.bonding if c not in lost]
+                    m.channels_ok = kept                 # the bridge only uses these
                     if len(kept) < 2:
                         m.dsid = None                    # only the primary left: no bonding
                 resp = 0
@@ -239,8 +241,10 @@ class CmtsCore:
                     self.log(f"[REG] {fmt_mac(m.mac)} SID {sid:#06x}: REG-ACK ok -> MODEM EN LIGNE")
                     if getattr(m, "dsid", None):
                         self.bonded[m.mac] = m.dsid
+                        ok = getattr(m, "channels_ok", None) or [c for c, _ in self.bonding]
+                        self.bonded_channels[m.mac] = ok
                         self.log(f"[REG] {fmt_mac(m.mac)} : trafic unicast agrégé sur "
-                                 f"{len(self.bonding)} canaux, DSID {m.dsid:#x}")
+                                 f"{len(ok)} canaux ({', '.join(map(str, ok))}), DSID {m.dsid:#x}")
             else:
                 self.log(f"[REG] !! {fmt_mac(m.mac)} REG-ACK réponse {resp}: " + "; ".join(
                     cmcfg.describe(cmcfg.parse(body[3:]), indent="")))

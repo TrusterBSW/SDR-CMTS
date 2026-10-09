@@ -82,10 +82,14 @@ def build(a, log=print):
         # shifted around the TX centre: 2 -> 27.808 MS/s (+-4 MHz), 3-4 -> 41.712 MS/s (up to
         # +-12 MHz), 5-6 -> 55.616 MS/s (up to +-20 MHz); USB checked at all three (2026-10-10:
         # TX + 13.9 MS/s RX, no loss)
-        a.sps = 4 if a.ds_channels <= 2 else (6 if a.ds_channels <= 4 else 8)
+        # 1-3 channels: 27.808 MS/s (3 channels at -8/0/+8 MHz fill +-12 of the +-13.9 MHz band).
+        # 4: 41.712, 5-6: 55.616 MS/s -- NOT WORKING with the Sagem 3686 (2026-10-10): with any
+        # master clock but 27.808 MHz the modem never locks, even on 1 channel (tone, frequency
+        # accuracy, TX response, RX path, timed/untimed all checked); cause unknown
+        a.sps = 4 if a.ds_channels <= 3 else (6 if a.ds_channels <= 4 else 8)
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
-        a.mcr_mult, a.docsis30 = 1, True
+        a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
@@ -102,6 +106,8 @@ def build(a, log=print):
     # lowest RX rate with >= 2.5 samples per symbol; any integer decimation (41.712 MHz / 3 and
     # 55.616 / 4 give the same 13.904 MS/s as 27.808 / 2)
     decim = max(1, int(mcr // (2.5 * symrate)))
+    if os.environ.get("MINI_CMTS_DECIM"):          # diagnostic: force the RX decimation
+        decim = int(os.environ["MINI_CMTS_DECIM"])
     tb = Timebase(mcr, 0, a.sps)
     rx_kw = dict(gate_db=a.gate_db, save_dir=a.save_bursts, im_slack_us=a.im_slack_us,
                  ko_dir=None if a.sim else "captures/bursts_ko")
@@ -191,8 +197,11 @@ def start_bridge(a, mux, core, stop):
     def down(eth):
         if len(channels) > 1 and core.bonded and not (eth[0] & 1):
             # unicast to the bonded modem: DSID label + sequence number, on the least loaded channel
-            dsid = next(iter(core.bonded.values()))
-            k = min(range(len(channels)), key=lambda i: len(channels[i].data))
+            mac_ = next(iter(core.bonded))
+            dsid = core.bonded[mac_]
+            usable = [c - 1 for c in core.bonded_channels.get(mac_, range(1, len(channels) + 1))
+                      if 0 < c <= len(channels)] or [0]
+            k = min(usable, key=lambda i: len(channels[i].data))   # least loaded acquired channel
             if force_ch is not None:                 # diagnostic: MINI_CMTS_BOND_CH=2 -> channel 2 only
                 k = force_ch
             channels[k].send_data(mac.data_pdu_dsid(eth, dsid, seq[0]))
@@ -854,7 +863,8 @@ def parser():
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=2,
-                   help="downstream channels (2 = bonding of two adjacent channels, DOCSIS 3.0)")
+                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0): 1-3 work (3: 142.8 Mbit/s "
+                        "carried, 2026-10-10); 4-6 need a master clock the Sagem never locked on")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
     g.add_argument("--ds-spacing", type=float, default=8e6, help="spacing of the bonded downstream channels (Hz)")
