@@ -10,6 +10,7 @@
  */
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ GF(256), p = 0x11D */
@@ -423,4 +424,49 @@ void fir_cr(const float *x, int nx, const float *h, int nh, float *out)
             for (int i = 0; i < 2 * (i1 - i0); i++) o[i] += hk * xi[i];
         }
     }
+}
+
+/* ------------------------------------------------------------------ digital down-conversion
+ * One upstream channel out of the wideband RX stream (several upstream channels received at
+ * once): shift by `step` rad/sample (phase carried in *phase), low-pass FIR (real taps, ntaps)
+ * and keep one sample in `decim`. hist: the ntaps-1 previous shifted samples (state, complex),
+ * *skip: input samples to skip before the next output (state). Returns the outputs written. */
+__attribute__((optimize("fast-math")))
+int ddc_decim(const float *x, int n, double step, double *phase, const float *h, int ntaps,
+              int decim, float *hist, int *skip, float *out)
+{
+    int nh = ntaps - 1, nout = 0;
+    double ph = *phase;
+    float wr = (float)cos(step), wi = (float)sin(step);
+    float zr = (float)cos(ph), zi = (float)sin(ph);
+    /* work buffer: history then the new block, shifted */
+    float *buf = (float *)malloc(sizeof(float) * 2 * (nh + n));
+    if (!buf) return 0;
+    memcpy(buf, hist, sizeof(float) * 2 * nh);
+    for (int k = 0; k < n; k++) {
+        if ((k & 1023) == 0) { zr = (float)cos(ph + k * step); zi = (float)sin(ph + k * step); }
+        float xr = x[2 * k], xi = x[2 * k + 1];
+        buf[2 * (nh + k)] = xr * zr - xi * zi;
+        buf[2 * (nh + k) + 1] = xr * zi + xi * zr;
+        float nr = zr * wr - zi * wi;
+        zi = zr * wi + zi * wr;
+        zr = nr;
+    }
+    int k = *skip;
+    for (; k < n; k += decim) {
+        const float *b = buf + 2 * k;                   /* taps over buf[k .. k + nh] */
+        float ar = 0.f, ai = 0.f;
+        for (int j = 0; j < ntaps; j++) {
+            ar += h[j] * b[2 * j];
+            ai += h[j] * b[2 * j + 1];
+        }
+        out[2 * nout] = ar;
+        out[2 * nout + 1] = ai;
+        nout++;
+    }
+    *skip = k - n;
+    memcpy(hist, buf + 2 * n, sizeof(float) * 2 * nh);
+    free(buf);
+    *phase = fmod(ph + n * step, 2 * M_PI);
+    return nout;
 }

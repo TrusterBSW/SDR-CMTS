@@ -37,6 +37,7 @@ class DownstreamMux:
         self.queue = []            # packets of a multi-packet message in progress
         self.us = dict(freq=us_freq, mult=us_symrate_mult, ms_ticks=minislot_ticks,
                        us_id=us_chan_id, ds_id=ds_chan_id, ccc=1)
+        self.extra_us = []         # further upstream channels (add_upstream)
         self.ms_counts = minislot_ticks * TICK            # minislot length in 10.24 MHz counts
         self.map_len = int(round(map_ms * 10240 / self.ms_counts))
         self.map_lead = int(map_lead_ms * 10240)
@@ -96,19 +97,48 @@ class DownstreamMux:
         (pkt,) = self.pk.pack([frame])
         return pkt
 
+    def add_upstream(self, us_id, freq, scheduler=None, on_grants=None, ack_ms=None, im=True):
+        """A further upstream channel (DOCSIS 3.0 upstream bonding): same symbol rate, mini-slot
+        size and MAP length as the first one, its own UCD and MAP stream. scheduler / on_grants /
+        ack_ms: as the attributes of the same name, for this channel; im: Initial Maintenance
+        opportunities on it (needed for a modem to range there)."""
+        u = dict(self.us, freq=freq, us_id=us_id, ccc=1, next_map_ms=None, map_count=0,
+                 scheduler=scheduler, on_grants=on_grants, ack_ms=ack_ms, im=im)
+        self.extra_us.append(u)
+        return u
+
+    def _due_map(self, now):
+        """True when a MAP must be generated (first channel or a further one)."""
+        if self.next_map_ms is None or self.next_map_ms * self.ms_counts < now + self.map_lead:
+            return True
+        return any(u["next_map_ms"] is None or u["next_map_ms"] * self.ms_counts < now + self.map_lead
+                   for u in self.extra_us)
+
     def _map_frames(self, now):
         frames = []
-        if self.next_map_ms is None or self.next_map_ms * self.ms_counts < now + self.map_lead // 2:
-            self.next_map_ms = -(-(now + self.map_lead // 2) // self.ms_counts)
-        while self.next_map_ms * self.ms_counts < now + self.map_lead:
-            start = self.next_map_ms
+        # the first channel: state in attributes (scheduler, on_grants, ack_ms, next_map_ms,
+        # map_count), the further ones in their dict; same loop for all
+        first = dict(self.us, scheduler=self.scheduler, on_grants=self.on_grants, ack_ms=self.ack_ms,
+                     next_map_ms=self.next_map_ms, map_count=self.map_count, im=True)
+        for u in [first] + self.extra_us:
+            frames += self._channel_maps(u, now)
+        self.next_map_ms, self.map_count = first["next_map_ms"], first["map_count"]
+        return frames
+
+    def _channel_maps(self, u, now):
+        frames = []
+        if u["next_map_ms"] is None or u["next_map_ms"] * self.ms_counts < now + self.map_lead // 2:
+            u["next_map_ms"] = -(-(now + self.map_lead // 2) // self.ms_counts)
+        while u["next_map_ms"] * self.ms_counts < now + self.map_lead:
+            start = u["next_map_ms"]
             ies, off = [], 0
             # fewer Initial Maintenance opportunities while every known modem is online (each one is
             # a 1 ms-slack window to search upstream); as many as before when one is acquiring
             every = self.im_every if (self.im_busy is None or self.im_busy()) else self.im_every_idle
-            im = self.map_count % every == 0
+            im = u["im"] and u["map_count"] % every == 0
             free = self.max_map_len - (self.im_len if im else 0) - self.min_contention
-            for sid, iuc, n in (self.scheduler(start, free) if self.scheduler else []):
+            sched = u["scheduler"]
+            for sid, iuc, n in (sched(start, free) if sched else []):
                 if off + n > free:
                     break
                 ies.append((sid, iuc, off, n))
@@ -120,15 +150,15 @@ class DownstreamMux:
             length = max(self.map_len, off + self.min_contention)   # longer only for big grants
             if off < length:
                 ies.append((mac.SID_BROADCAST, mac.IUC_REQUEST, off, length - off))
-            if self.on_grants:
-                self.on_grants([((start + o) * self.ms_counts, (start + o + n) * self.ms_counts, iuc, sid)
+            if u["on_grants"]:
+                u["on_grants"]([((start + o) * self.ms_counts, (start + o + n) * self.ms_counts, iuc, sid)
                                 for sid, iuc, o, n in ies])
             ies = [(sid, iuc, o) for sid, iuc, o, _ in ies]
-            ack = self.ack_ms() if self.ack_ms else start - self.map_len
-            frames.append(mac.map_msg(self.sa, self.us["us_id"], self.us["ccc"], start,
+            ack = u["ack_ms"]() if u["ack_ms"] else start - self.map_len
+            frames.append(mac.map_msg(self.sa, u["us_id"], u["ccc"], start,
                                       min(ack, start), ies, length))
-            self.next_map_ms += length
-            self.map_count += 1
+            u["next_map_ms"] += length
+            u["map_count"] += 1
             self.stats["map"] += 1
         return frames
 
@@ -157,7 +187,7 @@ class DownstreamMux:
             pkt = self._sync_packet()
             self.next_sync = now + self.sync_iv
             self.stats["sync"] += 1
-        elif self.next_map_ms is None or self.next_map_ms * self.ms_counts < now + self.map_lead:
+        elif self._due_map(now):
             self.queue = self.pk.pack(self._map_frames(now))
             pkt = self.queue.pop(0)
         elif self.mdd is not None and now >= self.next_mdd:
@@ -166,9 +196,9 @@ class DownstreamMux:
             self.next_mdd = now + self.mdd_iv
             self.stats["mdd"] = self.stats.get("mdd", 0) + 1
         elif now >= self.next_ucd:
-            u = self.us
             self.queue = self.pk.pack([mac.ucd_msg(self.sa, u["us_id"], u["ccc"], u["ms_ticks"],
-                                                   u["ds_id"], u["freq"], u["mult"])])
+                                                   u["ds_id"], u["freq"], u["mult"])
+                                       for u in [self.us] + self.extra_us])
             pkt = self.queue.pop(0)
             self.next_ucd = now + self.ucd_iv
             self.stats["ucd"] += 1

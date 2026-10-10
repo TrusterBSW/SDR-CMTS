@@ -57,6 +57,9 @@ def _load():
     dll.symbols_to_bytes.restype = ctypes.c_int
     dll.rs_decode_many.argtypes = [U8, ctypes.c_int, I32, ctypes.c_int, ctypes.c_int, ctypes.c_int, U8, I32]
     dll.rs_decode_many.restype = ctypes.c_int
+    dll.ddc_decim.argtypes = [F, ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_double), F, ctypes.c_int,
+                              ctypes.c_int, F, I32, F]
+    dll.ddc_decim.restype = ctypes.c_int
     dll.fir_cr.argtypes = [F, ctypes.c_int, F, ctypes.c_int, F]
     dll.fir_cr.restype = None
     return dll
@@ -320,3 +323,25 @@ def scale_clip(acc, scale):
 def add_into(dst, src):
     _DS.add_into(_f(dst.view(np.float32)), _f(src.view(np.float32)), dst.size)
     return dst
+
+
+class Ddc:
+    """One channel out of a wideband complex stream: shift by `offset` Hz, low-pass, decimate
+    (usdsp.c ddc_decim), state carried across calls."""
+
+    def __init__(self, fs, offset, decim, cutoff, ntaps=63):
+        from scipy.signal import firwin
+        self.h = firwin(ntaps, cutoff, fs=fs).astype(np.float32)
+        self.step = -2 * np.pi * offset / fs
+        self.phase = np.zeros(1)
+        self.decim = int(decim)
+        self.hist = np.zeros(ntaps - 1, np.complex64)
+        self.skip = ctypes.c_int(0)
+
+    def process(self, x):
+        x = np.ascontiguousarray(x, dtype=np.complex64)
+        out = np.empty(x.size // self.decim + 2, np.complex64)
+        n = _DLL.ddc_decim(_f(x.view(np.float32)), x.size, self.step, self.phase.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                           _f(self.h.view(np.float32)), self.h.size, self.decim, _f(self.hist.view(np.float32)),
+                           ctypes.byref(self.skip), _f(out.view(np.float32)))
+        return out[:n]

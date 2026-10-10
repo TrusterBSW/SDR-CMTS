@@ -13,6 +13,11 @@ RemoteUpstream has the interface mini_cmts.py uses of cmts.upstream.UpstreamRx, 
     so the MAC layer stays where it was.
 Shared control words: written samples, device tick of sample 0, processed DOCSIS time (MAP Ack),
 liveness, intervals written to the ring.
+
+Several upstream channels (DOCSIS 3.0 upstream bonding): one wideband RX stream covering all of
+them goes into one SampleRing; one RemoteUpstream (one process) per channel reads it and takes its
+channel out (`ddc`: frequency shift, low-pass, decimation in C, cdsp.Ddc) into a narrowband ring
+of its own, then demodulates exactly as for a single channel.
 """
 import collections
 import multiprocessing as mp
@@ -27,53 +32,23 @@ _WRITTEN, _TICK0, _PROCESSED, _ALIVE, _GW = range(5)
 _GRING = 1 << 16                     # MAP intervals in flight (start, end, IUC, SID), shared ring
 
 
-class RemoteUpstream:
-    def __init__(self, fs, decim, symrate, timebase, ms_counts, on_burst, us_mode, us_bits,
-                 history_s=1.0, log=print, **rx_kwargs):
-        self.fs, self.decim, self.tb = fs, decim, timebase
-        self.on_burst = on_burst
-        self.log = log
+DDC_TAPS = 63
+
+
+class SampleRing:
+    """RX samples in shared memory: written by the RX thread (push), read by the upstream
+    process(es). Control words: written samples, device tick of sample 0."""
+
+    def __init__(self, fs, decim, history_s=1.0):
+        self.fs, self.decim = fs, decim
         n = int(history_s * fs)
-        self._shm = shared_memory.SharedMemory(create=True, size=n * 8)
-        self._ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 5)
-        self._g_shm = shared_memory.SharedMemory(create=True, size=8 * 4 * _GRING)
-        self.buf = np.ndarray(n, np.complex64, self._shm.buf)
-        self.ctl = np.ndarray(5, np.int64, self._ctl_shm.buf)
-        self.ctl[:] = (0, -1, 0, 0, 0)
-        self.gring = np.ndarray((_GRING, 4), np.int64, self._g_shm.buf)
-        self._gw = 0
+        self.shm = shared_memory.SharedMemory(create=True, size=n * 8)
+        self.ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 2)
+        self.buf = np.ndarray(n, np.complex64, self.shm.buf)
+        self.ctl = np.ndarray(2, np.int64, self.ctl_shm.buf)
+        self.ctl[:] = (0, -1)
         self.rx_tick0 = None
         self.written = 0
-        self.stats = collections.Counter()
-        self.timing = {}
-        self.lag_max_ms = 0.0
-        self._noise = None
-        self._params = dict(fs=fs, decim=decim, symrate=symrate, ms_counts=ms_counts, n=n,
-                            us_mode=us_mode, us_bits=us_bits, history_s=history_s, rx_kwargs=rx_kwargs)
-        self._ctx = mp.get_context("spawn")        # no fork of a process holding the B210
-        self._q_in = self._ctx.Queue()
-        self._q_out = self._ctx.Queue()
-        self._proc = None
-        self._stop = threading.Event()
-
-    # ------------------------------------------------------------ interface of UpstreamRx
-    def start(self):
-        """Start the worker process (once the time base is final: after the TX start time)."""
-        self._params["tb"] = self.tb
-        self._proc = self._ctx.Process(target=_worker_main, name="upstream",
-                                       args=(self._shm.name, self._ctl_shm.name, self._g_shm.name, self._q_in, self._q_out,
-                                             self._params), daemon=True)
-        self._proc.start()
-        threading.Thread(target=self._events, name="us-events", daemon=True).start()
-
-    def add_grants(self, grants):
-        # written straight into a shared ring (one producer: the downstream thread), published by
-        # the write counter: no pickling, no extra thread. A queue made the intervals reach the
-        # upstream process up to 0.8 s late while this process's GIL was busy (2026-10-09).
-        for g in grants:
-            self.gring[self._gw % _GRING] = g
-            self._gw += 1
-        self.ctl[_GW] = self._gw
 
     def push(self, tick, x):
         """Same as UpstreamRx.push, into the shared ring; `written` is published after the data."""
@@ -99,6 +74,88 @@ class RemoteUpstream:
         self.buf[i:i + k] = x[:k]
         if k < x.size:
             self.buf[:x.size - k] = x[k:]
+
+    def close(self):
+        for shm in (self.shm, self.ctl_shm):
+            try:
+                shm.close()
+                shm.unlink()
+            except (FileNotFoundError, BufferError):
+                pass
+
+
+class RemoteUpstream:
+    def __init__(self, fs, decim, symrate, timebase, ms_counts, on_burst, us_mode, us_bits,
+                 history_s=1.0, log=print, ring=None, ddc=None, name="upstream", **rx_kwargs):
+        """fs, decim: the RX stream. ring: a SampleRing shared with other channels (default: one
+        of its own). ddc: dict(offset=Hz, factor=decimation, cutoff=Hz) -> this channel is
+        taken out of the (wideband) ring at `offset` from its centre; fs / decim are then those
+        of the ring, the receiver runs at fs / factor."""
+        self.ring = ring if ring is not None else SampleRing(fs, decim, history_s)
+        self._own_ring = ring is None
+        self.ddc = ddc
+        self.name = name
+        if ddc:
+            # the FIR delays its output by (taps - 1) / 2 wideband samples: narrow sample j is
+            # wideband sample j * factor - 31, i.e. the narrow stream starts 31 samples earlier
+            fs, decim = fs / ddc["factor"], decim * ddc["factor"]
+            self._tick_shift = -(DDC_TAPS - 1) // 2 * self.ring.decim
+        else:
+            self._tick_shift = 0
+        self.fs, self.decim, self.tb = fs, decim, timebase
+        self.on_burst = on_burst
+        self.log = log
+        self._ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 5)
+        self._g_shm = shared_memory.SharedMemory(create=True, size=8 * 4 * _GRING)
+        self.ctl = np.ndarray(5, np.int64, self._ctl_shm.buf)
+        self.ctl[:] = (0, -1, 0, 0, 0)
+        self.gring = np.ndarray((_GRING, 4), np.int64, self._g_shm.buf)
+        self._gw = 0
+        self.stats = collections.Counter()
+        self.timing = {}
+        self.lag_max_ms = 0.0
+        self._noise = None
+        self._params = dict(fs=fs, decim=decim, symrate=symrate, ms_counts=ms_counts,
+                            n=self.ring.buf.size, ring_fs=self.ring.fs, ring_decim=self.ring.decim,
+                            tick_shift=self._tick_shift, ddc=ddc,
+                            us_mode=us_mode, us_bits=us_bits, history_s=history_s, rx_kwargs=rx_kwargs)
+        self._ctx = mp.get_context("spawn")        # no fork of a process holding the B210
+        self._q_in = self._ctx.Queue()
+        self._q_out = self._ctx.Queue()
+        self._proc = None
+        self._stop = threading.Event()
+
+    @property
+    def rx_tick0(self):
+        t = self.ring.rx_tick0
+        return None if t is None else t + self._tick_shift
+
+    @property
+    def written(self):
+        return self.ring.written
+
+    # ------------------------------------------------------------ interface of UpstreamRx
+    def start(self):
+        """Start the worker process (once the time base is final: after the TX start time)."""
+        self._params["tb"] = self.tb
+        self._proc = self._ctx.Process(target=_worker_main, name=self.name,
+                                       args=(self.ring.shm.name, self.ring.ctl_shm.name, self._ctl_shm.name,
+                                             self._g_shm.name, self._q_in, self._q_out, self._params), daemon=True)
+        self._proc.start()
+        threading.Thread(target=self._events, name="us-events", daemon=True).start()
+
+    def add_grants(self, grants):
+        # written straight into a shared ring (one producer: the downstream thread), published by
+        # the write counter: no pickling, no extra thread. A queue made the intervals reach the
+        # upstream process up to 0.8 s late while this process's GIL was busy (2026-10-09).
+        for g in grants:
+            self.gring[self._gw % _GRING] = g
+            self._gw += 1
+        self.ctl[_GW] = self._gw
+
+    def push(self, tick, x):
+        """RX samples into the ring (once per ring: the first channel when it is shared)."""
+        self.ring.push(tick, x)
 
     @property
     def processed_ts(self):
@@ -130,7 +187,9 @@ class RemoteUpstream:
             self._proc.join(3)
             if self._proc.is_alive():
                 self._proc.terminate()
-        for shm in (self._shm, self._ctl_shm, self._g_shm):
+        if self._own_ring:
+            self.ring.close()
+        for shm in (self._ctl_shm, self._g_shm):
             try:
                 shm.close()
                 shm.unlink()
@@ -161,24 +220,34 @@ class RemoteUpstream:
                     c[1] += t
 
 
-def _worker_main(shm_name, ctl_name, g_name, q_in, q_out, p):
+def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
     import faulthandler
     import os
     import signal
+    from cmts import cdsp
     from cmts import docsis_mac as mac
     from cmts import upstream
     # diagnostic: kill -USR1 <pid> writes the Python stacks of this process
     _dump = open(f"/tmp/usproc_{os.getpid()}.stack", "w")
     faulthandler.register(signal.SIGUSR1, file=_dump, all_threads=True)
     mac.configure_upstream(p["us_mode"], p["us_bits"])
-    shm = shared_memory.SharedMemory(name=shm_name, track=False)
+    shm = shared_memory.SharedMemory(name=ring_name, track=False)
+    rctl_shm = shared_memory.SharedMemory(name=rctl_name, track=False)
     ctl_shm = shared_memory.SharedMemory(name=ctl_name, track=False)
     g_shm = shared_memory.SharedMemory(name=g_name, track=False)
-    buf = np.ndarray(p["n"], np.complex64, shm.buf)
+    ring = np.ndarray(p["n"], np.complex64, shm.buf)
+    rctl = np.ndarray(2, np.int64, rctl_shm.buf)
     ctl = np.ndarray(5, np.int64, ctl_shm.buf)
     gring = np.ndarray((_GRING, 4), np.int64, g_shm.buf)
     gr = 0                                             # next ring entry to read
     pending = []                                       # events of one loop turn, sent together
+    ddc = p["ddc"]
+    if ddc:                                            # this channel out of the wideband ring
+        dd = cdsp.Ddc(p["ring_fs"], ddc["offset"], ddc["factor"], ddc["cutoff"], ntaps=DDC_TAPS)
+        buf = np.zeros(int(p["history_s"] * p["fs"]), np.complex64)
+        dpos = nw = 0                                  # wideband samples consumed, narrow written
+    else:
+        buf = ring
     rx = upstream.UpstreamRx(p["fs"], p["decim"], p["symrate"], p["tb"], p["ms_counts"],
                              pending.append, history_s=p["history_s"],
                              log=lambda s: q_out.put(("log", s)), buf=buf, **p["rx_kwargs"])
@@ -199,10 +268,33 @@ def _worker_main(shm_name, ctl_name, g_name, q_in, q_out, p):
                 rows = gring[i0:i1] if i0 < i1 else np.concatenate([gring[i0:], gring[:i1]])
                 rx.add_grants([tuple(int(v) for v in r) for r in rows])
                 gr = gw
-            if rx.rx_tick0 is None and ctl[_TICK0] >= 0:
-                rx.rx_tick0 = int(ctl[_TICK0])
-            rx.written = int(ctl[_WRITTEN])
+            if rx.rx_tick0 is None and rctl[_TICK0] >= 0:
+                rx.rx_tick0 = int(rctl[_TICK0]) + p["tick_shift"]
             t0 = time.perf_counter()
+            if ddc:
+                written, L, Ln = int(rctl[_WRITTEN]), ring.size, buf.size
+                if written - dpos > L // 2:            # far behind: skip, keep the indices right
+                    skip = (written - L // 4 - dpos) // ddc["factor"] * ddc["factor"]
+                    dpos += skip
+                    nw += skip // ddc["factor"]
+                    rx.stats["ddc_skipped"] += skip
+                while dpos < written:
+                    i = dpos % L
+                    k = min(written - dpos, L - i, 1 << 16)
+                    y = dd.process(ring[i:i + k])
+                    j = nw % Ln
+                    m = min(y.size, Ln - j)
+                    buf[j:j + m] = y[:m]
+                    buf[:y.size - m] = y[m:]
+                    nw += y.size
+                    dpos += k
+                rx.written = nw
+                c = rx.timing.setdefault("ddc", [0, 0.0])
+                c[0] += 1
+                c[1] += time.perf_counter() - t0
+                t0 = time.perf_counter()
+            else:
+                rx.written = int(rctl[_WRITTEN])
             n = rx.process()
             t1 = time.perf_counter()
             rx.scan_raw()
@@ -224,7 +316,8 @@ def _worker_main(shm_name, ctl_name, g_name, q_in, q_out, p):
                 time.sleep(0.002)
     finally:
         ctl[_ALIVE] = 0
-        del buf, ctl, gring
+        del ring, rctl, ctl, gring, buf
         shm.close()
+        rctl_shm.close()
         ctl_shm.close()
         g_shm.close()

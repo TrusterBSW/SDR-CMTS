@@ -45,7 +45,7 @@ from cmts.bridge import TapBridge, ensure_tap
 from cmts.downstream import DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
-from cmts.usproc import RemoteUpstream
+from cmts.usproc import RemoteUpstream, SampleRing
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
 from cmts.ranging import CmtsCore
@@ -63,6 +63,11 @@ def rx_lo_offset(a):
         return a.us_lo_offset
     half_bw = a.us_rate * US_SYM_UNIT * 1.25 / 2          # channel half width (roll-off 0.25)
     return max(3e6, half_bw + 1e6, 52e6 - a.us_freq)       # LO leakage outside the channel
+
+
+def us_channels(a):
+    """[(UCID, frequency)] of the upstream channels: --us-freq, then every --us-spacing."""
+    return [(k + 1, a.us_freq + k * a.us_spacing) for k in range(a.us_channels)]
 
 
 def ds_channels(a):
@@ -116,6 +121,8 @@ def build(a, log=print):
                             {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod], log=log, **rx_kw)
     else:
         rx = UpstreamRx(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, log=log, **rx_kw)
+    if a.us_channels > 1:
+        rx, decim = build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log)
     mux.on_grants = rx.add_grants
     mux.ack_ms = lambda: int(rx.processed_ts // mux.ms_counts)   # MAP Ack Time: upstream really processed
     mux.data_max_ms = a.ds_queue_ms
@@ -123,15 +130,57 @@ def build(a, log=print):
     if a.docsis30:                             # MAC Domain Descriptor: the modem runs in DOCSIS 3.0 mode
         chans = ds_channels(a)
         plan = [(cid, f, a.qam, cid == 1) for cid, f in chans]
-        mux.mdd = mac.mdd_msg(mux.sa, 1, 1, plan, [1])
+        ucids = [u for u, _ in us_channels(a)]
+        # several upstream channels: ranging only on the first one (ambiguity resolution list),
+        # transmit power reporting on (without it no CM may get more than one upstream channel)
+        mdd_kw = dict(ambiguity=[1], power_report=True) if len(ucids) > 1 else {}
+        mux.mdd = mac.mdd_msg(mux.sa, 1, 1, plan, ucids, **mdd_kw)
         for cid, f in chans[1:]:
             m2 = SecondaryMux(qam=a.qam, cmts_mac=a.mac, invert=not a.no_invert)
-            m2.mdd = mac.mdd_msg(mux.sa, 1, cid, plan, [1])
+            m2.mdd = mac.mdd_msg(mux.sa, 1, cid, plan, ucids, **mdd_kw)
             m2.data_max_ms = a.ds_queue_ms
             mux.secondary.append(m2)
         if len(chans) > 1:
             core.bonding = chans
     return mux, core, rx, tb, mcr, decim
+
+
+def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
+    """Several upstream channels (DOCSIS 3.0 upstream bonding): the B210 receives one wideband
+    stream at the master clock rate, centred between the channels; one upstream process per
+    channel takes its channel out of the shared ring (cmts/usproc.py, C DDC) and demodulates it.
+    Channel 1 is the one modems range on; the others get their own UCD and MAP stream.
+    Returns (receiver of channel 1, RX decimation)."""
+    chans = us_channels(a)
+    if a.sim or not a.us_process:
+        sys.exit("--us-channels > 1 : sur le matériel, avec --us-process, uniquement")
+    a.us_center = (chans[0][1] + chans[-1][1]) / 2
+    width = symrate * 1.25
+    if chans[-1][1] - chans[0][1] + width > 0.8 * mcr:
+        sys.exit(f"--us-channels/--us-spacing : {(chans[-1][1] - chans[0][1] + width) / 1e6:.1f} MHz à "
+                 f"recevoir, plus que les {0.8 * mcr / 1e6:.1f} MHz utiles à {mcr / 1e6:.3f} MS/s")
+    ring = SampleRing(mcr, 1, history_s=0.5)
+    factor = max(1, int(mcr // (2.5 * symrate)))
+    bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
+    rxs = []
+    for ucid, f in chans:
+        def on_burst(ev, ucid=ucid):
+            ev.us_ch = ucid
+            core.on_burst(ev)
+        rxs.append(RemoteUpstream(mcr, 1, symrate, tb, mux.ms_counts, on_burst, a.us_mode, bits,
+                                  history_s=0.6, log=log, ring=ring, name=f"upstream{ucid}",
+                                  ddc=dict(offset=f - a.us_center, factor=factor, cutoff=width / 2 + 1e6),
+                                  **rx_kw))
+    for (ucid, f), r in zip(chans[1:], rxs[1:]):
+        mux.add_upstream(ucid, f, scheduler=core.channel_scheduler(ucid), on_grants=r.add_grants,
+                         ack_ms=lambda r=r: int(r.processed_ts // mux.ms_counts), im=False)
+    core.us_rx = rxs
+    rxs[0].all_channels = rxs
+    core.us_chans = chans
+    log(f"{len(chans)} canaux montants : " + ", ".join(f"{u}@{f / 1e6:.2f} MHz" for u, f in chans)
+        + f" ; réception large bande {mcr / 1e6:.3f} MS/s centrée sur {a.us_center / 1e6:.2f} MHz, "
+          f"1 processus par canal (DDC /{factor})")
+    return rxs[0], 1
 
 
 def attach_pcap(path, mux, rx, wall_of_ts):
@@ -140,13 +189,12 @@ def attach_pcap(path, mux, rx, wall_of_ts):
     RNG-RSP air time), so the gaps between them in Wireshark are the real ones on the cable;
     wall_of_ts() maps that time base to the Unix clock (to a few ms)."""
     pcap = PcapWriter(path)
-    on_burst = rx.on_burst
-
-    def tap(ev):
-        if ev.burst is not None and ev.burst.frame:
-            pcap.write(wall_of_ts(ev.rx_ts), ev.burst.frame)
-        on_burst(ev)
-    rx.on_burst = tap
+    for r in getattr(rx, "all_channels", None) or [rx]:
+        def tap(ev, on_burst=r.on_burst):
+            if ev.burst is not None and ev.burst.frame:
+                pcap.write(wall_of_ts(ev.rx_ts), ev.burst.frame)
+            on_burst(ev)
+        r.on_burst = tap
     mux.on_ucast = lambda frame, air_ts: pcap.write(wall_of_ts(air_ts), frame)
     for m2 in getattr(mux, "secondary", []):
         m2.on_ucast = lambda frame, _ts: pcap.write(time.time(), frame)
@@ -265,7 +313,10 @@ def status_line(mux, core, rx, extra=""):
             f"retard max {lag:.0f} ms" + (f" (file {st['windows_queued']}, abandonnées {st['late']})"
                                           if 'windows_queued' in st else "")
             + f", rafales {st['bursts']} (décodées {st['decoded']}, énergie brute {st['raw']}), "
-            f"RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
+            + "".join(f" | US{k + 2} : bruit {'?' if r.noise_dbfs() is None else f'{r.noise_dbfs():.1f}'} dBFS, "
+                      f"retard max {r.lag_max_ms:.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']})"
+                      for k, r in enumerate(getattr(rx, "all_channels", [rx])[1:]))
+            + f", RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
             f"({core.n['empty']} vides), concat {core.n['concat']} | {mods}")
 
 
@@ -347,7 +398,7 @@ def raise_priority(prio):
         return "!! priorité normale : temps réel et nice refusés par le système\n" + RT_HELP
 
 
-def split_cpus(child_pid):
+def split_cpus(child_pids):
     """Give the upstream process (cmts/usproc.py) a physical core of its own, the last one
     allowed, and keep every thread of this process (TX feed, encoder, UHD) on the others: they
     no longer compete for the same cores (2026-10-09: TX gaps of 0.3-2 s under load)."""
@@ -365,7 +416,8 @@ def split_cpus(child_pid):
     mine = {c for c in allowed if core(c) == cores[-1]}
     rest = set(allowed) - mine
     try:
-        os.sched_setaffinity(child_pid, mine)
+        for pid in child_pids:
+            os.sched_setaffinity(pid, mine)
         for tid in os.listdir("/proc/self/task"):
             try:
                 os.sched_setaffinity(int(tid), rest)
@@ -552,17 +604,23 @@ def run_usrp(a):
     usrp.set_tx_gain(a.gain)
     usrp.set_tx_antenna("TX/RX")
     usrp.set_rx_rate(mcr / decim)
-    lo_off = rx_lo_offset(a)
-    usrp.set_rx_freq(uhd.types.TuneRequest(a.us_freq, lo_off))
-    usrp.set_rx_bandwidth(min(56e6, 2 * (abs(lo_off) + 2e6)))
+    if a.us_channels > 1:
+        # wideband: the LO between the channels (in the gap of --us-spacing - channel width)
+        rx_target, lo_off = a.us_center, 0.0
+        usrp.set_rx_freq(uhd.types.TuneRequest(rx_target))
+        usrp.set_rx_bandwidth(min(56e6, a.us_spacing * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6))
+    else:
+        rx_target, lo_off = a.us_freq, rx_lo_offset(a)
+        usrp.set_rx_freq(uhd.types.TuneRequest(a.us_freq, lo_off))
+        usrp.set_rx_bandwidth(min(56e6, 2 * (abs(lo_off) + 2e6)))
     usrp.set_rx_gain(a.us_gain)
     usrp.set_rx_antenna("RX2")
-    rx_err = usrp.get_rx_freq() - a.us_freq
+    rx_err = usrp.get_rx_freq() - rx_target
     log(f"master clock {usrp.get_master_clock_rate() / 1e6:.6f} MHz | TX {usrp.get_tx_rate() / 1e6:.6f} MS/s "
           f"@ {usrp.get_tx_freq() / 1e6:.3f} MHz gain {usrp.get_tx_gain()} dB BW {usrp.get_tx_bandwidth() / 1e6:.0f} MHz | RX {usrp.get_rx_rate() / 1e6:.6f} MS/s "
-          f"@ {usrp.get_rx_freq() / 1e6:.4f} MHz (LO {a.us_freq / 1e6 + lo_off / 1e6:.1f} MHz) gain {usrp.get_rx_gain()} dB")
+          f"@ {usrp.get_rx_freq() / 1e6:.4f} MHz (LO {rx_target / 1e6 + lo_off / 1e6:.1f} MHz) gain {usrp.get_rx_gain()} dB")
     if abs(rx_err) > 1e3:
-        log(f"!! fréquence RX obtenue {usrp.get_rx_freq() / 1e6:.4f} MHz au lieu de {a.us_freq / 1e6:.4f}: "
+        log(f"!! fréquence RX obtenue {usrp.get_rx_freq() / 1e6:.4f} MHz au lieu de {rx_target / 1e6:.4f}: "
               f"essaie --us-lo-offset ou une autre --us-freq")
     if abs(usrp.get_tx_rate() - fs_tx) / fs_tx > 1e-6 or abs(usrp.get_rx_rate() * decim - mcr) > 1:
         log("!! débits inexacts: la base de temps commune TX/RX serait fausse")
@@ -700,10 +758,13 @@ def run_usrp(a):
     br = start_bridge(a, mux, core, stop)
     remote = isinstance(rx, RemoteUpstream)
     if remote:
-        rx.start()                                # the time base is final from here on
-        log("réception montante dans un processus séparé (cmts/usproc.py)")
+        rxs = getattr(rx, "all_channels", None) or [rx]
+        for r in rxs:
+            r.start()                             # the time base is final from here on
+        log("réception montante dans un processus séparé (cmts/usproc.py)"
+            + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else ""))
         if a.cpus == "auto":
-            log(split_cpus(rx.pid))
+            log(split_cpus([r.pid for r in rxs]))
     workers = [rx_loop] + ([] if remote else [worker_timed if os.environ.get("MINI_CMTS_TIMING") else worker])
     for f in workers:
         threading.Thread(target=f, daemon=True).start()
@@ -773,7 +834,10 @@ def run_usrp(a):
         md.end_of_burst = True
         tx_stream.send(np.zeros(1000, dtype=np.complex64), md)
         if isinstance(rx, RemoteUpstream):
-            rx.stop()
+            for r in getattr(rx, "all_channels", None) or [rx]:
+                r.stop()
+            if not rx._own_ring:                  # the wideband ring shared by the channels
+                rx.ring.close()
         log("\narrêt; " + status_line(mux, core, rx))
         if pcap:
             pcap.close()
@@ -823,6 +887,12 @@ def parser():
                         "small offset (SFR uses 60.4 MHz)")
     g.add_argument("--us-rate", type=int, default=32,
                    help="symbol rate in 160 ksym/s units (16 = 2.56 Msym/s, 3.2 MHz; 8 = 1.28 Msym/s)")
+    g.add_argument("--us-channels", type=int, default=1,
+                   help="upstream channels (DOCSIS 3.0 upstream bonding, experimental): >1 receives one "
+                        "wideband stream and runs one upstream process per channel")
+    g.add_argument("--us-spacing", type=float, default=7e6,
+                   help="upstream channel spacing (Hz); 7 MHz leaves 0.6 MHz between two 5.12 Msym/s channels "
+                        "for the RX LO")
     g.add_argument("--us-mod", choices=("qpsk", "16qam", "64qam"), default="64qam",
                    help="modulation of the upstream data bursts (16qam: twice the bits per symbol; 64qam: "
                         "ATDMA only)")

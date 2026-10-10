@@ -196,8 +196,13 @@ class UpstreamRx:
         v = np.ascontiguousarray(x[:nb * blk], np.complex64).view(np.float32).reshape(nb, 2 * blk)
         p = np.einsum("ij,ij->i", v, v) / blk          # power per block (no sqrt as with abs()**2)
         lowest = float(np.partition(p, nb // 5)[nb // 5])   # 20th percentile, without interpolation
-        if self.floor is None:
-            self.floor = lowest
+        if not self.floor:
+            # never from zero-filled samples (an RX gap, or the part of the stream an upstream
+            # process skips at its start): a floor of 0 made every block "hot" and every window
+            # a full preamble search, for good (2026-10-10, 2 upstream channels: 100 % CPU)
+            self.floor = lowest or None
+            if self.floor is None:
+                return
         thr = max(self.floor, 1e-12) * self.gate
         hot = np.nonzero(p > thr)[0]
         unicast = sid != mac.SID_BROADCAST

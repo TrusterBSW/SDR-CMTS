@@ -91,6 +91,13 @@ class CmtsCore:
         self.bonded_channels = {}   # modem MAC -> DCIDs it acquired (REG-ACK partial service)
 
     # ------------------------------------------------------------ MAP hook (downstream thread)
+    def channel_scheduler(self, ucid):
+        """MAP scheduler of a further upstream channel (DownstreamMux.add_upstream)."""
+        return lambda start_ms, free_ms: self.schedule_channel(ucid, start_ms, free_ms)
+
+    def schedule_channel(self, ucid, start_ms, free_ms):
+        return []
+
     def schedule(self, start_ms, free_ms):
         start_ts = start_ms * self.mux.ms_counts
         out = []
@@ -134,6 +141,11 @@ class CmtsCore:
     # ------------------------------------------------------------ bursts (upstream thread)
     def on_burst(self, ev):
         b = ev.burst
+        ch = getattr(ev, "us_ch", 1)
+        if ch != 1:
+            if b is not None and b.frame is not None:
+                self.log(f"[US{ch}] trame reçue : {b.info}")
+            return
         if b is None:                                   # nothing in a unicast grant
             if ev.iuc == mac.IUC_STATION_MAINT:
                 self._miss(ev.sid)

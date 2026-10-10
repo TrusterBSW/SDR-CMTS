@@ -22,3 +22,6 @@ cmts/_*.so
 
 # lab captures the tests replay (own modem)
 !tests/data/**/*.pcap
+
+# per-file backups made before an edit
+*_pre_*

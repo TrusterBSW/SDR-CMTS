@@ -65,5 +65,49 @@ if __name__ == "__main__":
           f"{rx.stats}, bruit {rx.noise_dbfs()}")
     rx.stop()
     check("arrêt propre du processus", not rx.alive())
+
+    # two upstream channels (DOCSIS 3.0 upstream bonding): one wideband stream at 27.808 MS/s,
+    # channel 1 at -3.5 MHz and channel 2 at +3.5 MHz from its centre, the same real burst on
+    # both at the same time (plus a copy of the noise); one process per channel shares the ring
+    from scipy.signal import resample_poly
+    from cmts.usproc import SampleRing
+    ring = SampleRing(mcr, 1, history_s=1.0)
+    got2 = {1: [], 2: []}
+    done2 = {1: threading.Event(), 2: threading.Event()}
+
+    def on_ch(ch):
+        def f(ev):
+            got2[ch].append(ev)
+            if ev.burst is not None:
+                done2[ch].set()
+        return f
+    offs = {1: -3.5e6, 2: +3.5e6}
+    rxs = {ch: RemoteUpstream(mcr, 1, 5.12e6, tb, 256, on_ch(ch), "atdma", 6, log=logs.append, ring=ring,
+                              ddc=dict(offset=offs[ch], factor=2, cutoff=4.2e6), name=f"upstream{ch}")
+           for ch in (1, 2)}
+    for r in rxs.values():
+        r.start()
+    up = resample_poly(stream, 2, 1).astype(np.complex64)
+    n = np.arange(up.size)
+    wide = sum(up * np.exp(2j * np.pi * offs[ch] / mcr * n).astype(np.complex64) for ch in (1, 2))
+    wide = wide.astype(np.complex64)
+    for r in rxs.values():
+        r.add_grants([(int(round(q0)), int(round(q1)), mac.IUC_ADV_LONG, 1),
+                      (int(round(start_ts)), int(round(end_ts)), mac.IUC_ADV_LONG, 1)])
+    t0 = time.time()
+    for i in range(0, wide.size, 40_000):
+        rxs[1].push(i, wide[i:i + 40_000])              # once: the ring is shared
+    for ch in (1, 2):
+        done2[ch].wait(15)
+    for ch in (1, 2):
+        bb = [e for e in got2[ch] if e.burst is not None]
+        b2 = bb[0].burst if bb else None
+        check(f"2 canaux montants : canal {ch} ({offs[ch] / 1e6:+.1f} MHz) extrait (DDC) et décodé",
+              b2 is not None and b2.frame == b.frame,
+              f"MER {b2.mer:.1f} dB (seul : {b.mer:.1f}), arrivée {bb[0].err_counts:+.2f} comptes "
+              f"(seul : {bursts[0].err_counts:+.2f})" if b2 is not None and b2.frame else str(got2[ch]))
+    for r in rxs.values():
+        r.stop()
+    ring.close()
     print("PASS" if ok_all else "FAIL")
     sys.exit(0 if ok_all else 1)

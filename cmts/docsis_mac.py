@@ -339,9 +339,13 @@ def reg_rsp_msg(sa, da, sid, response, tlvs):
 
 
 # ---------------------------------------------------------------- DOCSIS 3.0: MAC Domain Descriptor
-def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=False, verbose_rcp=True):
+def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=False, verbose_rcp=True,
+            ambiguity=None, power_report=False):
     """MDD (MULPIv3.0 6.4.28), MAC management version 4, one fragment.
     ds_channels: [(channel id, frequency Hz, qam 64|256, primary capable)].
+    ambiguity: upstream channel ids a modem may range on first (TLV 8); power_report: TLV 12,
+    upstream transmit power reporting on (required before giving a CM several upstream channels:
+    MULPIv3.0 6.4.28.1.12).
     TLV 1 is laid out as in the MDD of the SFR network (Cadant CMTS, capture of 2026-10-06)."""
     body = struct.pack(">BBBB", ccc & 0xFF, 1, 1, current_dcid)
     for cid, freq, qam, primary in ds_channels:
@@ -355,8 +359,12 @@ def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=F
     body += tlv(6, bytes([1 if eae else 0]))                             # early authentication: off
     for uid in us_channel_ids:
         body += tlv(7, tlv(1, bytes([uid])) + tlv(2, struct.pack(">H", 0)))
+    if ambiguity:
+        body += tlv(8, bytes(ambiguity))                                 # upstream ambiguity resolution list
     body += tlv(9, bytes([0]))                                           # upstream frequency range: standard
     body += tlv(10, bytes([1]))                                          # symbol clocks locked to the master clock
+    if power_report:
+        body += tlv(12, bytes([1]))                                      # upstream transmit power reporting
     return mgmt_frame(MDD, body, sa, version=4)
 
 
