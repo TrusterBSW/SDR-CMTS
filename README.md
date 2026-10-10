@@ -78,7 +78,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | Option | Default | Meaning |
 |---|---|---|
 | `--freq` | 306 MHz | first downstream channel; bonded ones every `--ds-spacing` (8 MHz) |
-| `--ds-channels` | 2 | 1 to 6 (master clock 27.808 / 41.712 / 55.616 MHz; 3+ experimental) |
+| `--ds-channels` | 2 | 1 to 6 (master clock 27.808 / 34.76 / 55.616 MHz; 5-6 beyond a 6-core CPU) |
 | `--qam` | 256 | downstream QAM |
 | `--us-freq`, `--us-rate`, `--us-mode`, `--us-mod` | 60 MHz, 32 (5.12 Msym/s), atdma, 64qam | upstream channel |
 | `--us-target` | -14 dBFS | burst level the modems are ranged to |
@@ -131,11 +131,13 @@ hardware.
   upstream band) or a Dynamic Range Window TCC in the REG-RSP-MP both get REG-ACK 209
   (reject-bad-tcc), with no further detail. The modem pads every grant with a segment of stuff
   bytes: those must not keep the grants in advance going.
-- The modem locks with the B210 master clock at 20.856, 27.808 or 34.76 MHz, never at 41.712,
-  48.664 or 55.616 (one channel, 64- or 256-QAM, either spectrum orientation; a B210 loopback
-  shows the same carrier, clock and MER at all of them): cause not found, somewhere above
-  ~35 MHz (AD9361 or the clone's FPGA). 34.76 MS/s holds 4 channels of 8 MHz; 5+ would need a
-  second SDR.
+- UHD calibrates the AD9361 TX quadrature when the streams open, with a test tone looped back
+  through the RX analog filter; the tone grows with the master clock. With the RX filter at the
+  upstream width (12.4 MHz) the calibration failed from 41.712 MHz on: the TX image (mirror of
+  the signal around the LO) stayed at -21..-24 dBc instead of -51, and the modem never locked
+  above 34.76 MHz. The streams now open with a 56 MHz RX filter, narrowed afterwards
+  (`radio.TX_CAL_RX_BW`): the modem locks at 41.712 and 55.616 MHz. 5 channels at 55.616 MS/s
+  are then beyond the 6-core Proxmox host's CPU.
 - With 3 channels the middle one sits on the TX LO: its leakage was ~-31 dBc in that channel.
 
 Details, measurements and every bug found: `docs/JOURNAL.fr.md` (French) and `docs/TESTS.fr.md`.

@@ -46,6 +46,7 @@ from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
+from cmts.radio import TX_CAL_RX_BW
 from cmts.usproc import RemoteUpstream, SampleRing
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
@@ -89,18 +90,18 @@ def build(a, log=print):
         # 1-3 channels: 27.808 MS/s (3 channels at -8/0/+8 MHz fill +-12 of the +-13.9 MHz band).
         # 4 channels: 34.760 MS/s (5 per symbol; -12/-4/+4/+12 MHz fill +-16 of +-17.38): online on
         # 4 channels, 156 Mbit/s carried (2026-10-10, Proxmox host, --radio-process).
-        # The Sagem 3686 locks with the master clock at 20.856, 27.808 and 34.760 MHz but never at
-        # 41.712, 48.664 or 55.616 (1 channel, 64- or 256-QAM, either spectrum orientation; the
-        # B210 loopback shows the same carrier, clock and MER at all of them): cause unknown,
-        # somewhere above ~35 MHz (AD9361 or the LibreSDR clone's FPGA). 5-6 channels need one
-        # of those clocks: kept for tests, the modem will not lock.
+        # Above 34.76 MHz the Sagem used not to lock: UHD's TX quadrature calibration ran with the
+        # RX filter at the upstream width and failed from 41.712 MHz on (radio.TX_CAL_RX_BW).
+        # Since that fix it locks at 41.712 and 55.616 MHz (1 channel); 5 channels at 55.616 MS/s
+        # are beyond the Proxmox host's CPU (the radio process fell behind for good, 2026-10-10).
         a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
         if a.ds_channels >= 4:
             # one synthesis thread per channel (4 channels at 34.76 MS/s: 2 threads ran at ~80 %
             # of real time, the TX fell behind for good)
             a.synth_threads = max(a.synth_threads, a.ds_channels)
         if a.ds_channels >= 5:
-            log("!! 5-6 canaux descendants : horloge maître 55,616 MHz, à laquelle le Sagem 3686 ne se cale pas")
+            log("!! 5-6 canaux descendants : 55,616 MS/s, au-delà du processeur de l'hôte Proxmox (i5-9500) "
+                "à l'essai du 2026-10-10")
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
@@ -901,8 +902,11 @@ def run_usrp(a):
         return 1
     tx_args = uhd.usrp.StreamArgs("fc32", "sc16")
     tx_args.args = "underflow_policy=next_packet"     # a late block is dropped, the stream goes on
+    rx_bw = usrp.get_rx_bandwidth()
+    usrp.set_rx_bandwidth(TX_CAL_RX_BW)       # UHD calibrates the TX quadrature as the streams open
     tx_stream = usrp.get_tx_stream(tx_args)
     rx_stream = usrp.get_rx_stream(uhd.usrp.StreamArgs("fc32", "sc16"))
+    usrp.set_rx_bandwidth(rx_bw)
     tx_dc = 0j
     if a.tx_dc_cal:
         rx_freq_now, rx_lo_now = usrp.get_rx_freq(), usrp.get_rx_freq() + lo_off
@@ -1253,8 +1257,8 @@ def parser():
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=2,
                    help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0): 1-4 work (4: master clock "
-                        "34.76 MHz, 156 Mbit/s carried with --radio-process, 2026-10-10); 5-6 need a master "
-                        "clock the Sagem never locked on")
+                        "34.76 MHz, 156 Mbit/s carried with --radio-process, 2026-10-10); 5-6 run at 55.616 "
+                        "MS/s, which the Sagem locks on but the Proxmox host's CPU cannot synthesize")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=False,

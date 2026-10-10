@@ -29,6 +29,14 @@ import numpy as np
 
 TS_LEN = 188
 
+# UHD runs the AD9361 TX quadrature calibration when the streams open (set_active_chains); it
+# loops a test tone back through the RX analog filter, at ~1/8 of the master clock and up. With
+# the RX filter at the upstream width (12.4 MHz), the tone is cut from 41.712 MHz on: the TX
+# image (mirror of the signal around the LO) stayed at -21..-24 dBc instead of -51, the channel
+# at the LO sat on its own mirror and the Sagem never locked above 34.76 MHz (2026-10-10). The
+# streams open with this RX bandwidth, then the RX filter goes back to the upstream width.
+TX_CAL_RX_BW = 56e6
+
 
 class PacketRing:
     """TS blocks (channels x block x 188 bytes) in shared memory, one producer (the MAC encoder
@@ -274,8 +282,10 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
         return
     tx_args = uhd.usrp.StreamArgs("fc32", "sc16")
     tx_args.args = "underflow_policy=next_packet"
+    usrp.set_rx_bandwidth(TX_CAL_RX_BW)        # UHD calibrates the TX quadrature as the streams open
     tx_stream = usrp.get_tx_stream(tx_args)
     rx_stream = usrp.get_rx_stream(uhd.usrp.StreamArgs("fc32", "sc16"))
+    usrp.set_rx_bandwidth(p["rx_bw"])          # back to the upstream width (TX_CAL_RX_BW)
 
     stop = threading.Event()
     q_tx = queue.Queue(maxsize=p["tx_queue"])

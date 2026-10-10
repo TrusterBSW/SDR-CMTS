@@ -84,7 +84,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | Option | Défaut | Rôle |
 |---|---|---|
 | `--freq` | 306 MHz | premier canal descendant ; les suivants tous les `--ds-spacing` (8 MHz) |
-| `--ds-channels` | 2 | 1 à 6 (horloge 27,808 / 41,712 / 55,616 MHz ; 3 et plus expérimental) |
+| `--ds-channels` | 2 | 1 à 6 (horloge 27,808 / 34,76 / 55,616 MHz ; 5-6 au-delà d'un processeur 6 cœurs) |
 | `--qam` | 256 | modulation descendante |
 | `--us-freq`, `--us-rate`, `--us-mode`, `--us-mod` | 60 MHz, 32 (5,12 Msym/s), atdma, 64qam | canal montant |
 | `--us-target` | −14 dBFS | niveau visé pour les rafales des modems |
@@ -151,10 +151,13 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   montante EuroDOCSIS), ou un TCC de fenêtre de dynamique (DRW) dans le REG-RSP-MP, valent tous
   deux un REG-ACK 209 (reject-bad-tcc), sans autre détail. Le modem remplit chaque grant d'un
   segment de bourrage : ces segments ne doivent pas relancer les grants en avance.
-- **Le modem se cale avec une horloge maître du B210 à 20,856, 27,808 ou 34,76 MHz, jamais à
-  41,712, 48,664 ni 55,616** (1 canal, 64- ou 256-QAM, spectre dans les deux sens ; au rebouclage
-  B210, même porteuse, même horloge, même MER) : cause non trouvée, au-delà de ~35 MHz (AD9361 ou
-  FPGA du clone). 34,76 MS/s contiennent 4 canaux de 8 MHz ; 5 et plus demanderaient un second SDR.
+- **UHD calibre la quadrature TX de l'AD9361 à l'ouverture des flux**, avec un ton de test
+  rebouclé par le filtre analogique RX ; ce ton monte avec l'horloge maître. Avec le filtre RX à
+  la largeur montante (12,4 MHz), la calibration ratait dès 41,712 MHz : l'image TX (miroir du
+  signal autour de l'oscillateur local) restait à −21 à −24 dBc au lieu de −51, et le modem ne se
+  calait jamais au-delà de 34,76 MHz. Les flux s'ouvrent maintenant avec un filtre RX de 56 MHz,
+  resserré ensuite (`radio.TX_CAL_RX_BW`) : le modem se cale à 41,712 et 55,616 MHz. 5 canaux à
+  55,616 MS/s dépassent alors le processeur de l'hôte Proxmox (6 cœurs).
 - **À 3 canaux, celui du milieu tombe sur l'oscillateur local TX** : sa fuite y était à ~−31 dBc.
 
 Détails, mesures et tous les bogues rencontrés : `docs/JOURNAL.fr.md` et `docs/TESTS.fr.md`.
