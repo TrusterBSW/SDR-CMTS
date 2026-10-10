@@ -35,6 +35,7 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 | Ensemble | 3 canaux descendants + 4 montants | en ligne une fois avec tous les canaux, à la limite du processeur du portable 4 cœurs (montant en retard de ~150 ms) |
 | Ensemble, processus radio | `--radio-process --ds-channels 3` (3 DS + 1 US), PC 6 cœurs (i5-9500) | **130,8 Mbit/s descendant / 20,2 Mbit/s montant** (iperf3 à travers le modem) ; les canaux non acquis à l'enregistrement sont rattachés par CM-STATUS |
 | Ensemble, processus radio | `--radio-process --ds-channels 3 --us-channels 2`, même PC | 130,8 / 15,8 Mbit/s : l'agrégation montante n'apporte pas encore de débit (les processus montants sont à 70-90 %, latence ~93 ms) |
+| Descendant, processus radio | `--radio-process --ds-channels 4` : horloge maître 34,76 MHz (5 éch./symbole), PC 6 cœurs | **156 Mbit/s** descendant (131 sur un autre essai), 19,3 montant ; les 4 canaux portent chacun un quart du trafic ; les 2 canaux centraux (de part et d'autre de l'oscillateur local) décrochent parfois et reviennent par CM-STATUS |
 
 ## ⚠ Sécurité et cadre légal
 
@@ -150,9 +151,10 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   montante EuroDOCSIS), ou un TCC de fenêtre de dynamique (DRW) dans le REG-RSP-MP, valent tous
   deux un REG-ACK 209 (reject-bad-tcc), sans autre détail. Le modem remplit chaque grant d'un
   segment de bourrage : ces segments ne doivent pas relancer les grants en avance.
-- **Le modem ne se cale qu'avec une horloge maître du B210 à 27,808 MHz** (4 échantillons par
-  symbole) : à 41,712 ou 55,616 MHz, jamais, même sur un seul canal (cause non trouvée). Or
-  27,808 MS/s ne contiennent que 3 canaux de 8 MHz : au-delà, il faut un second B210.
+- **Le modem se cale avec une horloge maître du B210 à 20,856, 27,808 ou 34,76 MHz, jamais à
+  41,712, 48,664 ni 55,616** (1 canal, 64- ou 256-QAM, spectre dans les deux sens ; au rebouclage
+  B210, même porteuse, même horloge, même MER) : cause non trouvée, au-delà de ~35 MHz (AD9361 ou
+  FPGA du clone). 34,76 MS/s contiennent 4 canaux de 8 MHz ; 5 et plus demanderaient un second SDR.
 - **À 3 canaux, celui du milieu tombe sur l'oscillateur local TX** : sa fuite y était à ~−31 dBc.
 
 Détails, mesures et tous les bogues rencontrés : `docs/JOURNAL.fr.md` et `docs/TESTS.fr.md`.

@@ -350,6 +350,7 @@ class Reassembler:
         self.buf = bytearray()       # bytes of the frame being reassembled
         self.sync = False            # buf starts on a MAC header
         self.stats = dict(segments=0, frames=0, lost=0, bad_hcs=0, dup=0)
+        self.wait = [0, 0.0, 0.0]    # diagnostic: segments held for a hole, total and max wait (s)
 
     @staticmethod
     def _after(a, b):
@@ -369,7 +370,13 @@ class Reassembler:
         out = []
         while True:
             while self.next in self.held:
-                out += self._feed(*self.held.pop(self.next)[:3])
+                seg = self.held.pop(self.next)
+                w = now - seg[3]
+                if w > 0:
+                    self.wait[0] += 1
+                    self.wait[1] += w
+                    self.wait[2] = max(self.wait[2], w)
+                out += self._feed(*seg[:3])
                 self.next = (self.next + 1) % 8192
             if not self.held:
                 break

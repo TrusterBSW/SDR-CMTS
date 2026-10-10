@@ -35,6 +35,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Together | 3 downstream + 4 upstream channels | online once with every channel, at the CPU limit of the 4-core laptop (upstream ~150 ms behind) |
 | Together, radio process | `--radio-process --ds-channels 3` (3 DS + 1 US), 6-core PC (i5-9500) | **130.8 Mbit/s downstream / 20.2 Mbit/s upstream** (iperf3 through the modem); channels missed at registration are added back by CM-STATUS |
 | Together, radio process | `--radio-process --ds-channels 3 --us-channels 2`, same PC | 130.8 / 15.8 Mbit/s: upstream bonding brings no throughput yet (upstream processes at 70-90 %, ~93 ms latency) |
+| Downstream, radio process | `--radio-process --ds-channels 4`: master clock 34.76 MHz (5 samples/symbol), 6-core PC | **156 Mbit/s** downstream (131 in another run), 19.3 upstream; each of the 4 channels carries a quarter of the traffic; the 2 middle channels (either side of the TX LO) sometimes drop and come back through CM-STATUS |
 
 ## ⚠ Safety and legal
 
@@ -130,9 +131,11 @@ hardware.
   upstream band) or a Dynamic Range Window TCC in the REG-RSP-MP both get REG-ACK 209
   (reject-bad-tcc), with no further detail. The modem pads every grant with a segment of stuff
   bytes: those must not keep the grants in advance going.
-- The modem only locks when the B210 master clock is 27.808 MHz (4 samples per symbol): with
-  41.712 or 55.616 MHz it never locks, even on one channel (cause not found). 27.808 MS/s holds
-  3 channels of 8 MHz at most, which is why 4+ downstream channels need a second B210.
+- The modem locks with the B210 master clock at 20.856, 27.808 or 34.76 MHz, never at 41.712,
+  48.664 or 55.616 (one channel, 64- or 256-QAM, either spectrum orientation; a B210 loopback
+  shows the same carrier, clock and MER at all of them): cause not found, somewhere above
+  ~35 MHz (AD9361 or the clone's FPGA). 34.76 MS/s holds 4 channels of 8 MHz; 5+ would need a
+  second SDR.
 - With 3 channels the middle one sits on the TX LO: its leakage was ~-31 dBc in that channel.
 
 Details, measurements and every bug found: `docs/JOURNAL.fr.md` (French) and `docs/TESTS.fr.md`.

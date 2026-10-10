@@ -107,6 +107,11 @@ class CmtsCore:
         # receiver could not keep up with ~490 bursts/s (2026-10-09).
         self.grant_ahead_every = max(1, int(grant_ahead_every))
         self.grant_ahead_scale = grant_ahead_scale
+        # diagnostic: MINI_CMTS_AHEAD_ALL=1 gives an MTC flow its grants in advance on every channel
+        # at once instead of in turn
+        self.ahead_all = bool(os.environ.get("MINI_CMTS_AHEAD_ALL"))
+        # diagnostic (MINI_CMTS_TIMING): per upstream channel, MTC grants and what came back
+        self.mtc_stat = collections.defaultdict(collections.Counter)
         self._maps = 0
         self.active = {}      # SID -> (DOCSIS time the advance grants stop, mini-slots)
         self.n = dict(req=0, ahead=0, empty=0, concat=0)   # grants asked, given in advance, unused
@@ -172,6 +177,9 @@ class CmtsCore:
                 if self.sid_ch.get(sid, 1) != ch or used + n > free_ms:
                     continue
                 out.append((sid, iuc_s if n <= short else iuc_l, n))
+                if self.mtc_sids:
+                    self.mtc_stat[ch]["req_grants"] += 1
+                    self.mtc_stat[ch]["req_ms"] += n
                 used += n
                 del self.pending[sid]
                 granted.add(sid)
@@ -191,8 +199,10 @@ class CmtsCore:
                     del self.active[sid]
                     continue
                 n = min(255, max(n, int(round(n * self.grant_ahead_scale))))
-                if give and (turn or sid not in self.mtc_sids) and sid not in granted and used + n <= free_ms:
+                if give and (turn or self.ahead_all or sid not in self.mtc_sids) and sid not in granted and used + n <= free_ms:
                     out.append((sid, iuc_s if n <= short else iuc_l, n))
+                    self.mtc_stat[ch]["ahead_grants"] += 1
+                    self.mtc_stat[ch]["ahead_ms"] += n
                     used += n
                     self.n["ahead"] += 1
         return out
@@ -310,6 +320,13 @@ class CmtsCore:
             self._seg_logged += 1
             self.log(f"[US{getattr(ev, 'us_ch', 1)}] segment SID {ev.sid:#06x} : {hdr}, {len(b.frame)} octets, "
                      f"début {b.frame[8:24].hex(' ')}")
+        st = self.mtc_stat[getattr(ev, "us_ch", 1)]
+        body = b.frame[SEG_HDR:]
+        data = len(body.rstrip(bytes([mac.STUFF])))
+        st["segs"] += 1
+        st["data_bytes"] += data
+        st["pad_bytes"] += len(body) - data
+        st["pad_segs"] += data == 0
         if hdr["req"]:
             self._request_bytes(ev.sid, hdr["req"] * REQ_MULT, b, piggyback=True)
         with self.seg_lock:                     # two channels' threads: one at a time, in order
@@ -337,6 +354,9 @@ class CmtsCore:
             m = self.by_sid.get(sid)
             if m is None or not nbytes:
                 return                          # 0: nothing more queued; grants in advance go on
+            self.mtc_stat[0]["reqs"] += 1
+            self.mtc_stat[0]["req_bytes"] += nbytes
+            self.mtc_stat[0]["req_max"] = max(self.mtc_stat[0]["req_max"], nbytes)
             sids = [m.sid] + [k.sid for k in m.links.values() if k.state == "ranged"]
             # a small request (TCP ACKs...) on ONE channel, in turn: split, it made two bursts
             # where one does, and each burst costs the upstream processes about the same whatever

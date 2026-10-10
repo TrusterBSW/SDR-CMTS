@@ -27,6 +27,7 @@ NEVER connect this to the operator's network: closed coax lab only, with attenua
 """
 import argparse
 import atexit
+import collections
 import cProfile
 import glob
 import os
@@ -84,14 +85,22 @@ def build(a, log=print):
         if a.ds_channels > 6:
             sys.exit("--ds-channels : 1 à 6 (au-delà, la bande du B210 et le processeur ne suivent plus)")
         # N 8 MHz channels side by side, each shaped at `sps` samples per symbol = master clock and
-        # shifted around the TX centre: 2 -> 27.808 MS/s (+-4 MHz), 3-4 -> 41.712 MS/s (up to
-        # +-12 MHz), 5-6 -> 55.616 MS/s (up to +-20 MHz); USB checked at all three (2026-10-10:
-        # TX + 13.9 MS/s RX, no loss)
+        # shifted around the TX centre.
         # 1-3 channels: 27.808 MS/s (3 channels at -8/0/+8 MHz fill +-12 of the +-13.9 MHz band).
-        # 4: 41.712, 5-6: 55.616 MS/s -- NOT WORKING with the Sagem 3686 (2026-10-10): with any
-        # master clock but 27.808 MHz the modem never locks, even on 1 channel (tone, frequency
-        # accuracy, TX response, RX path, timed/untimed all checked); cause unknown
-        a.sps = 4 if a.ds_channels <= 3 else (6 if a.ds_channels <= 4 else 8)
+        # 4 channels: 34.760 MS/s (5 per symbol; -12/-4/+4/+12 MHz fill +-16 of +-17.38): online on
+        # 4 channels, 156 Mbit/s carried (2026-10-10, Proxmox host, --radio-process).
+        # The Sagem 3686 locks with the master clock at 20.856, 27.808 and 34.760 MHz but never at
+        # 41.712, 48.664 or 55.616 (1 channel, 64- or 256-QAM, either spectrum orientation; the
+        # B210 loopback shows the same carrier, clock and MER at all of them): cause unknown,
+        # somewhere above ~35 MHz (AD9361 or the LibreSDR clone's FPGA). 5-6 channels need one
+        # of those clocks: kept for tests, the modem will not lock.
+        a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
+        if a.ds_channels >= 4:
+            # one synthesis thread per channel (4 channels at 34.76 MS/s: 2 threads ran at ~80 %
+            # of real time, the TX fell behind for good)
+            a.synth_threads = max(a.synth_threads, a.ds_channels)
+        if a.ds_channels >= 5:
+            log("!! 5-6 canaux descendants : horloge maître 55,616 MHz, à laquelle le Sagem 3686 ne se cale pas")
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
@@ -122,6 +131,7 @@ def build(a, log=print):
     else:
         rx = UpstreamRx(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, log=log, **rx_kw)
     core.ms_syms = int(round(a.minislot * 6.25e-6 * symrate))
+    core.us_bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
     if a.us_channels > 1:
         rx, decim = build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log)
         mux.on_grants = lambda g: rx.add_grants(core.mark_grants(g))     # segment grants flagged
@@ -299,6 +309,34 @@ def _take_lag(r):
     return lag
 
 
+_mtc_t = [time.monotonic()]
+
+
+def mtc_line(core):
+    """Diagnostic (MINI_CMTS_TIMING): Multiple Transmit Channel mode upstream since the last
+    line, per second: grants (asked / in advance, mini-slots -> raw bytes at the data profile),
+    bytes carried by the segments, padding, queue-depth requests, reassembly waits."""
+    now = time.monotonic()
+    dt, _mtc_t[0] = max(1e-3, now - _mtc_t[0]), now
+    st, core.mtc_stat = core.mtc_stat, collections.defaultdict(collections.Counter)
+    bpm = core.ms_syms * getattr(core, "us_bits", 6) / 8      # raw bytes per mini-slot
+    parts = []
+    for ch in sorted(c for c in st if c):
+        c = st[ch]
+        parts.append(f"US{ch}: grants {c['req_grants'] / dt:.0f}+{c['ahead_grants'] / dt:.0f} av./s "
+                     f"{(c['req_ms'] + c['ahead_ms']) * bpm / dt / 1e3:.0f} ko/s bruts, segments {c['segs'] / dt:.0f}/s "
+                     f"données {c['data_bytes'] / dt / 1e3:.0f} ko/s, bourrage {c['pad_bytes'] / dt / 1e3:.0f} ko/s "
+                     f"({c['pad_segs'] / dt:.0f} seg/s vides)")
+    r = st.get(0, {})
+    if r:
+        parts.append(f"requêtes {r['reqs'] / dt:.0f}/s moy {r['req_bytes'] / max(1, r['reqs']):.0f} o max {r['req_max']} o")
+    waits = [m.reasm.wait for m in core.modems.values() if getattr(m, "reasm", None)]
+    for w in waits:
+        parts.append(f"réassemblage : {w[0] / dt:.0f} seg/s attendus, moy {w[1] / max(1, w[0]) * 1e3:.0f} ms max {w[2] * 1e3:.0f} ms")
+        w[:] = [0, 0.0, 0.0]
+    return "[MTC] " + " | ".join(parts)
+
+
 def status_line(mux, core, rx, extra=""):
     st = rx.stats
     fl = rx.noise_dbfs()
@@ -314,6 +352,8 @@ def status_line(mux, core, rx, extra=""):
         log("[TEMPS] " + ", ".join(f"{k}: {v[0]} × {v[1] * 1e3 / max(v[0], 1):.2f} ms = {v[1]:.2f} s"
                                    for k, v in sorted(rx.timing.items())))
         rx.timing.clear()
+        if core.mtc_stat:
+            log(mtc_line(core))
     return (f"[{time.strftime('%H:%M:%S')}] {extra}US: bruit {'?' if fl is None else f'{fl:.1f}'} dBFS, "
             f"retard max {lag:.0f} ms" + (f" (file {st['windows_queued']}, abandonnées {st['late']})"
                                           if 'windows_queued' in st else "")
@@ -1212,8 +1252,9 @@ def parser():
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=2,
-                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0): 1-3 work (3: 142.8 Mbit/s "
-                        "carried, 2026-10-10); 4-6 need a master clock the Sagem never locked on")
+                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0): 1-4 work (4: master clock "
+                        "34.76 MHz, 156 Mbit/s carried with --radio-process, 2026-10-10); 5-6 need a master "
+                        "clock the Sagem never locked on")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=False,
