@@ -137,7 +137,9 @@ def build(a, log=print):
         # several upstream channels: ranging only on the first one (ambiguity resolution list),
         # transmit power reporting on (without it no CM may get more than one upstream channel)
         mdd_kw = dict(ambiguity=[1], power_report=True) if len(ucids) > 1 else {}
-        mux.mdd = mac.mdd_msg(mux.sa, 1, 1, plan, ucids, **mdd_kw)
+        # CM-STATUS reports enabled (2026-10-10): a secondary channel the modem fails to acquire
+        # at registration, then acquires (or a lost upstream channel...), is reported, not unknown
+        mux.mdd = mac.mdd_msg(mux.sa, 1, 1, plan, ucids, status_events=sorted(mac.CM_STATUS_EVENTS), **mdd_kw)
         for cid, f in chans[1:]:
             m2 = SecondaryMux(qam=a.qam, cmts_mac=a.mac, invert=not a.no_invert)
             m2.mdd = mac.mdd_msg(mux.sa, 1, cid, plan, ucids, **mdd_kw)
@@ -876,11 +878,30 @@ def run_usrp(a):
     wd.last = time.perf_counter()
     wd.armed_at = wd.last + t_start + 0.5
     sync = (-1e9, 0.0)                          # (perf_counter, B210 time) pair, refreshed every second
+    t_skip_log = [0.0]
     m_min = float("inf")
     threading.Thread(target=wd.run, args=(stop,), name="watchdog", daemon=True).start()
     try:
         while True:
             x = q.get()
+            # A block already due (or due within 1 ms) is dropped here, not sent: sent, it would
+            # reach the B210 late, be discarded there AND come back as one "late" message per USB
+            # packet. On 2026-10-10 (3 DS + 2 US, CPU at its limit) 3 underflows after a speedtest
+            # put the stream 0.3 s behind; ~14,000 such messages/s, handled in Python, took the
+            # GIL from the encoder and shaper, which fell further behind: -13 s, never caught up.
+            # Dropping locally costs nothing; the stream skips to its schedule (a gap on the air,
+            # like an underflow, the DOCSIS time base unchanged).
+            if sync[0] > 0 and not a.tx_untimed:
+                ahead = t_start + n_sent / fs_tx - (sync[1] + time.perf_counter() - sync[0])
+                if ahead < 1e-3:
+                    n_sent += x.size
+                    counters["skip"] = counters.get("skip", 0) + 1
+                    counters["skip_ms"] = counters.get("skip_ms", 0.0) + x.size / fs_tx * 1e3
+                    if time.time() - t_skip_log[0] > 1.0:
+                        t_skip_log[0] = time.time()
+                        log(f"[TX] !! émission en retard de {-ahead * 1e3:.0f} ms : blocs jetés avant envoi pour "
+                            f"rattraper l'horaire ({counters['skip_ms']:.0f} ms jetés au total)")
+                    continue
             if n_sent == 0 or not a.tx_untimed:
                 md.has_time_spec = True
                 md.time_spec = uhd.types.TimeSpec.from_ticks(tick0 + n_sent * ticks_per_sample, mcr)

@@ -10,6 +10,7 @@ encoder thread (it is the MAP scheduler hook of DownstreamMux).
 """
 import collections
 import os
+import struct
 import threading
 import time
 
@@ -144,7 +145,9 @@ class CmtsCore:
         their links on the others."""
         if ch == 1:
             return list(self.modems.values())
-        return [m.links[ch] for m in self.modems.values() if ch in m.links and m.links[ch].state != "lost"]
+        # a lost channel keeps its polls (one per sm_period): the modem must answer them to come back
+        # there (MULPIv3.0 8.4); it gets no data grants meanwhile
+        return [m.links[ch] for m in self.modems.values() if ch in m.links and m.links[ch].state != "off"]
 
     def schedule(self, start_ms, free_ms, ch=1):
         start_ts = start_ms * self.mux.ms_counts
@@ -255,6 +258,8 @@ class CmtsCore:
                 self.on_data(eth, ok, ev.sid)
         elif kind == "MGMT" and mtype in (mac.REG_REQ, mac.REG_ACK, mac.REG_REQ_MP) and info.get("crc_ok"):
             self._registration(info, b)
+        elif kind == "MGMT" and mtype == mac.CM_STATUS and info.get("crc_ok"):
+            self._cm_status(info)
         else:
             self.log(f"[US] trame {where} reçue: {info}")
 
@@ -420,7 +425,8 @@ class CmtsCore:
             fq = max(-32768, min(32767, round(b.freq if b.inverted else -b.freq)))
             ok = abs(ev.err_counts) <= self.tol[0] and abs(dp) <= self.tol[1] and abs(b.freq) <= self.tol[2]
             status = mac.RNG_SUCCESS if ok else mac.RNG_CONTINUE
-            newly = ok and k.state == "ranging"
+            newly = ok and k.state in ("ranging", "lost")
+            back = newly and k.state == "lost"
             if newly:
                 k.state = "ranged"
             k.last = dict(err_us=ev.err_counts / TS_RATE * 1e6, power=b.power_db, freq=b.freq, mer=b.mer)
@@ -443,7 +449,8 @@ class CmtsCore:
             self.n_rsp += 1
         self.mux.ucast.append((frame, sent))
         if newly:
-            self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {k.sid:#06x}: RANGING TERMINÉ (success)")
+            self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {k.sid:#06x}: "
+                     + ("de retour (success), à nouveau utilisé" if back else "RANGING TERMINÉ (success)"))
 
     def _registration(self, info, b):
         sid, body = info["sid"], info["body"]
@@ -469,8 +476,8 @@ class CmtsCore:
                 if self.bonding and getattr(m, "dsid", None):
                     kept = [c for c, _ in self.bonding if c not in lost]
                     m.channels_ok = kept                 # the bridge only uses these
-                    if len(kept) < 2:
-                        m.dsid = None                    # only the primary left: no bonding
+                    # the DSID is kept even with the primary alone: the modem goes on trying the
+                    # others (MULPIv3.0 8.4) and reports them with CM-STATUS, then they are used
                 resp = 0
             if resp == 0:
                 if m.state != "online":
@@ -573,6 +580,57 @@ class CmtsCore:
                  f"{registration.RESPONSE.get(response, response)} -> {fmt_mac(m.mac)}: "
                  + ", ".join(f"flux {d} réf {r} SFID {f}" + (f" SID {s:#06x}" if s else "") for d, r, f, s in flows))
 
+    def _cm_status(self, info):
+        """CM-STATUS (MULPIv3.0 6.4.34): acknowledged; a downstream channel lost / recovered is taken
+        out of / put back into the channels the bridge uses for this modem's bonded traffic."""
+        body = info.get("body", b"")
+        if len(body) < 3:
+            return
+        tid, event = struct.unpack(">HB", body[:3])
+        with self.lock:
+            m = self.modems.get(info["sa"])
+        self.mux.ucast.append((mac.cm_status_ack_msg(self.mux.sa, info["sa"], tid, event), None))
+        if m is None:
+            return
+        ds, us, text = [], [], ""
+        try:
+            for t, v in cmcfg.parse(body[3:]):
+                if t != 1:
+                    continue
+                for st, sv in cmcfg.parse(v):
+                    if st == 4 and sv:
+                        ds.append(sv[0])
+                    elif st == 5 and sv:
+                        us.append(sv[0])
+                    elif st == 2:
+                        text = sv.decode("latin-1", "replace")
+        except ValueError:
+            pass
+        seen = getattr(m, "status_seen", {})
+        m.status_seen = seen
+        repeat = seen.get(event) == tid
+        seen[event] = tid
+        self.events.append((time.time(), "CM-STATUS", dict(event=event, tid=tid, ds=ds, us=us)))
+        if repeat:
+            return
+        what = mac.CM_STATUS_EVENTS.get(event, f"événement {event}")
+        chans = (f" canaux descendants {ds}" if ds else "") + (f" canaux montants {us}" if us else "")
+        self.log(f"[CM-STATUS] {fmt_mac(m.mac)} #{tid} : {what}{chans}" + (f" ({text})" if text else ""))
+        if not ds or not self.bonding or m.mac not in self.bonded:
+            return
+        all_ds = [c for c, _ in self.bonding]
+        with self.lock:
+            cur = list(self.bonded_channels.get(m.mac, all_ds))
+            if event in (2, 1):                   # lost: no more bonded traffic there
+                cur = [c for c in cur if c not in ds or c == all_ds[0]]
+            elif event in (5, 4):                 # (re)acquired: used again
+                cur = sorted(set(cur) | {c for c in ds if c in all_ds})
+            else:
+                return
+            self.bonded_channels[m.mac] = cur
+        self.log(f"[CM-STATUS] {fmt_mac(m.mac)} : trafic agrégé maintenant sur {len(cur)} canaux "
+                 f"({', '.join(map(str, cur))})")
+
     def _miss(self, sid):
         with self.lock:
             m = self.by_sid.get(sid)
@@ -583,15 +641,22 @@ class CmtsCore:
                 k = m.links[ucid]
                 k.misses += 1
                 k.poll_deadline = None
-                k.next_sm = self.mux.now_ts + self.sm_retry
+                k.next_sm = self.mux.now_ts + (self.sm_period if k.state == "lost" else self.sm_retry)
                 # a channel being added: the modem may take seconds before ranging there (with 3
                 # channels to add, 16 polls = 0.5 s was too short: REG-ACK "T4 timeout" for each,
                 # 2026-10-10); polls go on for ~20 s. A ranged channel: as on the first one.
                 limit = MAX_MISSES if k.state == "ranged" else int(20 / max(self.sm_retry / TS_RATE, 1e-3))
                 if k.misses >= limit and k.state != "lost":
+                    # set aside, not given up: on 2026-10-10 a 128 ms downstream gap made the modem
+                    # miss 16 polls (0.5 s) on channel 2, which was then never polled again: the
+                    # speedtest that followed ran on one upstream channel
                     k.state = "lost"
-                    self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {sid:#06x}: {MAX_MISSES} Station "
-                             f"Maintenance sans réponse, canal abandonné")
+                    for s_ in (k.sid,):
+                        self.pending.pop(s_, None)
+                        self.active.pop(s_, None)
+                    self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {sid:#06x}: {k.misses} Station "
+                             f"Maintenance sans réponse, canal mis de côté (polls toutes les "
+                             f"{self.sm_period / TS_RATE:.0f} s jusqu'à son retour)")
                 return
             m.misses += 1
             m.poll_deadline = None
@@ -632,7 +697,7 @@ class CmtsCore:
                 if m.mtc:                               # back to one channel, no segments
                     self.mtc_sids.discard(m.sid)
                     for k in m.links.values():
-                        k.state = "lost"
+                        k.state = "off"                 # until the next registration
                         self.mtc_sids.discard(k.sid)
                         self.pending.pop(k.sid, None)
                         self.active.pop(k.sid, None)

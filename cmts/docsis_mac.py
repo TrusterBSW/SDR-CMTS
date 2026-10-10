@@ -14,6 +14,12 @@ REG_REQ, REG_RSP, REG_ACK = 6, 7, 14
 INIT_RNG_REQ, B_INIT_RNG_REQ = 30, 34
 REG_REQ_MP, REG_RSP_MP = 44, 45
 MDD = 33
+CM_STATUS, CM_STATUS_ACK = 41, 48
+# CM-STATUS event types (MULPIv3.0 table 10-4) this CMTS enables: downstream (MDD TLV 1.5 bits)
+# 1 secondary channel MDD timeout, 2 QAM/FEC lock failure, 4 MDD recovery, 5 QAM/FEC lock recovery;
+# upstream (TLV 7.2 bits) 6 T4 timeout, 7 T3 retries exceeded, 8 ranging success after T3 retries
+CM_STATUS_EVENTS = {1: "MDD perdu (canal secondaire)", 2: "perte de verrouillage QAM/FEC", 4: "MDD retrouvé",
+                    5: "verrouillage QAM/FEC retrouvé", 6: "T4 expiré", 7: "T3 épuisé", 8: "ranging rétabli après T3"}
 
 # Interval Usage Codes
 IUC_REQUEST, IUC_REQ_DATA, IUC_INIT_MAINT, IUC_STATION_MAINT = 1, 2, 3, 4
@@ -480,12 +486,15 @@ def reg_rsp_msg(sa, da, sid, response, tlvs):
 
 # ---------------------------------------------------------------- DOCSIS 3.0: MAC Domain Descriptor
 def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=False, verbose_rcp=True,
-            ambiguity=None, power_report=False):
+            ambiguity=None, power_report=False, status_events=None):
     """MDD (MULPIv3.0 6.4.28), MAC management version 4, one fragment.
     ds_channels: [(channel id, frequency Hz, qam 64|256, primary capable)].
     ambiguity: upstream channel ids a modem may range on first (TLV 8); power_report: TLV 12,
     upstream transmit power reporting on (required before giving a CM several upstream channels:
     MULPIv3.0 6.4.28.1.12).
+    status_events: CM-STATUS event types to enable (TLV 11, one Event Control Encoding each, and
+    the upstream bits of TLV 7.2): without TLV 11 the CM never sends a CM-STATUS (MULPIv3.0
+    10.4.3.1), whatever the bitmasks say. Only in the MDD of a primary-capable channel.
     TLV 1 is laid out as in the MDD of the SFR network (Cadant CMTS, capture of 2026-10-06)."""
     body = struct.pack(">BBBB", ccc & 0xFF, 1, 1, current_dcid)
     for cid, freq, qam, primary in ds_channels:
@@ -498,14 +507,23 @@ def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=F
     body += tlv(5, tlv(1, bytes([ip_mode])))                             # IP provisioning: 0 = IPv4 only
     body += tlv(6, bytes([1 if eae else 0]))                             # early authentication: off
     for uid in us_channel_ids:
-        body += tlv(7, tlv(1, bytes([uid])) + tlv(2, struct.pack(">H", 0)))
+        us_mask = sum(1 << e for e in (status_events or ()) if e in (6, 7, 8))
+        body += tlv(7, tlv(1, bytes([uid])) + tlv(2, struct.pack(">H", us_mask)))
     if ambiguity:
         body += tlv(8, bytes(ambiguity))                                 # upstream ambiguity resolution list
     body += tlv(9, bytes([0]))                                           # upstream frequency range: standard
     body += tlv(10, bytes([1]))                                          # symbol clocks locked to the master clock
+    for e in sorted(status_events or ()):                                # CM-STATUS event control:
+        body += tlv(11, tlv(1, bytes([e])) + tlv(2, struct.pack(">H", 10)) + tlv(3, bytes([3])))
+        #                                     holdoff up to 10 x 20 ms, at most 3 reports per event
     if power_report:
         body += tlv(12, bytes([1]))                                      # upstream transmit power reporting
     return mgmt_frame(MDD, body, sa, version=4)
+
+
+def cm_status_ack_msg(sa, da, transaction, event):
+    """CM-STATUS-ACK (MULPIv3.0 6.4.39): the CM stops repeating that CM-STATUS."""
+    return mgmt_frame(CM_STATUS_ACK, struct.pack(">HB", transaction, event), sa, da=da, version=4)
 
 
 def reg_rsp_mp_msg(sa, da, sid, response, tlvs):
