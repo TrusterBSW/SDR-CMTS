@@ -33,6 +33,8 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Upstream bonding | 4 channels ATDMA 64-QAM 2.56 Msym/s (60 / 56.4 / 52.8 / 49.2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | online, ping 30/30, 2640 segments from the 4 channels reassembled, none lost |
 | Together | 3 downstream + 2 upstream channels | online every time; all 3 downstream channels acquired in 6 of 19 starts (TX gain 44-52 makes no clear difference), otherwise partial service on 2 |
 | Together | 3 downstream + 4 upstream channels | online once with every channel, at the CPU limit of the 4-core laptop (upstream ~150 ms behind) |
+| Together, radio process | `--radio-process --ds-channels 3` (3 DS + 1 US), 6-core PC (i5-9500) | **130.8 Mbit/s downstream / 20.2 Mbit/s upstream** (iperf3 through the modem); channels missed at registration are added back by CM-STATUS |
+| Together, radio process | `--radio-process --ds-channels 3 --us-channels 2`, same PC | 130.8 / 15.8 Mbit/s: upstream bonding brings no throughput yet (upstream processes at 70-90 %, ~93 ms latency) |
 
 ## ⚠ Safety and legal
 
@@ -81,6 +83,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--us-target` | -14 dBFS | burst level the modems are ranged to |
 | `--grant-ahead-hold/-every/-scale` | on, 3, 4 | unsolicited grants keeping the upload going |
 | `--us-process` | on | upstream demodulation in its own process |
+| `--radio-process` | off | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
 | `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 200000000"` (already the defaults) |
