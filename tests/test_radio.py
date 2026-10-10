@@ -82,22 +82,22 @@ if __name__ == "__main__":
     sr.close()
 
     # ---------------------------------------------------------------- TxChain == single process
-    for nch in (1, 2, 3):
-        sps = 2 if nch == 1 else 4
+    for nch, qam, nthr in ((1, 256, 2), (2, 256, 2), (3, 256, 2), (3, 64, 2), (5, 256, 5)):
+        sps = 2 if nch == 1 else (4 if nch <= 3 else 8)
         fs_tx = sps * SYMRATE
         freqs = [306e6 + 8e6 * k for k in range(nch)]
         center = sum(freqs) / nch
-        mux = DownstreamMux(qam=256, sps=sps)
-        secs = [SecondaryMux(qam=256) for _ in range(nch - 1)]
+        mux = DownstreamMux(qam=qam, sps=sps)
+        secs = [SecondaryMux(qam=qam) for _ in range(nch - 1)]
         blocks = [[mux.packets(64)] + [m.packets(64) for m in secs] for _ in range(6)]
         steps = [2 * np.pi * (f - center) / fs_tx for f in freqs]
-        p = dict(qams=[256] * nch, steps=steps, sps=sps, invert=True, scale=0.3, synth_threads=2)
+        p = dict(qams=[qam] * nch, steps=steps, sps=sps, invert=True, scale=0.3, synth_threads=nthr)
         stop = threading.Event()
         chain = TxChain(p, stop)
         got = np.concatenate([chain(np.stack(b)) for b in blocks])
         stop.set()
         # the single-process loop of mini_cmts.py (encoder + shaper threads), on the same packets
-        encs = [J83AEncoder(256) for _ in range(nch)]
+        encs = [J83AEncoder(qam) for _ in range(nch)]
         ref = []
         shaper = PulseShaper(sps)
         synths = [cdsp.ChannelSynth(PulseShaper(sps).phases, steps[k], True) for k in range(nch)]
@@ -117,7 +117,7 @@ if __name__ == "__main__":
             ref.append(x)
         ref = np.concatenate(ref)
         err = np.max(np.abs(got - ref)) / np.max(np.abs(ref))
-        check(f"TxChain {nch} canal(aux) = chaîne d'un seul processus", got.size == ref.size and err < 1e-5,
+        check(f"TxChain {nch} canal(aux) {qam}-QAM sps {sps} = chaîne d'un seul processus", got.size == ref.size and err < 1e-5,
               f"{got.size} échantillons, écart max relatif {err:.1e}")
     print("PASS" if ok_all else "FAIL")
     sys.exit(0 if ok_all else 1)

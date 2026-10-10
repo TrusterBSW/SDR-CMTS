@@ -1,6 +1,7 @@
 """C downstream kernels (cmts/dsdsp.c) against the numpy references: J.83A encoder bit-exact over
 several consecutive calls (interleaver and rotation state), 64/256-QAM, random and null packets;
-mix_add (frequency placement for bonding) against numpy; speed."""
+mix_add (frequency placement for bonding) against numpy; ChannelSynth (shaping + conjugation +
+shift + sum in one pass, AVX2 for sps <= 8) against numpy over consecutive calls; speed."""
 import os, sys, time
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -55,7 +56,34 @@ ref = x * np.exp(1j * step * np.arange(x.size))
 err = 10 * np.log10(np.mean(np.abs(acc - ref) ** 2) / np.mean(np.abs(ref) ** 2))
 check("mix_add (décalage de fréquence, phase continue entre appels)", err < -100, f"erreur {err:.0f} dB")
 
-# speed: CPU per second of signal
+# ChannelSynth: polyphase RRC + optional conjugation + shift, summed into acc, against numpy
+from cmts.j83a import PulseShaper  # noqa: E402
+for sps in (2, 3, 4, 5, 6, 8, 10):
+    for conj in (False, True):
+        ph_taps = PulseShaper(sps).phases
+        ntaps = ph_taps.shape[1]
+        stp = 2 * np.pi * rng.uniform(-0.45, 0.45) / 1.0
+        syn = cdsp.ChannelSynth(ph_taps, stp, conj)
+        sizes = (1000, 333, 7, 1, 2048, 129)
+        sym = (rng.standard_normal(sum(sizes)) + 1j * rng.standard_normal(sum(sizes))).astype(np.complex64)
+        base = (rng.standard_normal(sym.size * sps) + 1j * rng.standard_normal(sym.size * sps)).astype(np.complex64)
+        acc_c = base.copy()
+        o = 0
+        for sz in sizes:
+            syn.add(sym[o:o + sz], acc_c[o * sps:(o + sz) * sps])
+            o += sz
+        x = np.concatenate([np.zeros(ntaps - 1, np.complex64), sym]).astype(np.complex128)
+        y = np.empty((sym.size, sps), complex)
+        for p_ in range(sps):
+            y[:, p_] = np.convolve(x, ph_taps[p_].astype(np.float64), "valid")
+        y = y.ravel()
+        if conj:
+            y = np.conj(y)
+        ref = base + y * np.exp(1j * stp * np.arange(y.size))
+        err = 20 * np.log10(np.abs(acc_c - ref).max() / np.sqrt(np.mean(np.abs(y) ** 2)))
+        check(f"ChannelSynth sps {sps}{' conjugué' if conj else ''} (6 appels enchaînés)", err < -90,
+              f"erreur max {err:.0f} dB")
+
 for qam in (64, 256):
     mux = DownstreamMux(qam=qam)
     bits = 6 if qam == 64 else 8
@@ -76,5 +104,15 @@ for _ in range(20):
     cdsp.mix_add(xx, step, ph, acc)
 tm = (time.perf_counter() - t) / 20 / (n / 27.808e6)
 print(f"    mélange d'un canal à 27,8 MS/s : {tm:.3f} cœur en C (numpy, phaseurs précalculés : ~0,12)")
+for sps in (5, 8):
+    syn = cdsp.ChannelSynth(PulseShaper(sps).phases, 2 * np.pi * 8e6 / (sps * SYMRATE), True)
+    sym = (rng.standard_normal(32768) + 1j * rng.standard_normal(32768)).astype(np.complex64)
+    acc = np.zeros(sym.size * sps, np.complex64)
+    syn.add(sym, acc)
+    t = time.perf_counter()
+    for _ in range(10):
+        syn.add(sym, acc)
+    ts = (time.perf_counter() - t) / 10 / (sym.size / SYMRATE)
+    print(f"    synthèse d'un canal à {sps} éch./symbole ({sps * SYMRATE / 1e6:.2f} MS/s) : {ts:.3f} cœur")
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

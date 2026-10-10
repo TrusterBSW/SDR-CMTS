@@ -96,9 +96,11 @@ def build(a, log=print):
         # are beyond the Proxmox host's CPU (the radio process fell behind for good, 2026-10-10).
         a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
         if a.ds_channels >= 4:
-            # one synthesis thread per channel (4 channels at 34.76 MS/s: 2 threads ran at ~80 %
-            # of real time, the TX fell behind for good)
-            a.synth_threads = max(a.synth_threads, a.ds_channels)
+            # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
+            # channels, AVX2: ~0.17 core per channel at 55.6 MS/s). One per channel (6 at 55.6 MS/s)
+            # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
+            # behind, ping 86-388 ms (2026-10-10)
+            a.synth_threads = max(a.synth_threads, (a.ds_channels + 1) // 2)
         if a.ds_channels >= 5:
             log("!! 5-6 canaux descendants : 55,616 MS/s, au-delà du processeur de l'hôte Proxmox (i5-9500) "
                 "à l'essai du 2026-10-10")

@@ -12,6 +12,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
 
 #define TS_LEN 188
 #define RS_LEN 204
@@ -129,6 +132,101 @@ void mix_add(const float *x, int n, double step, double *phase, float *acc)
  * conjugation (inverted spectrum), shift by `step` rad/sample (phase carried in *phase) and sum
  * into acc (n * sps complex samples). Same result as PulseShaper.process + conj + mix_add, without
  * the intermediate array (the 4-channel TX needed ~0.35 core per channel in two passes). */
+#ifdef __AVX2__
+/* AVX2 path for sps <= 8: the sps phases of one symbol read the same input samples, so one
+ * 8-wide register holds them all (taps transposed to ht[k][p], zero beyond sps): 2 FMAs per tap
+ * per symbol instead of 2*sps. Four symbols go at once (8 independent accumulators: the FMA
+ * latency is hidden). The filtered samples land in planar buffers (re, im), then the shift and
+ * the sum into acc (interleaved complex) run 8 samples at a time. 0.51 -> ~0.06 core per channel
+ * at 8 samples per symbol on the i5-9500 (2026-10-10). */
+static void shape_mix_add_avx2(const float *x, int n, const float *h, int sps, int ntaps, int conj,
+                               double step, double *phase, float *acc)
+{
+    enum { CHS = 128 };
+    float br[CHS * 8 + 8] __attribute__((aligned(32)));
+    float bi[CHS * 8 + 8] __attribute__((aligned(32)));
+    float tr[1024 + 8] __attribute__((aligned(32))), ti[1024 + 8] __attribute__((aligned(32)));
+    float *ht = aligned_alloc(32, sizeof(float) * 8 * ntaps);
+    if (!ht) return;
+    for (int k = 0; k < ntaps; k++)
+        for (int p = 0; p < 8; p++)
+            ht[8 * k + p] = p < sps ? h[p * ntaps + k] : 0.f;
+    for (int k = 0; k < 1024; k++) { tr[k] = (float)cos(k * step); ti[k] = (float)sin(k * step); }
+    const __m256 cs = _mm256_set1_ps(conj ? -1.f : 1.f);
+    double ph = *phase;
+    for (int i0 = 0; i0 < n; i0 += CHS) {
+        int ni = n - i0 < CHS ? n - i0 : CHS;
+        /* x index of output symbol i, tap k: i0 + i + ntaps - 1 - k */
+        const float *xb = x + 2 * (i0 + ntaps - 1);
+        int i = 0;
+        for (; i + 4 <= ni; i += 4) {
+            __m256 r0 = _mm256_setzero_ps(), r1 = r0, r2 = r0, r3 = r0;
+            __m256 m0 = r0, m1 = r0, m2 = r0, m3 = r0;
+            const float *xs = xb + 2 * i;
+            for (int k = 0; k < ntaps; k++) {
+                __m256 hv = _mm256_load_ps(ht + 8 * k);
+                const float *xk = xs - 2 * k;
+                r0 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk), r0);
+                m0 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 1), m0);
+                r1 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 2), r1);
+                m1 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 3), m1);
+                r2 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 4), r2);
+                m2 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 5), m2);
+                r3 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 6), r3);
+                m3 = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xk + 7), m3);
+            }
+            /* 8 lanes stored, sps valid: each next store overwrites the spare lanes */
+            _mm256_storeu_ps(br + i * sps, r0);           _mm256_storeu_ps(bi + i * sps, _mm256_mul_ps(m0, cs));
+            _mm256_storeu_ps(br + (i + 1) * sps, r1);     _mm256_storeu_ps(bi + (i + 1) * sps, _mm256_mul_ps(m1, cs));
+            _mm256_storeu_ps(br + (i + 2) * sps, r2);     _mm256_storeu_ps(bi + (i + 2) * sps, _mm256_mul_ps(m2, cs));
+            _mm256_storeu_ps(br + (i + 3) * sps, r3);     _mm256_storeu_ps(bi + (i + 3) * sps, _mm256_mul_ps(m3, cs));
+        }
+        for (; i < ni; i++) {
+            __m256 r = _mm256_setzero_ps(), m = r;
+            const float *xs = xb + 2 * i;
+            for (int k = 0; k < ntaps; k++) {
+                __m256 hv = _mm256_load_ps(ht + 8 * k);
+                r = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xs - 2 * k), r);
+                m = _mm256_fmadd_ps(hv, _mm256_broadcast_ss(xs - 2 * k + 1), m);
+            }
+            _mm256_storeu_ps(br + i * sps, r);
+            _mm256_storeu_ps(bi + i * sps, _mm256_mul_ps(m, cs));
+        }
+        int m0 = i0 * sps, nm = ni * sps;
+        for (int j0 = 0; j0 < nm; ) {                      /* table phasor, exact every 1024 */
+            int mm = m0 + j0, kb = mm & 1023;
+            int len = 1024 - kb < nm - j0 ? 1024 - kb : nm - j0;
+            double a = ph + (mm - kb) * step;
+            float zr = (float)cos(a), zi = (float)sin(a);
+            __m256 vzr = _mm256_set1_ps(zr), vzi = _mm256_set1_ps(zi);
+            float *as = acc + 2 * mm;
+            int k = 0;
+            for (; k + 8 <= len; k += 8) {
+                __m256 t_r = _mm256_loadu_ps(tr + kb + k), t_i = _mm256_loadu_ps(ti + kb + k);
+                __m256 pr = _mm256_fmsub_ps(vzr, t_r, _mm256_mul_ps(vzi, t_i));
+                __m256 pi = _mm256_fmadd_ps(vzr, t_i, _mm256_mul_ps(vzi, t_r));
+                __m256 xr = _mm256_loadu_ps(br + j0 + k), xi = _mm256_loadu_ps(bi + j0 + k);
+                __m256 yr = _mm256_fmsub_ps(xr, pr, _mm256_mul_ps(xi, pi));
+                __m256 yi = _mm256_fmadd_ps(xr, pi, _mm256_mul_ps(xi, pr));
+                __m256 lo = _mm256_unpacklo_ps(yr, yi), hi = _mm256_unpackhi_ps(yr, yi);
+                __m256 c0 = _mm256_permute2f128_ps(lo, hi, 0x20), c1 = _mm256_permute2f128_ps(lo, hi, 0x31);
+                _mm256_storeu_ps(as + 2 * k, _mm256_add_ps(_mm256_loadu_ps(as + 2 * k), c0));
+                _mm256_storeu_ps(as + 2 * k + 8, _mm256_add_ps(_mm256_loadu_ps(as + 2 * k + 8), c1));
+            }
+            for (; k < len; k++) {
+                float pr = zr * tr[kb + k] - zi * ti[kb + k], pi = zr * ti[kb + k] + zi * tr[kb + k];
+                float xr = br[j0 + k], xi = bi[j0 + k];
+                as[2 * k] += xr * pr - xi * pi;
+                as[2 * k + 1] += xr * pi + xi * pr;
+            }
+            j0 += len;
+        }
+    }
+    free(ht);
+    *phase = fmod(ph + (double)n * sps * step, 2 * M_PI);
+}
+#endif
+
 __attribute__((optimize("fast-math"))) void shape_mix_add(const float *x, int n, const float *h, int sps, int ntaps, int conj,
                    double step, double *phase, float *acc)
 {
@@ -138,6 +236,12 @@ __attribute__((optimize("fast-math"))) void shape_mix_add(const float *x, int n,
     float buf[2 * CHS * 16];
     float tr[1024], ti[1024];
     if (sps > 16) return;
+#ifdef __AVX2__
+    if (sps <= 8) {
+        shape_mix_add_avx2(x, n, h, sps, ntaps, conj, step, phase, acc);
+        return;
+    }
+#endif
     for (int k = 0; k < 1024; k++) { tr[k] = (float)cos(k * step); ti[k] = (float)sin(k * step); }
     double ph = *phase;
     float csign = conj ? -1.f : 1.f;

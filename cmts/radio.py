@@ -180,8 +180,9 @@ class TxChain:
     """TS packets of every channel (block) -> baseband samples: J.83 encoders (state kept), then
     one channel: RRC shaping, conjugation, scale and clip, as mux.shape in the single-process loop;
     several: cdsp.ChannelSynth per channel (shaping + shift + sum in C), split into groups computed
-    by helper threads from 3 channels on. p: the radio parameters (qams, steps, sps, invert, scale,
-    synth_threads)."""
+    by helper threads from 3 channels on, each thread encoding its own channels too (with the AVX2
+    synthesis, encoding all 5 channels in the calling thread left it the bottleneck at 55.6 MS/s).
+    p: the radio parameters (qams, steps, sps, invert, scale, synth_threads)."""
 
     def __init__(self, p, stop):
         from cmts import cdsp
@@ -194,6 +195,7 @@ class TxChain:
         taps = PulseShaper(p["sps"]).phases
         self.synths = [cdsp.ChannelSynth(taps, p["steps"][k], p["invert"]) for k in range(nch)]
         self.scale = p["scale"] / np.sqrt(nch)
+        self.bits = {64: 6, 256: 8}[p["qams"][0]]           # symbols per block = 204 * 8 / bits per packet
         ngroups = 1 if nch <= 2 else min(nch, p["synth_threads"])
         self.groups = [list(range(nch))[g::ngroups] for g in range(ngroups)]
         self.helpers = []
@@ -205,30 +207,29 @@ class TxChain:
     def _help_loop(self, h):
         while not self.stop.is_set():
             try:
-                syms, acc = h["todo"].get(timeout=0.2)
+                blk, acc = h["todo"].get(timeout=0.2)
             except queue.Empty:
                 continue
             for k in h["ch"]:
-                self.synths[k].add(syms[k], acc)
+                self.synths[k].add(self.encs[k].encode(blk[k]), acc)
             h["done"].put(acc)
 
     def __call__(self, blk):
         p = self.p
-        syms = [self.encs[k].encode(blk[k]) for k in range(self.nch)]
         if self.nch == 1:
-            x = self.shaper1.process(syms[0])
+            x = self.shaper1.process(self.encs[0].encode(blk[0]))
             if p["invert"]:
                 x = np.conj(x)
             x = x * p["scale"]
             np.clip(x.real, -1, 1, out=x.real)
             np.clip(x.imag, -1, 1, out=x.imag)
             return x
-        n = syms[0].size * p["sps"]
+        n = len(blk[0]) * 204 * 8 // self.bits * p["sps"]
         for h in self.helpers:
-            h["todo"].put((syms, np.zeros(n, np.complex64)))
+            h["todo"].put((blk, np.zeros(n, np.complex64)))
         x = np.zeros(n, np.complex64)
         for k in self.groups[0]:
-            self.synths[k].add(syms[k], x)
+            self.synths[k].add(self.encs[k].encode(blk[k]), x)
         for h in self.helpers:
             self._cdsp.add_into(x, h["done"].get())
         return self._cdsp.scale_clip(x, self.scale)
