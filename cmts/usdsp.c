@@ -367,7 +367,43 @@ float eq_track(const float *in, int n, const float *w, int ntaps, const float *p
     const float *x = in;
     if (w && ntaps > 0) {                             /* y[k] = sum_j in[k + j - h] w[j] */
         int h = ntaps / 2;
-        for (int k = 0; k < n; k++) {
+        int k = 0;
+#ifdef __AVX2__
+        /* middle, 4 outputs at a time: x * (wr, wr) + swap(x) * (-wi, wi) per tap, 2 FMAs
+         * (0.2 of the 0.67 ms of a 16,640-symbol burst in scalar, 2026-10-11) */
+        for (; k < h && k < n; k++) {
+            float ar = 0.f, ai = 0.f;
+            for (int j = 0; j < ntaps; j++) {
+                int i = k + j - h;
+                if (i < 0 || i >= n) continue;
+                float xr = in[2 * i], xi = in[2 * i + 1], wr = w[2 * j], wi = w[2 * j + 1];
+                ar += xr * wr - xi * wi;
+                ai += xr * wi + xi * wr;
+            }
+            tmp[2 * k] = ar;
+            tmp[2 * k + 1] = ai;
+        }
+        for (; k + 4 + ntaps - h <= n; k += 4) {
+            __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+            const float *xp = in + 2 * (k - h);
+            for (int j = 0; j < ntaps; j++) {
+                __m256 xv = _mm256_loadu_ps(xp + 2 * j);
+                __m256 sw = _mm256_permute_ps(xv, 0xB1);          /* (xi, xr) pairs */
+                __m256 a = _mm256_set1_ps(w[2 * j]);
+                __m256 b = _mm256_setr_ps(-w[2 * j + 1], w[2 * j + 1], -w[2 * j + 1], w[2 * j + 1],
+                                          -w[2 * j + 1], w[2 * j + 1], -w[2 * j + 1], w[2 * j + 1]);
+                if (j & 1) {
+                    acc1 = _mm256_fmadd_ps(xv, a, acc1);
+                    acc1 = _mm256_fmadd_ps(sw, b, acc1);
+                } else {
+                    acc0 = _mm256_fmadd_ps(xv, a, acc0);
+                    acc0 = _mm256_fmadd_ps(sw, b, acc0);
+                }
+            }
+            _mm256_storeu_ps(tmp + 2 * k, _mm256_add_ps(acc0, acc1));
+        }
+#endif
+        for (; k < n; k++) {
             float ar = 0.f, ai = 0.f;
             if (k >= h && k + ntaps - h <= n) {             /* middle: no bounds to check */
                 const float *xp = in + 2 * (k - h);
@@ -397,17 +433,29 @@ float eq_track(const float *in, int n, const float *w, int ntaps, const float *p
 
 int symbols_to_bytes(const int *idx, int n, int bps, const uint8_t *prbs, int nprbs, uint8_t *out)
 {
-    int nbits = n * bps, nbytes = nbits / 8, pos = 0;
-    uint8_t acc = 0;
-    int nb = 0, o = 0;
+    /* whole labels into a bit accumulator, bytes out as they fill; then the scrambler bits
+     * (one byte per bit, as us_phy._prbs gives them) XORed 8 at a time. Bit by bit with a
+     * branch per bit it cost 0.3 ms per 16,640-symbol 64-QAM burst (2026-10-11). */
+    int nbytes = n * bps / 8, o = 0, nb = 0;
+    uint64_t acc = 0;
+    unsigned mask = (1u << bps) - 1;
     for (int k = 0; k < n && o < nbytes; k++) {
-        for (int b = bps - 1; b >= 0 && o < nbytes; b--) {
-            uint8_t bit = (uint8_t)((idx[k] >> b) & 1);
-            if (prbs && pos < nprbs) bit ^= prbs[pos];
-            pos++;
-            acc = (uint8_t)((acc << 1) | bit);
-            if (++nb == 8) { out[o++] = acc; acc = 0; nb = 0; }
+        acc = (acc << bps) | ((unsigned)idx[k] & mask);
+        nb += bps;
+        while (nb >= 8 && o < nbytes) {
+            nb -= 8;
+            out[o++] = (uint8_t)(acc >> nb);
         }
+    }
+    if (prbs) {
+        int full = nprbs / 8 < nbytes ? nprbs / 8 : nbytes;
+        for (int b = 0; b < full; b++) {
+            const uint8_t *q = prbs + 8 * b;
+            out[b] ^= (uint8_t)((q[0] << 7) | (q[1] << 6) | (q[2] << 5) | (q[3] << 4)
+                                | (q[4] << 3) | (q[5] << 2) | (q[6] << 1) | q[7]);
+        }
+        for (int pos = 8 * full; pos < nprbs && pos < 8 * nbytes; pos++)
+            out[pos >> 3] ^= (uint8_t)(prbs[pos] << (7 - (pos & 7)));
     }
     return nbytes;
 }

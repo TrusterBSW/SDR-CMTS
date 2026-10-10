@@ -106,6 +106,20 @@ for name, P in (("16-QAM", us_phy.QAM16_POINTS), ("64-QAM", us_phy.QAM64_POINTS)
         type("P", (), {"bps": int(np.log2(P.size))})())[1]), 0x152)
     check(f"{name} : étiquettes -> octets désembrouillés en C = numpy",
           np.array_equal(cdsp.symbols_to_bytes(i_ref, int(np.log2(P.size)), pr), np.packbits(bits[:bits.size // 8 * 8])))
+# symbols_to_bytes: every label width, an odd count, a scrambler sequence shorter than the bits
+# (not a multiple of 8): the bits beyond it are not XORed
+for bps in (2, 4, 6, 8):
+    lab = rng2.integers(0, 1 << bps, 1001).astype(np.int32)
+    bits = ((lab[:, None] >> np.arange(bps - 1, -1, -1)) & 1).astype(np.uint8).ravel()
+    for npr in (0, 37, 4003, 20000):
+        pr = rng2.integers(0, 2, npr).astype(np.uint8) if npr else None
+        b2 = bits.copy()
+        if npr:
+            m = min(npr, b2.size)
+            b2[:m] ^= pr[:m]
+        ref = np.packbits(b2[:b2.size // 8 * 8])
+        check(f"étiquettes -> octets, {bps} bits/symbole, embrouilleur de {npr} bits",
+              np.array_equal(cdsp.symbols_to_bytes(lab, bps, pr), ref))
 msgs = [rng2.integers(0, 256, k).astype(np.uint8).tobytes() for k in (224, 224, 60)]
 cwb = np.frombuffer(b"".join(cdsp.rs_encode(m, 16) for m in msgs), np.uint8).copy()
 cwb[[3, 250, 300]] ^= 0x5A
