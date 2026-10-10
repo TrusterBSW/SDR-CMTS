@@ -9,6 +9,9 @@
  * upstream channels can be decoded in parallel threads.
  */
 #include <math.h>
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +43,7 @@ static void rmul_init(void);
 #define INTERP_HALF 8                 /* 16 taps */
 #define INTERP_PHASES 1024
 static float INTERP[INTERP_PHASES + 1][2 * INTERP_HALF];
+static float INTERP2[INTERP_PHASES + 1][4 * INTERP_HALF];   /* each tap twice (re, im): 32 floats */
 static uint8_t RMUL[64][256];        /* RMUL[i][y] = y * alpha^i: syndromes by table lookup */
 
 __attribute__((constructor)) static void usdsp_init(void)
@@ -64,7 +68,10 @@ __attribute__((constructor)) static void usdsp_init(void)
             INTERP[p][k] = (float)(s * win);
             sum += s * win;
         }
-        for (int k = 0; k < 2 * INTERP_HALF; k++) INTERP[p][k] /= (float)sum;
+        for (int k = 0; k < 2 * INTERP_HALF; k++) {
+            INTERP[p][k] /= (float)sum;
+            INTERP2[p][2 * k] = INTERP2[p][2 * k + 1] = INTERP[p][k];
+        }
     }
     rmul_init();                      /* after the GF tables it uses */
 }
@@ -179,9 +186,25 @@ void interp_symbols(const float *y, int ny, double t0, double step, int n, float
         double fl = floor(t);
         int i = (int)fl;
         int ph = (int)((t - fl) * INTERP_PHASES + 0.5);
+        int first = i - (INTERP_HALF - 1);
+#ifdef __AVX2__
+        if (first >= 0 && first + 2 * INTERP_HALF <= ny) {
+            /* the 16 complex samples and the doubled taps: four 8-wide FMAs, two chains (2026-10-10) */
+            const float *b = y + 2 * first, *h2 = INTERP2[ph];
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(h2), _mm256_loadu_ps(b));
+            __m256 a1 = _mm256_mul_ps(_mm256_loadu_ps(h2 + 8), _mm256_loadu_ps(b + 8));
+            a0 = _mm256_fmadd_ps(_mm256_loadu_ps(h2 + 16), _mm256_loadu_ps(b + 16), a0);
+            a1 = _mm256_fmadd_ps(_mm256_loadu_ps(h2 + 24), _mm256_loadu_ps(b + 24), a1);
+            __m256 t8 = _mm256_add_ps(a0, a1);
+            __m128 t4 = _mm_add_ps(_mm256_castps256_ps128(t8), _mm256_extractf128_ps(t8, 1));
+            t4 = _mm_add_ps(t4, _mm_movehl_ps(t4, t4));
+            out[2 * k] = _mm_cvtss_f32(t4);
+            out[2 * k + 1] = _mm_cvtss_f32(_mm_shuffle_ps(t4, t4, 1));
+            continue;
+        }
+#endif
         const float *h = INTERP[ph];
         float re = 0.f, im = 0.f;
-        int first = i - (INTERP_HALF - 1);
         for (int q = 0; q < 2 * INTERP_HALF; q++) {
             int s = first + q;
             if (s < 0 || s >= ny) continue;
@@ -240,17 +263,24 @@ float dd_track_grid(const float *in, int n, const float *pts, int L, float off, 
     float ph = 0.f, fr = 0.f;
     double err = 0.0;
     float c = 1.f, s = 0.f;
+    /* no division in the per-symbol chain (2026-10-10): 1 / step, and 1 / |d|^2 per point */
+    float istep = 1.f / step;
+    float inv2[L * L];
+    for (int q = 0; q < L * L; q++) {
+        int p = lut[q];
+        inv2[p] = 1.f / (pts[2 * p] * pts[2 * p] + pts[2 * p + 1] * pts[2 * p + 1] + 1e-12f);
+    }
     for (int k = 0; k < n; k++) {
         if ((k & 255) == 0) { c = cosf(ph); s = sinf(ph); }
         float xr = in[2 * k], xi = in[2 * k + 1];
         float zr = xr * c + xi * s, zi = xi * c - xr * s;
-        int i = (int)lrintf((zr - off) / step), j = (int)lrintf((zi - off) / step);
+        int i = (int)lrintf((zr - off) * istep), j = (int)lrintf((zi - off) * istep);
         i = i < 0 ? 0 : (i >= L ? L - 1 : i);
         j = j < 0 ? 0 : (j >= L ? L - 1 : j);
         int best = lut[i * L + j];
         float pr = pts[2 * best], pi = pts[2 * best + 1];
         float dr = zr - pr, di = zi - pi;
-        float e = (zi * pr - zr * pi) / (pr * pr + pi * pi + 1e-12f);
+        float e = (zi * pr - zr * pi) * inv2[best];
         if (e > 0.5f) e = 0.5f;
         if (e < -0.5f) e = -0.5f;
         fr += kb * e;
@@ -438,24 +468,89 @@ int rs_find_last(const uint8_t *buf, int nbuf, int lmax, int lmin, int nsym, int
 /* ------------------------------------------------------------------ matched filter
  * Full convolution of a complex signal by real taps (numpy.convolve(x, h, "full")):
  * out has nx + nh - 1 samples. */
+/* Preamble correlation (us_phy._metric) at the contiguous positions p0 .. p0 + npos - 1 of y:
+ * c1 = sum_{k<h} y[p + offs[k]] conj(pre[k]), c2 the same over k >= h (h = npre / 2),
+ * e = sum |y[p + offs[k]]|^2, m = |c1| + |c2|, rho = m^2 / (npre e). The preamble symbols are the
+ * outer loop and the positions the inner one: every pass is a contiguous complex axpy that
+ * vectorizes (numpy gathered a positions x preamble array first: 15 % of an upstream process
+ * under load on the i5-9500, 2026-10-10, mostly the empty REQ windows). work: 5 * npos floats.
+ * The caller keeps p0 + npos - 1 + offs[npre - 1] inside y. */
+void pre_metric(const float *y, int p0, int npos, const int *offs, const float *pre, int npre,
+                float *work, float *m, float *rho, float *c1, float *c2)
+{
+    float *a1r = work, *a1i = work + npos, *a2r = work + 2 * npos, *a2i = work + 3 * npos, *e = work + 4 * npos;
+    memset(work, 0, sizeof(float) * 5 * npos);
+    int h = npre / 2;
+    for (int k = 0; k < npre; k++) {
+        float pr = pre[2 * k], pi = -pre[2 * k + 1];      /* conj(pre[k]) */
+        const float *yk = y + 2 * (p0 + offs[k]);
+        float *ar = k < h ? a1r : a2r, *ai = k < h ? a1i : a2i;
+        for (int i = 0; i < npos; i++) {
+            float xr = yk[2 * i], xi = yk[2 * i + 1];
+            ar[i] += xr * pr - xi * pi;
+            ai[i] += xr * pi + xi * pr;
+            e[i] += xr * xr + xi * xi;
+        }
+    }
+    for (int i = 0; i < npos; i++) {
+        float m1 = sqrtf(a1r[i] * a1r[i] + a1i[i] * a1i[i]), m2 = sqrtf(a2r[i] * a2r[i] + a2i[i] * a2i[i]);
+        float mm = m1 + m2;
+        m[i] = mm;
+        rho[i] = mm * mm / (npre * (e[i] + 1e-30f));
+        c1[2 * i] = a1r[i]; c1[2 * i + 1] = a1i[i];
+        c2[2 * i] = a2r[i]; c2[2 * i + 1] = a2i[i];
+    }
+}
+
+static __thread float *fir_work = 0;
+static __thread long fir_work_n = 0;
+
 void fir_cr(const float *x, int nx, const float *h, int nh, float *out)
 {
-    /* written as one multiply-accumulate pass per tap (no reduction): the compiler vectorizes
-     * the inner loop without -ffast-math, so the result stays exactly reproducible */
+    /* out[n] = sum_k h[k] x[n - k], n = 0 .. nx + nh - 2 ("full", numpy.convolve). The input is
+     * copied between nh - 1 zeros, the taps reversed and doubled (h h for re im): each output is
+     * a contiguous dot product, run with four independent AVX2 accumulators. (The former pass per
+     * tap read and wrote the whole output nh times: 9.5 % of an upstream process under load on the
+     * i5-9500, 2026-10-10.) Sums in another order than numpy: equal to ~1e-7. */
     int ny = nx + nh - 1;
-    memset(out, 0, sizeof(float) * 2 * ny);
-    /* by blocks of output samples that stay in cache, taps in the same order: identical sums */
-    const int CH = 2048;
-    for (int c0 = 0; c0 < ny; c0 += CH) {
-        int c1 = c0 + CH < ny ? c0 + CH : ny;
-        for (int k = 0; k < nh; k++) {
-            int i0 = c0 - k < 0 ? 0 : c0 - k, i1 = c1 - k < nx ? c1 - k : nx;
-            if (i1 <= i0) continue;
-            float hk = h[k];
-            float *o = out + 2 * (i0 + k);
-            const float *xi = x + 2 * i0;
-            for (int i = 0; i < 2 * (i1 - i0); i++) o[i] += hk * xi[i];
+    int nf = (2 * nh + 31) & ~31;
+    long need = 2L * (nx + 2 * (nh - 1)) + nf;
+    if (need > fir_work_n) {
+        free(fir_work);
+        fir_work = (float *)malloc(sizeof(float) * need);
+        fir_work_n = fir_work ? need : 0;
+        if (!fir_work) return;
+    }
+    float *xp = fir_work;
+    memset(xp, 0, sizeof(float) * 2 * (nh - 1));
+    memcpy(xp + 2 * (nh - 1), x, sizeof(float) * 2 * nx);
+    memset(xp + 2 * (nh - 1 + nx), 0, sizeof(float) * (2 * (nh - 1) + nf));
+    float hr[nf];
+    for (int j = 0; j < nf; j++) hr[j] = j < 2 * nh ? h[nh - 1 - j / 2] : 0.f;
+    for (int n = 0; n < ny; n++) {
+        const float *b = xp + 2 * n;
+#ifdef __AVX2__
+        __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+        for (int j = 0; j < nf; j += 32) {
+            a0 = _mm256_fmadd_ps(_mm256_loadu_ps(hr + j), _mm256_loadu_ps(b + j), a0);
+            a1 = _mm256_fmadd_ps(_mm256_loadu_ps(hr + j + 8), _mm256_loadu_ps(b + j + 8), a1);
+            a2 = _mm256_fmadd_ps(_mm256_loadu_ps(hr + j + 16), _mm256_loadu_ps(b + j + 16), a2);
+            a3 = _mm256_fmadd_ps(_mm256_loadu_ps(hr + j + 24), _mm256_loadu_ps(b + j + 24), a3);
         }
+        __m256 t8 = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+        __m128 t4 = _mm_add_ps(_mm256_castps256_ps128(t8), _mm256_extractf128_ps(t8, 1));
+        t4 = _mm_add_ps(t4, _mm_movehl_ps(t4, t4));
+        out[2 * n] = _mm_cvtss_f32(t4);
+        out[2 * n + 1] = _mm_cvtss_f32(_mm_shuffle_ps(t4, t4, 1));
+#else
+        float ar = 0.f, ai = 0.f;
+        for (int j = 0; j < 2 * nh; j += 2) {
+            ar += hr[j] * b[j];
+            ai += hr[j] * b[j + 1];
+        }
+        out[2 * n] = ar;
+        out[2 * n + 1] = ai;
+#endif
     }
 }
 
@@ -506,11 +601,11 @@ int ddc_decim(const float *x, int n, double step, double *phase, const float *h,
 {
     int nh = ntaps - 1, nout = 0;
     double ph = *phase;
-    /* taps doubled (h0 h0 h1 h1 ...) and padded to a multiple of 8 floats: each output is then a
+    /* taps doubled (h0 h0 h1 h1 ...) and padded to a multiple of 32 floats: each output is then a
      * plain dot product over the interleaved samples, even lanes real, odd lanes imaginary,
      * which AVX2 runs 8 wide (the stride-2 loop took 0.28 core per channel on the i5-9500 with
      * no AVX-512, 2026-10-10) */
-    int nf = (2 * ntaps + 7) & ~7;
+    int nf = (2 * ntaps + 31) & ~31;
     float hh[nf];
     for (int j = 0; j < nf; j++) hh[j] = j < 2 * ntaps ? h[j / 2] : 0.f;
     /* work buffer: history then the new block, shifted, then the padding the last dot reads */
@@ -522,12 +617,29 @@ int ddc_decim(const float *x, int n, double step, double *phase, const float *h,
     int k = *skip;
     for (; k < n; k += decim) {
         const float *b = buf + 2 * k;                   /* taps over buf[k .. k + nh] */
+        /* four independent 8-wide accumulators (AVX2): one accumulator made a single chain of 16
+         * dependent FMAs, ~64 cycles per output on the i5-9500 */
+#ifdef __AVX2__
+        __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+        for (int j = 0; j < nf; j += 32) {
+            a0 = _mm256_fmadd_ps(_mm256_loadu_ps(hh + j), _mm256_loadu_ps(b + j), a0);
+            a1 = _mm256_fmadd_ps(_mm256_loadu_ps(hh + j + 8), _mm256_loadu_ps(b + j + 8), a1);
+            a2 = _mm256_fmadd_ps(_mm256_loadu_ps(hh + j + 16), _mm256_loadu_ps(b + j + 16), a2);
+            a3 = _mm256_fmadd_ps(_mm256_loadu_ps(hh + j + 24), _mm256_loadu_ps(b + j + 24), a3);
+        }
+        __m256 t8 = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+        __m128 t4 = _mm_add_ps(_mm256_castps256_ps128(t8), _mm256_extractf128_ps(t8, 1));  /* r i r i */
+        t4 = _mm_add_ps(t4, _mm_movehl_ps(t4, t4));                                      /* r i . . */
+        float ar = _mm_cvtss_f32(t4), ai = _mm_cvtss_f32(_mm_shuffle_ps(t4, t4, 1));
+#else
         float acc[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
         for (int j = 0; j < nf; j += 8)
             for (int l = 0; l < 8; l++)
                 acc[l] += hh[j + l] * b[j + l];
-        out[2 * nout] = (acc[0] + acc[2]) + (acc[4] + acc[6]);
-        out[2 * nout + 1] = (acc[1] + acc[3]) + (acc[5] + acc[7]);
+        float ar = (acc[0] + acc[2]) + (acc[4] + acc[6]), ai = (acc[1] + acc[3]) + (acc[5] + acc[7]);
+#endif
+        out[2 * nout] = ar;
+        out[2 * nout + 1] = ai;
         nout++;
     }
     *skip = k - n;

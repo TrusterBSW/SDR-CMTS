@@ -183,6 +183,7 @@ def scramble(bits, seed):
 
 EQ_TAPS = 11            # symbol-spaced equalizer length
 EQ_TRAIN = 2000         # symbols used to fit it (500: MER 0.5-1.5 dB lower; fits are rare with the cache)
+DRIFT_MAX = 20e-6       # |symbol clock offset| accepted from estimate_drift (the Sagem 3686: ~4 ppm)
 EQ_REFIT = 200          # bursts decoded with a cached equalizer before it is fitted again
 
 
@@ -382,6 +383,8 @@ class BurstDemod:
     def _metric(self, y, pos, pre, offs):
         """Preamble correlation at integer positions `pos` of y, symbol offsets `offs`.
         Returns (|c1|+|c2|, normalized rho, c1, c2) with c1/c2 the two preamble halves."""
+        if cdsp.AVAILABLE and pos.size and pos[-1] - pos[0] == pos.size - 1:   # contiguous: C
+            return cdsp.pre_metric(y, int(pos[0]), pos.size, offs, pre)
         idx = pos[:, None] + offs[None, :]
         r = y[idx]
         z = r * np.conj(pre)[None, :]
@@ -413,13 +416,25 @@ class BurstDemod:
             return res
         retry = self.eq.pop(eq_key, None) is not None             # fresh equalizer fit
         last = self._last
+        old = self.drift.get(eq_key)
         if last is not None and cdsp.AVAILABLE:                    # long QAM burst: clock offset?
             slope = estimate_drift(**last)
             if slope is not None and abs(slope) > 0.5e-6:
-                self.drift[eq_key] = self.drift.get(eq_key, 0.0) + slope
-                retry = True
+                new = (old or 0.0) + slope
+                if abs(new) < DRIFT_MAX:
+                    self.drift[eq_key] = new
+                    retry = True
         if retry:
             res = self._detect_any(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
+        # the new clock offset is kept only if it decoded the burst: estimated on a burst that is
+        # really broken (a segment lost, a collision), the slope is arbitrary, and added up burst
+        # after burst it spoiled every later burst of that modem, ranging included (2026-10-10,
+        # Proxmox, 3 DS + 2 US under upload: MER of US1 22 -> 12 dB, 18 % of its bursts lost)
+        if self.drift.get(eq_key) != old and (res is None or res.frame is None):
+            if old is None:
+                self.drift.pop(eq_key, None)
+            else:
+                self.drift[eq_key] = old
         return res
 
     def _detect_any(self, x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key):

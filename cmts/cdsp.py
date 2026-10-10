@@ -64,6 +64,8 @@ def _load():
     dll.ddc_decim.restype = ctypes.c_int
     dll.fir_cr.argtypes = [F, ctypes.c_int, F, ctypes.c_int, F]
     dll.fir_cr.restype = None
+    dll.pre_metric.argtypes = [F, ctypes.c_int, ctypes.c_int, I32, F, ctypes.c_int, F, F, F, F, F]
+    dll.pre_metric.restype = None
     return dll
 
 
@@ -168,6 +170,20 @@ def fir(x, taps):
     out = np.empty(x.size + h.size - 1, dtype=np.complex64)
     _DLL.fir_cr(_f(x.view(np.float32)), x.size, _f(h), h.size, _f(out.view(np.float32)))
     return out
+
+
+def pre_metric(y, p0, npos, offs, pre):
+    """us_phy.BurstDemod._metric at the positions p0 .. p0 + npos - 1 (contiguous): (m, rho, c1, c2)."""
+    y = np.ascontiguousarray(y, dtype=np.complex64)
+    offs = np.ascontiguousarray(offs, dtype=np.int32)
+    pre = np.ascontiguousarray(pre, dtype=np.complex64)
+    work = np.empty(5 * npos, np.float32)
+    m, rho = np.empty(npos, np.float32), np.empty(npos, np.float32)
+    c1, c2 = np.empty(npos, np.complex64), np.empty(npos, np.complex64)
+    _DLL.pre_metric(_f(y.view(np.float32)), int(p0), int(npos), offs.ctypes.data_as(_I32P),
+                    _f(pre.view(np.float32)), pre.size, _f(work), _f(m), _f(rho),
+                    _f(c1.view(np.float32)), _f(c2.view(np.float32)))
+    return m, rho, c1, c2
 
 
 _GRIDS = {}

@@ -279,6 +279,20 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                              log=lambda s: q_out.put(("log", s)), buf=buf, **p["rx_kwargs"])
     ctl[_ALIVE] = 1
     t_stats = time.monotonic() + 0.5
+    # garbage collector pauses, per generation, in the timing statistics (MINI_CMTS_TIMING)
+    import gc
+    gc_t0 = [0.0]
+
+    def gc_cb(phase, info):
+        if phase == "start":
+            gc_t0[0] = time.perf_counter()
+        else:
+            c = rx.timing.setdefault(f"gc{info['generation']}", [0, 0.0])
+            c[0] += 1
+            c[1] += time.perf_counter() - gc_t0[0]
+            m = rx.timing.setdefault(f"gc{info['generation']}_max", [1, 0.0])
+            m[1] = max(m[1], time.perf_counter() - gc_t0[0])
+    gc.callbacks.append(gc_cb)
     # diagnostic: MINI_CMTS_PROFILE_US=<file> profiles this process (pstats <file>.<pid>, every 20 s)
     prof_path = os.environ.get("MINI_CMTS_PROFILE_US")
     prof = None
