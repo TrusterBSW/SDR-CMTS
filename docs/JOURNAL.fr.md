@@ -635,3 +635,23 @@ parfois le 3 ; 1 essai sur 4 avec les trois.
 
 **4 canaux descendants et plus :** toujours bloqué. Le modem ne se cale qu'avec une horloge maître de 27,808 MHz, qui ne
 contient que 3 canaux de 8 MHz. Voie possible : un second B210 sur la même référence 10 MHz / PPS.
+
+**Suite de la nuit (03:00-03:35) :**
+- **Gain TX et 3 canaux descendants.** Les 3 canaux sont tous acquis 1 fois sur 4 à `--gain 52` (le gain automatique
+  pour 3 canaux), 2 sur 4 à 47, 3 sur 4 à 44. C'est cohérent avec une intermodulation dans l'étage TX : le battement
+  306 + 322 − 314 tombe pile sur le canal 2. Le HackRF, trop peu dynamique ici (canaux à ~10 dB de son plancher), ne
+  permet pas de le voir. La règle de gain automatique n'est pas changée ; `--gain 44` est recommandé à 3 canaux.
+- **REG-ACK perdu.** Il était coupé entre un segment du canal 1 et un segment du canal 2 livré plus de 100 ms plus tard
+  par son processus. Le délai d'abandon d'un trou passe de 0,1 à 1 s.
+- **4 canaux montants** (`--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20`, 2,56 Msym/s, 60 / 56,4 /
+  52,8 / 49,2 MHz, LO à 54,6 MHz) :
+  - le REG-RSP-MP fait 1 412 octets (3 UCD dans les TCC) ; la fragmentation du REG-RSP-MP est ajoutée pour les cas plus
+    longs ;
+  - 1er essai : REG-ACK avec l'erreur TCC 55 (T4 timeout) sur les canaux 2 à 4, parce que le CMTS arrêtait les
+    invitations au ranging après 16 essais (0,5 s) ; elles durent maintenant ~20 s ;
+  - ensuite : en ligne, les 4 canaux rangés, ping 30/30 (91 ms), 2 640 segments sans perte ;
+  - `--us-target -20` fait passer le modem de 52,5 à 46,5 dBmV : sous la Phi de 51 dBmV à 3-4 canaux, et de la marge
+    pour l'ADC quand les 4 rafales se superposent ; MER 27,9 dB.
+- **3 DS + 4 US.** Avec 2 cœurs pour le montant, l'émission n'a plus qu'un cœur : 3 millions de paquets TX en retard.
+  Avec `MINI_CMTS_US_CORES=1` (les 4 processus montants sur un cœur) : en ligne avec les 3 DS et les 4 US une fois ;
+  montant à ~150 ms de retard, ping 40/40 à 258 ms. C'est la limite de ce portable.

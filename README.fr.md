@@ -30,7 +30,9 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 |---|---|---|
 | Descendant | 3 canaux agrégés (306 + 314 + 322 MHz) | 142,8 Mbit/s mesurés une fois ; le modem laisse souvent un canal de côté (service partiel), voir plus bas |
 | Agrégation montante | 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem en ligne en mode multi-canal (MTC), ranging sur les deux canaux, trames reconstituées à partir de segments envoyés sur les deux ; débit pas encore mesuré |
-| Ensemble | 3 canaux descendants + 2 montants | modem en ligne (avec 2 ou 3 canaux descendants acquis) |
+| Agrégation montante | 4 canaux ATDMA 64-QAM 2,56 Msym/s (60 / 56,4 / 52,8 / 49,2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | en ligne, ping 30/30, 2 640 segments des 4 canaux réassemblés, aucun perdu |
+| Ensemble | 3 canaux descendants + 2 montants (`--gain 44`) | en ligne ; les 3 canaux descendants acquis 3 fois sur 4 avec `--gain 44` (1 sur 4 avec le gain automatique de 52) |
+| Ensemble | 3 canaux descendants + 4 montants | en ligne une fois avec tous les canaux, à la limite du processeur du portable 4 cœurs (montant en retard de ~150 ms) |
 
 ## ⚠ Sécurité et cadre légal
 

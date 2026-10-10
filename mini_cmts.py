@@ -432,6 +432,8 @@ def split_cpus(child_pids):
         return f"processus montant : CPU partagés ({','.join(map(str, allowed))}, trop peu de cœurs pour en réserver un)"
     # 3+ upstream channels (one process each): the last two physical cores
     take = cores[-2:] if len(child_pids) > 2 and len(cores) >= 3 else cores[-1:]
+    if os.environ.get("MINI_CMTS_US_CORES"):      # diagnostic: physical cores for the upstream processes
+        take = cores[-int(os.environ["MINI_CMTS_US_CORES"]):]
     mine = {c for c in allowed if core(c) in take}
     rest = set(allowed) - mine
     try:
