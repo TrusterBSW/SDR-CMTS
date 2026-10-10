@@ -613,8 +613,18 @@ class BurstDemod:
             # under a speedtest, MER 44 dB): codewords are decoded one by one, and the first one
             # that fails at full length is tried shortened (it is then the last).
             n2 = 2 * t
-            msgs, fixed, pos = [], 0, 0
+            msgs, fixed, pos, start = [], 0, 0, 0
+            if cdsp.AVAILABLE and layout:
+                # every full codeword in one C call (one call per codeword cost ~2.5 ms of a
+                # full 24 KB segment, 2026-10-10); the loop below takes over where it stops
+                msg, fx, bad = cdsp.rs_decode_many(raw, layout, n2)
+                start = len(layout) if bad < 0 else bad
+                if start:
+                    nb = sum(layout[:start])
+                    msgs, fixed, pos = [msg[:nb].tobytes()], fx, nb + start * n2
             for i, n_info in enumerate(layout):
+                if i < start:
+                    continue
                 got = None
                 if pos + n_info + n2 <= len(raw):
                     try:
@@ -633,7 +643,7 @@ class BurstDemod:
                         except ValueError:
                             pass
                 if got is None:
-                    if not msgs:
+                    if not msgs or not any(msgs):
                         raise _DecodeError("uncorrectable (bloc 0)", False)
                     # the burst's end, or an error in its middle? After its end the symbols are
                     # mere noise (power ~0, the burst's symbols ~1); in its middle they are not.
