@@ -312,6 +312,17 @@ class UpstreamRx:
                 gsym = (s1 - s0) / self.demod.sps if data else None
                 bu = self._detect_data(x, prof_iuc, t_lo, t_hi, gsym, sid if unicast else None, seg and data, data,
                                        burst_end, s1 - a)
+                g0 = s0 - a                                 # grant start in x
+                if (unicast and data and bu is not None and bu.frame is None
+                        and abs(bu.t - g0) > 0.25 * self.ms_samples and t_lo < g0 + 8 < t_hi + 8 * self.ms_samples):
+                    # a ranged modem starts on its grant: a "burst" found well off it that does
+                    # not decode is the tail of the previous burst (back-to-back grants of one
+                    # modem, MTC). It was taken and the real burst never searched: ~15 segments
+                    # lost in one speedtest, all "50 us early, MER 13.4" (2026-10-10)
+                    b2 = self._detect_data(x, prof_iuc, g0 - 8, g0 + 8, gsym, sid, seg and data, data, burst_end, s1 - a)
+                    if b2 is not None and b2.frame is not None:
+                        bu = b2
+                        self.stats["regrant_search"] += 1
                 if bu is not None and bu.swapped:
                     self.stats["iuc_swap"] += 1
                 if bu is None:
