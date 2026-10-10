@@ -317,9 +317,11 @@ def status_line(mux, core, rx, extra=""):
     return (f"[{time.strftime('%H:%M:%S')}] {extra}US: bruit {'?' if fl is None else f'{fl:.1f}'} dBFS, "
             f"retard max {lag:.0f} ms" + (f" (file {st['windows_queued']}, abandonnées {st['late']})"
                                           if 'windows_queued' in st else "")
-            + f", rafales {st['bursts']} (décodées {st['decoded']}, énergie brute {st['raw']}), "
+            + f", rafales {st['bursts']} (décodées {st['decoded']}, énergie brute {st['raw']}"
+            + (f", profil inversé {st['iuc_swap']}" if st.get('iuc_swap') else "") + "), "
             + "".join(f" | US{k + 2} : bruit {'?' if r.noise_dbfs() is None else f'{r.noise_dbfs():.1f}'} dBFS, "
-                      f"retard max {_take_lag(r):.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']})"
+                      f"retard max {_take_lag(r):.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']}"
+                      + (f", profil inversé {r.stats['iuc_swap']}" if r.stats.get('iuc_swap') else "") + ")"
                       for k, r in enumerate(getattr(rx, "all_channels", [rx])[1:]))
             + f", RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
             f"({core.n['empty']} vides), concat {core.n['concat']} | {mods}")
