@@ -405,7 +405,14 @@ def raise_priority(prio):
         return "!! priorité normale : temps réel et nice refusés par le système\n" + RT_HELP
 
 
-def split_cpus(child_pids):
+def _all_tasks(pid):
+    try:
+        return [int(t) for t in os.listdir(f"/proc/{pid}/task")]
+    except OSError:
+        return [pid]
+
+
+def split_cpus(child_pids, shared_pids=()):
     """Give the upstream process (cmts/usproc.py) a physical core of its own, the last one
     allowed, and keep every thread of this process (TX feed, encoder, UHD) on the others: they
     no longer compete for the same cores (2026-10-09: TX gaps of 0.3-2 s under load)."""
@@ -434,9 +441,10 @@ def split_cpus(child_pids):
     try:
         for pid in child_pids:
             os.sched_setaffinity(pid, mine)
-        for tid in os.listdir("/proc/self/task"):
+        # this process and the radio process (cmts/radio.py, every thread) share the others
+        for tid in _all_tasks(os.getpid()) + [t for pid in shared_pids for t in _all_tasks(pid)]:
             try:
-                os.sched_setaffinity(int(tid), rest)
+                os.sched_setaffinity(tid, rest)
             except OSError:
                 pass
     except OSError as e:
@@ -702,6 +710,87 @@ def cpu_latency(want):
     return "états de veille profonds bloqués (/dev/cpu_dma_latency 0) pendant l'exécution"
 
 
+def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center):
+    """--radio-process: the B210, J.83 encoding, shaping and the timed send in a process of
+    their own (cmts/radio.py); this process keeps the MAC layer, the bridge and builds the TS
+    packets of every channel. Same time base and start sequence as the single-process loop."""
+    from cmts.radio import RadioProcess
+    if not isinstance(rx, RemoteUpstream):
+        sys.exit("--radio-process : avec --us-process uniquement (la réception écrit dans l'anneau partagé)")
+    if a.tx_dc_cal:
+        log("!! --tx-dc-cal ignoré avec --radio-process")
+    span = (max(f for _, f in chans) - min(f for _, f in chans)) + 8e6
+    if a.us_channels > 1:
+        rx_target, lo_off = a.us_center, 0.0
+        rx_bw = min(56e6, abs(a.us_spacing) * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6)
+    else:
+        rx_target, lo_off = a.us_freq, rx_lo_offset(a)
+        rx_bw = min(56e6, 2 * (abs(lo_off) + 2e6))
+    t_start = 0.5
+    blk_ms = a.block * 204 * 8 / (SYMRATE * mux.m) * 1e3
+    params = dict(args=args, mcr=mcr, fs_tx=fs_tx, tx_center=tx_center, tx_bw=min(56e6, max(20e6, 1.5 * span)),
+                  gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
+                  rx_gain=a.us_gain, steps=[2 * np.pi * (f - tx_center) / fs_tx for _, f in chans],
+                  qams=[a.qam] * len(chans), sps=a.sps, invert=mux.invert, scale=a.scale,
+                  synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
+                  tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
+                  pk_shape=(len(chans), a.block, 2))
+    # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
+    radio = RadioProcess(params, rx.ring, len(chans), a.block, 2, log)
+    radio.start()
+    stop = threading.Event()
+
+    def encoder():
+        while not stop.is_set():
+            pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
+            if not radio.pk.put(pks, stop):
+                return
+    threading.Thread(target=encoder, name="encoder", daemon=True).start()
+    radio.started.wait()
+    if radio.failed:
+        stop.set()
+        radio.stop()
+        log(f"!! {radio.failed}")
+        return 1
+    wall0[0] = radio.wall0
+    tb.origin += round(t_start * mcr)             # TX sample 0 goes out at tick t_start * mcr
+    br = start_bridge(a, mux, core, stop)
+    rxs = getattr(rx, "all_channels", None) or [rx]
+    for r in rxs:
+        r.start()                                 # the time base is final from here on
+    log("réception montante dans un processus séparé (cmts/usproc.py)"
+        + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "") + f" ; radio : pid {radio.pid}")
+    if a.cpus == "auto":
+        log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid]))
+    try:
+        while True:
+            time.sleep(5)
+            if not radio.alive():
+                log("!! processus radio arrêté")
+                break
+            st = mux.stats
+            split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
+            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}file DS {len(mux.data)}, attente max "
+                    f"{st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
+            st["data_max_ms"] = 0.0
+            log("\n" + status_line(mux, core, rx, radio.status() + pont))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        radio.stop()
+        for r in rxs:
+            r.stop()
+        if not rx._own_ring:
+            rx.ring.close()
+        log("\narrêt; " + status_line(mux, core, rx))
+        if pcap:
+            pcap.close()
+            log(f"pcap: {pcap.count} trames dans {a.pcap} (wireshark, filtre docsis)"
+                + (f", {pcap.dropped} perdues (file pleine)" if pcap.dropped else ""))
+    return 0
+
+
 def run_usrp(a):
     if a.tap and not ensure_tap(a.tap, log):
         log(f"!! interface {a.tap} indisponible : relance avec --tap none pour tourner sans pont")
@@ -738,6 +827,8 @@ def run_usrp(a):
     # num_send_frames: samples already handed to USB are the only reserve against a delay of the
     # main (send) thread; the --tx-queue blocks before it only cover the encoder and shaper
     args = f"{a.args},master_clock_rate={mcr},num_recv_frames=256,num_send_frames={a.tx_frames}"
+    if a.radio_process:
+        return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
     usrp = uhd.usrp.MultiUSRP(args)
     usrp.set_tx_rate(fs_tx)
     usrp.set_tx_freq(uhd.types.TuneRequest(tx_center))
@@ -1125,6 +1216,9 @@ def parser():
                         "carried, 2026-10-10); 4-6 need a master clock the Sagem never locked on")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
+    g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=False,
+                   help="B210, J.83 encoding, shaping and timed send in a process of their own "
+                        "(cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge")
     g.add_argument("--ds-spacing", type=float, default=8e6, help="spacing of the bonded downstream channels (Hz)")
     g.add_argument("--docsis30", action="store_true",
                    help="send a MAC Domain Descriptor (MDD): the modem initialises in DOCSIS 3.0 mode "

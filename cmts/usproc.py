@@ -37,35 +37,52 @@ DDC_TAPS = 63
 
 class SampleRing:
     """RX samples in shared memory: written by the RX thread (push), read by the upstream
-    process(es). Control words: written samples, device tick of sample 0."""
+    process(es). Control words: written samples, device tick of sample 0. The RX thread may be
+    in another process (cmts/radio.py): attach=(shm name, control name, size) opens the ring
+    created here; rx_tick0 and written are read from the control words, wherever push() runs."""
 
-    def __init__(self, fs, decim, history_s=1.0):
+    def __init__(self, fs, decim, history_s=1.0, attach=None):
         self.fs, self.decim = fs, decim
-        n = int(history_s * fs)
-        self.shm = shared_memory.SharedMemory(create=True, size=n * 8)
-        self.ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 2)
+        if attach is None:
+            n = int(history_s * fs)
+            self.shm = shared_memory.SharedMemory(create=True, size=n * 8)
+            self.ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 2)
+        else:
+            name, ctl_name, n = attach
+            self.shm = shared_memory.SharedMemory(name=name, track=False)
+            self.ctl_shm = shared_memory.SharedMemory(name=ctl_name, track=False)
         self.buf = np.ndarray(n, np.complex64, self.shm.buf)
         self.ctl = np.ndarray(2, np.int64, self.ctl_shm.buf)
-        self.ctl[:] = (0, -1)
-        self.rx_tick0 = None
-        self.written = 0
+        if attach is None:
+            self.ctl[:] = (0, -1)
+        self._tick0 = None                     # writer side (push)
+        self._written = 0
+
+    @property
+    def rx_tick0(self):
+        t = int(self.ctl[_TICK0])
+        return None if t < 0 else t
+
+    @property
+    def written(self):
+        return int(self.ctl[_WRITTEN])
 
     def push(self, tick, x):
         """Same as UpstreamRx.push, into the shared ring; `written` is published after the data."""
-        if self.rx_tick0 is None:
-            self.rx_tick0 = tick
-            self.written = 0
+        if self._tick0 is None:
+            self._tick0 = tick
+            self._written = 0
             self.ctl[_TICK0] = int(tick)
-        n0 = int(round((tick - self.rx_tick0) / self.decim))
-        if n0 > self.written:
-            self._write(np.zeros(min(n0 - self.written, self.buf.size), np.complex64), self.written)
-            self.written = n0
-        elif n0 < self.written:
-            x = x[self.written - n0:]
-            n0 = self.written
+        n0 = int(round((tick - self._tick0) / self.decim))
+        if n0 > self._written:
+            self._write(np.zeros(min(n0 - self._written, self.buf.size), np.complex64), self._written)
+            self._written = n0
+        elif n0 < self._written:
+            x = x[self._written - n0:]
+            n0 = self._written
         self._write(x, n0)
-        self.written = n0 + x.size
-        self.ctl[_WRITTEN] = self.written
+        self._written = n0 + x.size
+        self.ctl[_WRITTEN] = self._written
 
     def _write(self, x, n0):
         L = self.buf.size
@@ -74,6 +91,15 @@ class SampleRing:
         self.buf[i:i + k] = x[:k]
         if k < x.size:
             self.buf[:x.size - k] = x[k:]
+
+    def detach(self):
+        """Radio process side: close without unlinking (the creator unlinks)."""
+        del self.buf, self.ctl
+        for shm in (self.shm, self.ctl_shm):
+            try:
+                shm.close()
+            except BufferError:
+                pass
 
     def close(self):
         for shm in (self.shm, self.ctl_shm):
