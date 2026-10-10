@@ -506,7 +506,8 @@ class CmtsCore:
             self.log(f"[REG] !! {name} de {fmt_mac(m.mac)} illisible: {e}")
             return
         if m.reg and m.reg[0] == body:                  # retransmission: same answer
-            self.mux.ucast.append((m.reg[1], None))
+            for f in (m.reg[1] if isinstance(m.reg[1], list) else [m.reg[1]]):
+                self.mux.ucast.append((f, None))
             self.log(f"[REG] {fmt_mac(m.mac)} {name} répété -> même réponse")
             return
         self.log(f"[REG] {fmt_mac(m.mac)} SID {sid:#06x}: {name} ({len(body)} octets, {b.power_db:.1f} dBFS)")
@@ -548,7 +549,11 @@ class CmtsCore:
                 rsp_tlvs += registration.dsid_encoding(m.dsid, [cid for cid, _ in self.bonding])
             self.log(f"[REG] RCC : profil {rcp_id.hex() if rcp_id else 'aucun adapté'}, canaux "
                      + ", ".join(f"{cid}@{f / 1e6:.0f} MHz" for cid, f in self.bonding))
-        frame = (mac.reg_rsp_mp_msg if mp else mac.reg_rsp_msg)(self.mux.sa, m.mac, sid, response, rsp_tlvs)
+        if mp:                                          # one frame, or fragments when too long
+            frames = mac.reg_rsp_mp_msgs(self.mux.sa, m.mac, sid, response, rsp_tlvs)
+        else:
+            frames = [mac.reg_rsp_msg(self.mux.sa, m.mac, sid, response, rsp_tlvs)]
+        frame = frames if len(frames) > 1 else frames[0]
         m.reg, m.flows = (body, frame), flows
         if response == 0:
             m.state = "registering"
@@ -558,10 +563,14 @@ class CmtsCore:
                     for k in m.links.values():
                         if k.state == "ranging":
                             k.next_sm = air_ts + int(0.02 * TS_RATE)
-            self.mux.ucast.append((frame, sent))
+            for f in frames[:-1]:
+                self.mux.ucast.append((f, None))
+            self.mux.ucast.append((frames[-1], sent))
         else:
-            self.mux.ucast.append((frame, None))
-        self.log(f"[REG] {'REG-RSP-MP' if mp else 'REG-RSP'} {registration.RESPONSE.get(response, response)} -> {fmt_mac(m.mac)}: "
+            for f in frames:
+                self.mux.ucast.append((f, None))
+        self.log(f"[REG] {'REG-RSP-MP' if mp else 'REG-RSP'}{f' ({len(frames)} fragments)' if len(frames) > 1 else ''} "
+                 f"{registration.RESPONSE.get(response, response)} -> {fmt_mac(m.mac)}: "
                  + ", ".join(f"flux {d} réf {r} SFID {f}" + (f" SID {s:#06x}" if s else "") for d, r, f, s in flows))
 
     def _miss(self, sid):
@@ -575,7 +584,11 @@ class CmtsCore:
                 k.misses += 1
                 k.poll_deadline = None
                 k.next_sm = self.mux.now_ts + self.sm_retry
-                if k.misses >= MAX_MISSES and k.state != "lost":
+                # a channel being added: the modem may take seconds before ranging there (with 3
+                # channels to add, 16 polls = 0.5 s was too short: REG-ACK "T4 timeout" for each,
+                # 2026-10-10); polls go on for ~20 s. A ranged channel: as on the first one.
+                limit = MAX_MISSES if k.state == "ranged" else int(20 / max(self.sm_retry / TS_RATE, 1e-3))
+                if k.misses >= limit and k.state != "lost":
                     k.state = "lost"
                     self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {sid:#06x}: {MAX_MISSES} Station "
                              f"Maintenance sans réponse, canal abandonné")

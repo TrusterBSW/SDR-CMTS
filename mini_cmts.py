@@ -430,7 +430,9 @@ def split_cpus(child_pids):
     cores = sorted({core(c) for c in allowed})
     if len(cores) < 3:
         return f"processus montant : CPU partagés ({','.join(map(str, allowed))}, trop peu de cœurs pour en réserver un)"
-    mine = {c for c in allowed if core(c) == cores[-1]}
+    # 3+ upstream channels (one process each): the last two physical cores
+    take = cores[-2:] if len(child_pids) > 2 and len(cores) >= 3 else cores[-1:]
+    mine = {c for c in allowed if core(c) in take}
     rest = set(allowed) - mine
     try:
         for pid in child_pids:

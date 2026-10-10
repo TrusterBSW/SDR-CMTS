@@ -510,9 +510,25 @@ def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=F
 
 def reg_rsp_mp_msg(sa, da, sid, response, tlvs):
     """REG-RSP-MP (DOCSIS 3.0, MAC management version 4): SID, response, number of fragments,
-    fragment sequence number, TLVs. One fragment (the TLVs of this CMTS fit in one frame)."""
+    fragment sequence number, TLVs. One fragment; see reg_rsp_mp_msgs for longer ones."""
     body = struct.pack(">HBBB", sid & 0x3FFF, response, 1, 1) + tlvs
     return mgmt_frame(REG_RSP_MP, body, sa, da=da, version=4)
+
+
+def reg_rsp_mp_msgs(sa, da, sid, response, tlvs, max_tlv=1400):
+    """REG-RSP-MP cut into fragments of at most `max_tlv` TLV bytes, at TLV boundaries (with 4
+    upstream channels the three TCC UCDs alone are ~1 KB). Returns the list of frames."""
+    parts, cur, i = [], b"", 0
+    while i < len(tlvs):
+        n = 2 + tlvs[i + 1]
+        if cur and len(cur) + n > max_tlv:
+            parts.append(cur)
+            cur = b""
+        cur += tlvs[i:i + n]
+        i += n
+    parts.append(cur)
+    return [mgmt_frame(REG_RSP_MP, struct.pack(">HBBB", sid & 0x3FFF, response, len(parts), k + 1) + p,
+                       sa, da=da, version=4) for k, p in enumerate(parts)]
 
 
 def data_pdu_dsid(eth, dsid, seq, prio=0, scc=0):
