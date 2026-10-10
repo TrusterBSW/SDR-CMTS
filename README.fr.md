@@ -19,7 +19,7 @@ apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 |---|---|---|
 | Descendant | 2 canaux agrégés EuroDOCSIS 256-QAM (306 + 314 MHz) | **93 Mbit/s** (speedtest sur le PC du CMTS) |
 | Montant | 1 canal ATDMA 64-QAM, 5,12 Msym/s (60 MHz) | **22 Mbit/s** |
-| Latence | ping à travers le modem | 56-72 ms à vide, 92-139 ms en charge |
+| Latence | ping à travers le modem | ~92 ms (un ping par seconde), 44-71 ms avec du trafic (grants en avance actifs), 92-139 ms en charge |
 
 Ce sont les limites physiques des canaux utilisés : 2 × 256-QAM ≈ 100 Mbit/s ; 1 × 64-QAM ATDMA
 ≈ 25 Mbit/s, une fois retirés le RS et les en-têtes de rafale.

@@ -19,7 +19,7 @@ exists to learn DOCSIS hands-on and to let others do the same.
 |---|---|---|
 | Downstream | 2 bonded channels, EuroDOCSIS 256-QAM (306 + 314 MHz) | **93 Mbit/s** (speedtest on the CMTS host) |
 | Upstream | 1 ATDMA channel, 64-QAM, 5.12 Msym/s (60 MHz) | **22 Mbit/s** |
-| Latency | ping through the modem | 56-72 ms idle, 92-139 ms loaded |
+| Latency | ping through the modem | ~92 ms (one ping a second), 44-71 ms with traffic (grants in advance active), 92-139 ms loaded |
 
 Both are the physical limits of the channels used (2 × 256-QAM ≈ 100 Mbit/s;
 1 × 64-QAM ATDMA ≈ 25 Mbit/s after FEC and burst overhead).
