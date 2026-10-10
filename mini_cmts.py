@@ -41,7 +41,7 @@ import numpy as np
 
 from cmts import docsis_mac as mac
 from cmts import cdsp, netpkt
-from cmts.bridge import TapBridge, ensure_tap
+from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
@@ -240,32 +240,18 @@ def start_bridge(a, mux, core, stop):
             br.stats["bad_fcs"] += 1
             log(f"[PONT] !! ↑ FCS Ethernet faux, trame de SID {sid:#06x} jetée ({len(eth)} octets)")
             return
+        fwd.learn(eth, sid)                        # which modem this address sits behind
         br.upstream(eth)
         if flim.ok():
             log(f"[PONT] ↑ {netpkt.summary(eth)}", console=lim.ok())
 
-    channels = [mux] + list(getattr(mux, "secondary", []))
-    seq = [0]
-    per_chan = [0] * len(channels)
-    force_ch = int(os.environ["MINI_CMTS_BOND_CH"]) - 1 if os.environ.get("MINI_CMTS_BOND_CH") else None
-    mux.per_chan = per_chan
+    fwd = BondedForwarder([mux] + list(getattr(mux, "secondary", [])), core, mac)
+    if os.environ.get("MINI_CMTS_BOND_CH"):         # diagnostic: MINI_CMTS_BOND_CH=2 -> channel 2 only
+        fwd.force_ch = int(os.environ["MINI_CMTS_BOND_CH"]) - 1
+    mux.per_chan = fwd.per_chan
 
     def down(eth):
-        if len(channels) > 1 and core.bonded and not (eth[0] & 1):
-            # unicast to the bonded modem: DSID label + sequence number, on the least loaded channel
-            mac_ = next(iter(core.bonded))
-            dsid = core.bonded[mac_]
-            usable = [c - 1 for c in core.bonded_channels.get(mac_, range(1, len(channels) + 1))
-                      if 0 < c <= len(channels)] or [0]
-            k = min(usable, key=lambda i: len(channels[i].data))   # least loaded acquired channel
-            if force_ch is not None:                 # diagnostic: MINI_CMTS_BOND_CH=2 -> channel 2 only
-                k = force_ch
-            channels[k].send_data(mac.data_pdu_dsid(eth, dsid, seq[0]))
-            seq[0] = (seq[0] + 1) & 0xFFFF
-            per_chan[k] += 1
-        else:
-            mux.send_data(mac.data_pdu(eth))
-            per_chan[0] += 1
+        fwd.send(eth)
         if flim.ok():
             log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
     core.on_data = up

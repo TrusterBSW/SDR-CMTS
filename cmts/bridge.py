@@ -67,3 +67,60 @@ class TapBridge:
                 return f.read().strip()
         except OSError:
             return "?"
+
+
+class BondedForwarder:
+    """Downstream Packet PDUs for several modems, some of them with bonded downstream channels.
+
+    A unicast frame goes to the modem that owns its destination address: the modem itself or a
+    CPE behind it, learned from the source address of the frames each modem sends upstream (SID ->
+    modem). For a bonded modem it carries that modem's DSID and its own sequence number, on the
+    least loaded channel the modem acquired; otherwise, and for broadcast/multicast, the primary
+    channel without a DSID. Until 2026-10-10 every unicast frame took the DSID of the FIRST bonded
+    modem: a second bonded modem would have dropped all its unicast traffic.
+
+    channels: [primary mux, secondary muxes...] (send_data()); core: CmtsCore (by_sid, bonded,
+    bonded_channels)."""
+
+    def __init__(self, channels, core, mac_mod):
+        self.channels, self.core, self.mac = channels, core, mac_mod
+        self.owner = {}                  # Ethernet address -> MAC of the modem it sits behind
+        self.seq = {}                    # DSID -> next packet sequence number
+        self.per_chan = [0] * len(channels)
+        self.force_ch = None             # diagnostic: every bonded frame on this channel index
+
+    def learn(self, eth, sid):
+        """An upstream frame from `sid`: its source address belongs to that modem."""
+        m = self.core.by_sid.get(sid)
+        if m is not None and len(eth) >= 12:
+            self.owner[bytes(eth[6:12])] = m.mac
+
+    def modem_of(self, eth):
+        """MAC of the bonded modem a unicast frame is for, or None (primary, no DSID)."""
+        bonded = self.core.bonded
+        if len(self.channels) < 2 or not bonded or eth[0] & 1:
+            return None
+        dst = bytes(eth[0:6])
+        cm = self.owner.get(dst) or (dst if dst in bonded else None)
+        if cm is None and len(bonded) == 1:  # one bonded modem, address not learned yet: as before
+            cm = next(iter(bonded), None)
+        return cm if cm in bonded else None
+
+    def send(self, eth):
+        """Queue one frame from the TAP; returns the channel index used."""
+        cm = self.modem_of(eth)
+        dsid = self.core.bonded.get(cm) if cm is not None else None
+        if dsid is None:
+            self.channels[0].send_data(self.mac.data_pdu(eth))
+            self.per_chan[0] += 1
+            return 0
+        n = len(self.channels)
+        usable = [c - 1 for c in self.core.bonded_channels.get(cm, range(1, n + 1)) if 0 < c <= n] or [0]
+        k = min(usable, key=lambda i: len(self.channels[i].data))   # least loaded acquired channel
+        if self.force_ch is not None:
+            k = self.force_ch
+        s = self.seq.get(dsid, 0)
+        self.seq[dsid] = (s + 1) & 0xFFFF
+        self.channels[k].send_data(self.mac.data_pdu_dsid(eth, dsid, s))
+        self.per_chan[k] += 1
+        return k
