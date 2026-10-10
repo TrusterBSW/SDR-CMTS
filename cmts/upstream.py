@@ -91,6 +91,7 @@ class UpstreamRx:
         self.written = 0            # absolute index of the next sample to come
         self.windows = collections.deque()
         self.floor = None           # noise power per sample (linear)
+        self.burst_level = None     # power of the decoded unicast data bursts (linear, running mean)
         self.save_dir = save_dir
         self.ko_dir = ko_dir        # data bursts that fail to decode are always kept here (debug)
         if ko_dir:
@@ -269,6 +270,19 @@ class UpstreamRx:
             starts = sorted({max(h, first) for h in starts})
             if iuc == mac.IUC_INIT_MAINT:           # energy in another modem's unicast grant: not searched
                 starts = [h for h in starts if not self._in_unicast_grant(a + h * blk + blk)]
+            if iuc == mac.IUC_REQUEST and self.burst_level:
+                # only ranged modems send in request slots, at the level of their data bursts; a
+                # cluster 15 dB below it is the image of a burst on the other upstream channel
+                # (IQ crosstalk ~-27 dB around the RX LO): ~80 such "bursts"/s were searched, failed
+                # and logged during a speedtest with 2 channels (2026-10-10)
+                keep = []
+                for h in starts:
+                    peak = float(p[h:h + 4].max()) if h < p.size else 0.0
+                    if peak < self.burst_level * 10 ** -1.5:
+                        self.stats["crosstalk_skip"] += 1
+                    else:
+                        keep.append(h)
+                starts = keep
             for h in starts:
                 t_lo = max(s0 - a - pre, h * blk - 2 * blk)
                 t_hi = min(s1 - a + post, (h + 1) * blk + blk)
@@ -323,6 +337,9 @@ class UpstreamRx:
             self.recent.append(t_abs)
             self.stats["bursts"] += 1
             self.stats["decoded" if bu.frame is not None else "undecoded"] += 1
+            if bu.frame is not None and unicast and iuc in DATA_IUCS:   # level of real bursts (linear)
+                lvl = 10 ** (bu.power_db / 10)
+                self.burst_level = lvl if not self.burst_level else 0.95 * self.burst_level + 0.05 * lvl
             rx_tick = self.rx_tick0 + (a + bu.t) * self.decim
             rx_ts = self.tb.ts(rx_tick)
             ev = BurstEvent(iuc, sid, start_ts, bu, rx_ts - start_ts, rx_ts)
