@@ -510,6 +510,26 @@ def tx_dc_calibrate(uhd, usrp, tx_stream, rx_stream, tx_center, rx_restore, log,
         return 0j, f"!! calibration de la fuite TX impossible : {e}"
 
 
+def on_battery():
+    """A warning line when the PC runs on battery, else None. On battery the laptop's processor
+    is held near 3 GHz instead of 4: on 2026-10-10 the 3 DS + 2 US signal was then produced
+    slower than real time and the downstream never started (charger unplugged)."""
+    import glob
+    mains = [p for p in glob.glob("/sys/class/power_supply/*") if _read(p + "/type") == "Mains"]
+    if mains and not any(_read(p + "/online") == "1" for p in mains):
+        return ("!! PC SUR BATTERIE (secteur débranché) : processeur bridé, l'émission risque de ne pas "
+                "suivre le temps réel (3 DS et plus surtout). Branche le chargeur.")
+    return None
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def herd_irqs(irq_cpus):
     """Move every hardware interrupt except the USB host controllers' onto `irq_cpus` (the core
     already left to the B210's USB interrupts). The kernel places them where it likes and moves
@@ -659,6 +679,9 @@ def run_usrp(a):
         log(herd_irqs(usb_irq_cpus() - usb_irq_cpus(siblings=False)))
     log(cdsp.status())
     log(raise_priority(a.rt_prio))
+    bat = on_battery()
+    if bat:
+        log(bat)
     gov = cpu_governor(a.performance)
     if gov:
         log(gov)
