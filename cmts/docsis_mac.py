@@ -386,6 +386,16 @@ class Reassembler:
             self.sync = False
         return out
 
+    def _missing(self):
+        """Bytes still missing from the frame in progress (None: header incomplete)."""
+        if len(self.buf) < 6:
+            return None
+        hlen = 6 + (self.buf[1] if self.buf[0] & 1 else 0)
+        if len(self.buf) < hlen:
+            return None
+        info = parse_us_frame(bytes(self.buf[:hlen]))
+        return None if info is None else info["total"] - len(self.buf)
+
     def _feed(self, payload, pfi, ptr):
         if not self.sync:
             if not pfi or ptr > len(payload):
@@ -393,7 +403,15 @@ class Reassembler:
             self.buf = bytearray(payload[ptr:])
             self.sync = True
         else:
-            self.buf += payload
+            if pfi and self.buf and ptr <= len(payload) and self._missing() != ptr:
+                # this segment says its first new MAC header is `ptr` bytes in; the frame in
+                # progress does not end there: something before was lost or cut short (a
+                # segment decoded only partly). Start again on that header: a frame stitched
+                # across the gap came out with a wrong Ethernet FCS (2026-10-10).
+                self.stats["realigned"] = self.stats.get("realigned", 0) + 1
+                self.buf = bytearray(payload[ptr:])
+            else:
+                self.buf += payload
         frames = []
         while self.buf:
             if self.buf[0] == STUFF:             # padding: the rest of this segment

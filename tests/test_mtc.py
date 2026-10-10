@@ -113,5 +113,25 @@ expect = [f for j, f in enumerate(frames) if j not in hit and not (starts[j] < a
 check("segment perdu : seules les trames qui le touchaient manquent",
       all(f in out for f in expect) and len(out) >= len(frames) - len(hit) - 2 and ra.stats["lost"] == 1,
       f"{len(out)}/{len(frames)} trames ({len(hit)} touchées), {ra.stats}")
+# a segment decoded only partly (its end missing): the next segment's pointer tells where the next
+# frame starts; the frame in progress, which does not end there, is dropped, not stitched
+import itertools                                     # noqa: E402
+fr = [mac.data_pdu(bytes([i]) * 600) for i in range(6)]
+st = b"".join(fr)
+starts = list(itertools.accumulate([0] + [len(x) for x in fr]))[:-1]
+
+
+def first_start(a, b):
+    n = [s_ - a for s_ in starts if a <= s_ < b]
+    return n[0] if n else None
+
+
+ra = mac.Reassembler(channels=(1,))
+out = []
+for a, b, q in ((0, 700, 0), (900, 2000, 1), (2000, len(st), 2)):   # bytes 700-900 never decoded
+    out += ra.add(1, mac.parse_seg_header(mac.seg_header(q, first_start(a, b))), st[a:b], q * 0.001)
+check("segment tronqué : réalignement sur le pointeur, aucune trame recollée de travers",
+      [fr.index(x) for x in out if x in fr] == [0, 2, 3, 4, 5] and all(x in fr for x in out),
+      f"{ra.stats}")
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)
