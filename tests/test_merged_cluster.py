@@ -21,6 +21,7 @@ u.ms_samples = 348.0                     # 128-symbol mini-slots
 u.gate, u.ko_dir, u.save_dir, u.im_slack = 10 ** 0.8, None, None, 0
 u.stats = collections.Counter()
 u.recent = collections.deque(maxlen=16)
+u.burst_level = None
 u.rx_tick0, u.decim = 0, 1
 u.tb = type("TB", (), {"ts": lambda self, t: 0})()
 got = []
