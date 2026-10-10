@@ -345,3 +345,4 @@ class Ddc:
                            _f(self.h.view(np.float32)), self.h.size, self.decim, _f(self.hist.view(np.float32)),
                            ctypes.byref(self.skip), _f(out.view(np.float32)))
         return out[:n]
+

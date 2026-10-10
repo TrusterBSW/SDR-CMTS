@@ -431,27 +431,53 @@ void fir_cr(const float *x, int nx, const float *h, int nh, float *out)
  * once): shift by `step` rad/sample (phase carried in *phase), low-pass FIR (real taps, ntaps)
  * and keep one sample in `decim`. hist: the ntaps-1 previous shifted samples (state, complex),
  * *skip: input samples to skip before the next output (state). Returns the outputs written. */
+
+/* DDC helpers (2026-10-10): a work buffer kept between calls (a fresh malloc of ~0.5 MB per call
+ * came back as new pages from the kernel every time), and the frequency shift computed by blocks
+ * of 1024 samples from a table of w^k: no sample depends on the previous one, so the loop
+ * vectorizes (the running oscillator z <- z w was a serial chain). */
+static __thread float *ddc_work = 0;
+static __thread long ddc_work_n = 0;
+static float *ddc_buf(long nfloats)
+{
+    if (nfloats > ddc_work_n) {
+        free(ddc_work);
+        ddc_work = (float *)malloc(sizeof(float) * nfloats);
+        ddc_work_n = ddc_work ? nfloats : 0;
+    }
+    return ddc_work;
+}
+
+__attribute__((optimize("fast-math")))
+static void ddc_mix(const float *x, int n, double step, double ph, float *dst)
+{
+    float tr[1024], ti[1024];
+    for (int k = 0; k < 1024; k++) { tr[k] = (float)cos(k * step); ti[k] = (float)sin(k * step); }
+    for (int k0 = 0; k0 < n; k0 += 1024) {
+        float zr = (float)cos(ph + k0 * step), zi = (float)sin(ph + k0 * step);
+        int kn = n - k0 < 1024 ? n - k0 : 1024;
+        const float *xs = x + 2 * k0;
+        float *d = dst + 2 * k0;
+        for (int k = 0; k < kn; k++) {
+            float cr = zr * tr[k] - zi * ti[k], ci = zr * ti[k] + zi * tr[k];
+            float xr = xs[2 * k], xi = xs[2 * k + 1];
+            d[2 * k] = xr * cr - xi * ci;
+            d[2 * k + 1] = xr * ci + xi * cr;
+        }
+    }
+}
+
 __attribute__((optimize("fast-math")))
 int ddc_decim(const float *x, int n, double step, double *phase, const float *h, int ntaps,
               int decim, float *hist, int *skip, float *out)
 {
     int nh = ntaps - 1, nout = 0;
     double ph = *phase;
-    float wr = (float)cos(step), wi = (float)sin(step);
-    float zr = (float)cos(ph), zi = (float)sin(ph);
     /* work buffer: history then the new block, shifted */
-    float *buf = (float *)malloc(sizeof(float) * 2 * (nh + n));
+    float *buf = ddc_buf(2L * (nh + n));
     if (!buf) return 0;
     memcpy(buf, hist, sizeof(float) * 2 * nh);
-    for (int k = 0; k < n; k++) {
-        if ((k & 1023) == 0) { zr = (float)cos(ph + k * step); zi = (float)sin(ph + k * step); }
-        float xr = x[2 * k], xi = x[2 * k + 1];
-        buf[2 * (nh + k)] = xr * zr - xi * zi;
-        buf[2 * (nh + k) + 1] = xr * zi + xi * zr;
-        float nr = zr * wr - zi * wi;
-        zi = zr * wi + zi * wr;
-        zr = nr;
-    }
+    ddc_mix(x, n, step, ph, buf + 2 * nh);
     int k = *skip;
     for (; k < n; k += decim) {
         const float *b = buf + 2 * k;                   /* taps over buf[k .. k + nh] */
@@ -466,7 +492,6 @@ int ddc_decim(const float *x, int n, double step, double *phase, const float *h,
     }
     *skip = k - n;
     memcpy(hist, buf + 2 * n, sizeof(float) * 2 * nh);
-    free(buf);
     *phase = fmod(ph + n * step, 2 * M_PI);
     return nout;
 }
