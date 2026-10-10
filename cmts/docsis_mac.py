@@ -146,6 +146,13 @@ def burst_descriptor5(iuc, bits=2, preamble_len=64, preamble_off=0, fec_t=0, fec
 
 
 def ucd_msg(sa, us_chan_id, ccc, minislot_ticks, ds_chan_id, freq_hz, symrate_mult):
+    mtype, body = ucd_body(us_chan_id, ccc, minislot_ticks, ds_chan_id, freq_hz, symrate_mult)
+    return mgmt_frame(mtype, body, sa)
+
+
+def ucd_body(us_chan_id, ccc, minislot_ticks, ds_chan_id, freq_hz, symrate_mult):
+    """UCD contents without the MAC management header -> (message type, bytes); also the TCC
+    UCD substitution (TLV 46.5)."""
     body = struct.pack(">BBBB", us_chan_id, ccc, minislot_ticks, ds_chan_id)
     body += tlv(1, bytes([symrate_mult]))          # x 160 ksym/s
     body += tlv(2, struct.pack(">I", int(freq_hz)))
@@ -156,10 +163,10 @@ def ucd_msg(sa, us_chan_id, ccc, minislot_ticks, ds_chan_id, freq_hz, symrate_mu
             p = dict(prof)
             p.setdefault("bits", 2 if p.get("mod_qpsk", True) else 4)
             body += burst_descriptor5(iuc, **p)
-        return mgmt_frame(UCD29, body, sa)
+        return UCD29, body
     for iuc, prof in BURST_PROFILES.items():
         body += burst_descriptor(iuc, **{k: v for k, v in prof.items() if k != "atdma"})
-    return mgmt_frame(UCD, body, sa)
+    return UCD, body
 
 
 def map_ie(sid, iuc, offset):
@@ -222,19 +229,27 @@ class TSPacketizer:
 RNG_CONTINUE, RNG_ABORT, RNG_SUCCESS = 1, 2, 3
 
 
-def rng_rsp_msg(sa, da, sid, us_chan_id, timing=0, power_qdb=0, freq_hz=0, status=RNG_CONTINUE):
+def rng_rsp_msg(sa, da, sid, us_chan_id, timing=0, power_qdb=0, freq_hz=0, status=RNG_CONTINUE, t4_mult=None,
+                drw_qdb=None):
     """RNG-RSP (MULPIv3.0 6.4.6): timing in 1/10.24 MHz units (positive = the CM transmits
-    earlier), power in 1/4 dB, frequency in Hz."""
+    earlier), power in 1/4 dB, frequency in Hz; t4_mult: T4 timeout multiplier (TLV 13);
+    drw_qdb: Dynamic Range Window upper edge, 1/4 dB below Phi (TLV 14)."""
     body = struct.pack(">HB", sid & 0x3FFF, us_chan_id)
     body += tlv(1, struct.pack(">i", int(timing)))
     body += tlv(2, struct.pack(">b", int(power_qdb)))
     body += tlv(3, struct.pack(">h", int(freq_hz)))
     body += tlv(5, bytes([status]))
+    if t4_mult:
+        body += tlv(13, bytes([t4_mult]))
+    if drw_qdb is not None:
+        body += tlv(14, bytes([max(0, min(255, int(drw_qdb)))]))
     return mgmt_frame(RNG_RSP, body, sa, da=da)
 
 
 # ---------------------------------------------------------------- upstream frames (CM -> CMTS)
 FC_REQ = 0xC4          # bandwidth request: MAC_PARM = mini-slots, LEN field = SID
+FC_QREQ = 0xC8         # queue-depth based request (Multiple Transmit Channel mode): 2-byte MAC_PARM
+#                        = bytes / N, then the SID, 7 bytes in all (MULPIv3.0 6.2.4.5)
 FC_CONCAT = 0xF8       # concatenation header (FC_TYPE 11, FC_PARM 11100): MAC_PARM = frame count, LEN = bytes
 
 
@@ -243,6 +258,11 @@ def parse_us_frame(buf):
     Returns the total frame length so the caller knows how many bytes to decode."""
     if len(buf) < 6:
         return None
+    if buf[0] == FC_QREQ:
+        if len(buf) < 7 or crc16_ccitt(buf[:5]) != struct.unpack("<H", buf[5:7])[0]:
+            return None
+        return dict(kind="REQ", total=7, sid=struct.unpack(">H", buf[3:5])[0] & 0x3FFF, minislots=0,
+                    qbytes=struct.unpack(">H", buf[1:3])[0])
     fc, parm = buf[0], buf[1]
     ehdr = parm if (fc & 1) and fc != FC_REQ else 0
     hlen = 6 + ehdr
@@ -261,7 +281,7 @@ def parse_us_frame(buf):
     if len(m) < 24 or zlib.crc32(m[:-4]) != struct.unpack("<I", m[-4:])[0]:
         out["crc_ok"] = False
         return out
-    out.update(crc_ok=True, da=bytes(m[0:6]), sa=bytes(m[6:12]), version=m[17], mtype=m[18],
+    out.update(crc_ok=True, da=bytes(m[0:6]), sa=bytes(m[6:12]), ssap=m[15], version=m[17], mtype=m[18],
                body=bytes(m[20:-4]))
     if out["mtype"] in (REG_REQ, REG_ACK, REG_REQ_MP) and len(out["body"]) >= 2:
         out["sid"] = struct.unpack(">H", out["body"][0:2])[0] & 0x3FFF
@@ -270,6 +290,123 @@ def parse_us_frame(buf):
         out["sid"] = struct.unpack(">H", b[0:2])[0] & 0x3FFF
         out["ds_chan"] = b[2]
     return out
+
+
+# ---------------------------------------------------------------- Multiple Transmit Channel mode
+SEG_HDR_LEN = 8
+IUC_SEG = 0x40         # flag on the IUC of a grant given to the upstream receiver: segment header ON
+STUFF = 0xFF           # PHY stuff byte: a segment's padding after its last MAC byte
+
+
+def parse_seg_header(buf):
+    """Segment header (MULPIv3.0 6.3) -> dict(pfi, ptr, seq, sc, req), or None if its HCS fails."""
+    if len(buf) < SEG_HDR_LEN or crc16_ccitt(buf[:6]) != struct.unpack("<H", buf[6:8])[0]:
+        return None
+    w = struct.unpack(">H", buf[0:2])[0]
+    sq = struct.unpack(">H", buf[2:4])[0]
+    return dict(pfi=w >> 15, ptr=w & 0x3FFF, seq=sq >> 3, sc=sq & 7, req=struct.unpack(">H", buf[4:6])[0])
+
+
+def seg_header(seq, ptr=None, sc=0, req=0):
+    """Segment header bytes (simulated modems, tests); ptr None: no MAC frame starts here."""
+    w = (0x8000 | (ptr & 0x3FFF)) if ptr is not None else 0
+    h = struct.pack(">HHH", w, ((seq & 0x1FFF) << 3) | (sc & 7), req)
+    return h + struct.pack("<H", crc16_ccitt(h))
+
+
+def qreq_frame(sid, nunits):
+    """Queue-depth based request frame (tests, simulated modems)."""
+    hdr = struct.pack(">BHH", FC_QREQ, nunits, sid & 0x3FFF)
+    return hdr + struct.pack("<H", crc16_ccitt(hdr))
+
+
+class Reassembler:
+    """Continuous Concatenation and Fragmentation (MULPIv3.0 7.2.4): the segments of one upstream
+    service flow, from any of its channels, back into MAC frames.
+
+    Segments are put back in sequence-number order (13 bits). A missing number is given up as
+    soon as a higher one has arrived on every channel the flow uses (each channel's segments
+    arrive in order: a channel's grants are processed in time order), or after `timeout_s`.
+    Inside the ordered byte stream, MAC frames follow each other across segment boundaries; a
+    stuff byte (0xFF) where a frame header should start is the padding of a segment's end. After
+    a loss, parsing resumes at the first MAC header a later segment points to (PFI/pointer)."""
+
+    def __init__(self, channels=None, timeout_s=0.1):
+        """channels: the upstream channel ids the flow uses (None: those seen so far)."""
+        self.channels = set(channels or ())
+        self.timeout = timeout_s
+        self.next = 0                # next sequence number expected (a flow's first segment is 0)
+        self.held = {}               # seq -> (payload, pfi, ptr, arrival time)
+        self.last = {}               # channel -> last sequence number seen there
+        self.buf = bytearray()       # bytes of the frame being reassembled
+        self.sync = False            # buf starts on a MAC header
+        self.stats = dict(segments=0, frames=0, lost=0, bad_hcs=0, dup=0)
+
+    @staticmethod
+    def _after(a, b):
+        """a comes after b (mod 8192)."""
+        return 0 < (a - b) % 8192 < 4096
+
+    def add(self, ch, hdr, payload, now):
+        """One segment (parse_seg_header() dict, its payload) received on channel `ch` ->
+        list of complete MAC frames (bytes)."""
+        seq = hdr["seq"]
+        self.stats["segments"] += 1
+        if seq != self.next and not self._after(seq, self.next) or seq in self.held:
+            self.stats["dup"] += 1               # already passed (or a repeat)
+            return []
+        self.held[seq] = (bytes(payload), hdr["pfi"], hdr["ptr"], now)
+        self.last[ch] = seq
+        out = []
+        while True:
+            while self.next in self.held:
+                out += self._feed(*self.held.pop(self.next)[:3])
+                self.next = (self.next + 1) % 8192
+            if not self.held:
+                break
+            # a hole: lost once every channel has gone past it, or too old
+            chans = self.channels | set(self.last)
+            past = all(c in self.last and self._after(self.last[c], self.next) for c in chans)
+            oldest = min(t for *_, t in self.held.values())
+            if not past and now - oldest < self.timeout:
+                break
+            nxt = min(self.held, key=lambda s: (s - self.next) % 8192)
+            self.stats["lost"] += (nxt - self.next) % 8192
+            self.next = nxt
+            self.buf.clear()
+            self.sync = False
+        return out
+
+    def _feed(self, payload, pfi, ptr):
+        if not self.sync:
+            if not pfi or ptr > len(payload):
+                return []                        # no MAC header starts in this segment
+            self.buf = bytearray(payload[ptr:])
+            self.sync = True
+        else:
+            self.buf += payload
+        frames = []
+        while self.buf:
+            if self.buf[0] == STUFF:             # padding: the rest of this segment
+                self.buf.clear()
+                break
+            if len(self.buf) < 6:
+                break
+            hlen = 6 + (self.buf[1] if self.buf[0] & 1 else 0)
+            if len(self.buf) < hlen:
+                break                            # header not complete yet
+            info = parse_us_frame(bytes(self.buf[:hlen]))
+            if info is None:                     # out of step: wait for the next pointer
+                self.stats["bad_hcs"] += 1
+                self.buf.clear()
+                self.sync = False
+                break
+            if len(self.buf) < info["total"]:
+                break
+            frames.append(bytes(self.buf[:info["total"]]))
+            del self.buf[:info["total"]]
+        self.stats["frames"] += len(frames)
+        return frames
 
 
 def rng_req_msg(sa, da, sid, ds_chan_id, pending=0):

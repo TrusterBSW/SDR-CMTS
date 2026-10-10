@@ -21,10 +21,16 @@ CAPS_OFF = (3, 4, 12, 15, 24, 29)      # fragmentation, PHS, DCC, expanded SIDs,
 RESPONSE = {0: "ok", 1: "échec d'authentification", 2: "classe de service refusée"}
 
 
-def capabilities_response(value, version=DOCSIS_VERSION, bonded=False):
+def capabilities_response(value, version=DOCSIS_VERSION, bonded=False, mtc=False):
+    """mtc: Multiple Transmit Channel mode on (5.24 echoed; 5.37 = 0: MAPs and UCDs only on
+    the primary downstream channel, where this CMTS sends them)."""
     out = b""
     for t, v in cmcfg.parse(value):
-        if t in CAPS_OFF and not (bonded and t == 29):   # 29: multiple receive channels
+        if t == 24 and mtc:
+            pass
+        elif t == 37 and mtc:
+            v = bytes(len(v))
+        elif t in CAPS_OFF and not (bonded and t == 29):   # 29: multiple receive channels
             v = bytes(len(v))
         elif t == 2 and v:
             v = bytes([min(v[0], version)])
@@ -32,12 +38,15 @@ def capabilities_response(value, version=DOCSIS_VERSION, bonded=False):
     return cmcfg.tlv(5, out)
 
 
-def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION, bonded=False):
-    """REG-REQ TLVs -> (REG-RSP TLV bytes, [(direction, reference, SFID, SID)])."""
+def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION, bonded=False, clusters=None):
+    """REG-REQ TLVs -> (REG-RSP TLV bytes, [(direction, reference, SFID, SID)]).
+    clusters: Multiple Transmit Channel mode, {UCID: SID} of the first upstream flow (its SID
+    cluster 0, TLV 47; no SID in the flow itself); the CM's other upstream flows are not
+    supported then (refused with no SID)."""
     out, flows, first_us = b"", [], True
     for t, v in tlvs:
         if t == 5:
-            out += capabilities_response(v, version, bonded)
+            out += capabilities_response(v, version, bonded, mtc=bool(clusters))
         if t not in (24, 25):
             continue
         subs = cmcfg.parse(v)
@@ -45,10 +54,12 @@ def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION,
         sfid = new_sfid()
         sid = None
         if t == 24:
-            sid = primary_sid if first_us else new_sid()
+            sid = primary_sid if first_us else (None if clusters else new_sid())
+            if clusters and first_us:
+                out += sid_cluster_assignment(sfid, clusters)
             first_us = False
         body = (cmcfg.tlv(1, ref) if ref else b"") + cmcfg.tlv(2, struct.pack(">I", sfid))
-        if sid is not None:
+        if sid is not None and not clusters:
             body += cmcfg.tlv(3, struct.pack(">H", sid))
         body += b"".join(cmcfg.tlv(s, sv) for s, sv in subs if s not in (1, 2, 3))
         out += cmcfg.tlv(t, body)
@@ -95,3 +106,84 @@ def dsid_encoding(dsid, dcids, wait_100us=100, warn_100us=50, holdoff_20ms=50):
         + cmcfg.tlv(4, bytes([warn_100us])) + cmcfg.tlv(5, struct.pack(">H", holdoff_20ms))
     body = cmcfg.tlv(1, dsid.to_bytes(3, "big")) + cmcfg.tlv(2, b"\x00") + cmcfg.tlv(3, reseq)
     return cmcfg.tlv(50, body)
+
+
+# ---------------------------------------------------------------- Multiple Transmit Channel mode
+def _tlv(t, v):
+    assert len(v) <= 255, (t, len(v))
+    return bytes([t, len(v)]) + v
+
+
+def tcc_encodings(first, adds, drw_qdb, keep_first=True, drw_action=0, technique=2):
+    """Transmit Channel Configuration (TLV 46, MULPIv3.0 C.1.5.1) of a REG-RSP-MP: the channel
+    the CM ranged on (`first`, UCID) kept as it is, the channels of `adds` added with unicast
+    ranging (technique 2, ranging parameters: those of `first`), and the Dynamic Range Window
+    (Pload_min_set, 1/4 dB below Phi). adds: [(UCID, UCD contents (docsis_mac.ucd_body), ranging SID)].
+    A TCC longer than 254 bytes is cut into successive TLV 46, the UCD (46.5) into fragments.
+    keep_first: the "no action" TCC of `first`; drw_action: None = no DRW TCC; technique: 46.7
+    (None: absent, broadcast initial ranging; 1: broadcast; 2, 3, 4 with ranging parameters)."""
+    out = b""
+    ref = 0
+    tccs = []
+    if keep_first:
+        ref += 1
+        tccs.append([(1, bytes([ref])), (2, b"\x00"), (3, bytes([first]))])
+    for ucid, ucd, rsid in adds:
+        ref += 1
+        t = [(1, bytes([ref])), (2, b"\x01"), (3, bytes([ucid])), (6, struct.pack(">H", rsid))]
+        if technique is not None:
+            t.append((7, bytes([technique])))
+        if technique in (2, 3, 4):
+            rp = _tlv(1, bytes([first])) + _tlv(2, struct.pack(">i", 0)) + _tlv(4, struct.pack(">b", 0))
+            t.append((8, rp))
+        tccs.append(t + [(5, ucd)])
+    if drw_action is not None:
+        ref += 1
+        tccs.append([(1, bytes([ref])), (2, bytes([drw_action])), (3, b"\x00"),
+                     (9, bytes([max(0, min(255, int(drw_qdb)))]))])
+    for subs in tccs:
+        head = _tlv(*subs[0])                              # TCC reference, repeated in each fragment
+        cur = b""
+        for t, v in subs:
+            while True:
+                room = 254 - len(cur) - 2
+                if t == 5 and len(v) > room:               # UCD: as much as fits, the rest after
+                    if room > 0:
+                        cur += _tlv(5, v[:room])
+                        v = v[room:]
+                    out += _tlv(46, cur)
+                    cur = head
+                    continue
+                if len(cur) + 2 + len(v) > 254:
+                    out += _tlv(46, cur)
+                    cur = head
+                cur += _tlv(t, v)
+                break
+        if cur:
+            out += _tlv(46, cur)
+    return out
+
+
+def sid_cluster_assignment(sfid, sids):
+    """Service Flow SID Cluster Assignment (TLV 47, MULPIv3.0 C.1.5.2): one cluster (id 0) of the
+    flow `sfid`, sids = {UCID: SID}."""
+    enc = _tlv(1, b"\x00")
+    for ucid, sid in sorted(sids.items()):
+        enc += _tlv(2, _tlv(1, bytes([ucid])) + _tlv(2, struct.pack(">H", sid)) + _tlv(3, b"\x01"))
+    return _tlv(47, _tlv(1, struct.pack(">I", sfid)) + _tlv(2, enc))
+
+
+def parse_tcc_errors(tlvs):
+    """REG-ACK TLV 46 (TCC error encodings 46.254) -> readable strings."""
+    out = []
+    for t, v in tlvs:
+        if t != 46:
+            continue
+        d = cmcfg.parse(v)
+        ref = dict(d).get(1, b"?")
+        for s, sv in d:
+            if s == 254:
+                e = dict(cmcfg.parse(sv))
+                out.append(f"TCC {ref.hex()} : paramètre {e.get(1, b'').hex()} erreur "
+                           f"{int.from_bytes(e.get(2, b'0'), 'big')} {e.get(3, b'').decode('latin-1', 'replace')}")
+    return out

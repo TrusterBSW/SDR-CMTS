@@ -9,6 +9,7 @@ Thread use: on_burst() runs in the upstream worker thread, schedule() in the dow
 encoder thread (it is the MAP scheduler hook of DownstreamMux).
 """
 import collections
+import os
 import threading
 import time
 
@@ -17,6 +18,8 @@ from . import docsis_mac as mac
 from .upstream import TS_RATE
 
 SM_MINISLOTS = 12          # Station Maintenance grant (RNG-REQ burst = 9 mini-slots at 1.28 Msym/s)
+REQ_MULT = 4               # bytes per request unit of a flow without TLV 24.26 (MULPIv3.0 C.2.2.8.12)
+SEG_HDR = 8
 MAX_MISSES = 16
 
 
@@ -32,6 +35,26 @@ class Modem:
         self.n_req = 0
         self.last = {}
         self.success_at = None
+        # Multiple Transmit Channel mode (DOCSIS 3.0 upstream bonding)
+        self.mtc = False                # segment headers / queue-depth requests in use
+        self.links = {}                 # UCID -> Link: its further upstream channels
+        self.reasm = None               # docsis_mac.Reassembler of its upstream flow
+        self.pr_qdb = None              # transmit power it reports (RNG-REQ SSAP), 1/4 dBmV
+        self.drw_qdb = None             # Dynamic Range Window given to it (RNG-RSP, then TCC)
+
+
+class Link:
+    """A modem's further upstream channel (TCC "add", unicast ranging on its ranging SID, which
+    is also the SID of its upstream flow there)."""
+
+    def __init__(self, ucid, sid):
+        self.ucid, self.sid = ucid, sid
+        self.state = "ranging"          # ranging -> ranged (-> lost)
+        self.next_sm = None
+        self.poll_deadline = None
+        self.misses = 0
+        self.n_req = 0
+        self.last = {}
 
 
 def fmt_mac(b):
@@ -89,20 +112,45 @@ class CmtsCore:
         self.next_dsid = 0x1001
         self.bonded = {}      # modem MAC -> DSID of its bonded unicast traffic, once online
         self.bonded_channels = {}   # modem MAC -> DCIDs it acquired (REG-ACK partial service)
+        # several upstream channels (set by mini_cmts.py): [(UCID, frequency)], the first one is
+        # where modems range; a DOCSIS 3.0 modem is then put in Multiple Transmit Channel mode
+        self.us_chans = None
+        self.sid_ch = {}      # SID -> UCID, for the SIDs that are not on the first channel
+        self.mtc_sids = set() # SIDs whose data grants carry segments (segment header ON)
+        self.ms_syms = 128    # symbols per mini-slot (set by mini_cmts.py)
+        self.phi_db = 54.0    # Phi of a 2-channel transmit channel set, 64-QAM (PHYv3.0 table 6-8)
+        self.seg_lock = threading.Lock()   # segment reassembly: bursts of two channel threads
+        self._maps_ch = collections.Counter()
+        self._prof = None
+        self._tcc_try = 0
+        self._seg_logged = 0
 
     # ------------------------------------------------------------ MAP hook (downstream thread)
     def channel_scheduler(self, ucid):
         """MAP scheduler of a further upstream channel (DownstreamMux.add_upstream)."""
-        return lambda start_ms, free_ms: self.schedule_channel(ucid, start_ms, free_ms)
+        return lambda start_ms, free_ms: self.schedule(start_ms, free_ms, ucid)
 
-    def schedule_channel(self, ucid, start_ms, free_ms):
-        return []
+    def mark_grants(self, grants):
+        """MAP intervals for the upstream receiver: the data grants of a Multiple Transmit
+        Channel mode flow flagged (IUC | mac.IUC_SEG), so that they are decoded as segments."""
+        if not self.mtc_sids:
+            return grants
+        data = mac.data_iucs()
+        return [(s, e, iuc | mac.IUC_SEG if iuc in data and sid in self.mtc_sids else iuc, sid)
+                for s, e, iuc, sid in grants]
 
-    def schedule(self, start_ms, free_ms):
+    def _polls(self, ch):
+        """What gets Station Maintenance polls on channel `ch`: the modems on the first one,
+        their links on the others."""
+        if ch == 1:
+            return list(self.modems.values())
+        return [m.links[ch] for m in self.modems.values() if ch in m.links and m.links[ch].state != "lost"]
+
+    def schedule(self, start_ms, free_ms, ch=1):
         start_ts = start_ms * self.mux.ms_counts
         out = []
         with self.lock:
-            for m in self.modems.values():
+            for m in self._polls(ch):
                 due = m.next_sm is not None and m.next_sm <= start_ts
                 stuck = m.poll_deadline is not None and start_ts > m.poll_deadline
                 if (due or stuck) and len(out) * SM_MINISLOTS + SM_MINISLOTS <= free_ms:
@@ -117,7 +165,7 @@ class CmtsCore:
             short = mac.BURST_PROFILES[iuc_s]["max_burst"]
             granted = set()
             for sid, n in list(self.pending.items()):
-                if used + n > free_ms:
+                if self.sid_ch.get(sid, 1) != ch or used + n > free_ms:
                     continue
                 out.append((sid, iuc_s if n <= short else iuc_l, n))
                 used += n
@@ -125,9 +173,11 @@ class CmtsCore:
                 granted.add(sid)
                 self.grants += 1
                 self.n["req"] += 1
-            self._maps += 1
-            give = self._maps % self.grant_ahead_every == 0
+            self._maps_ch[ch] += 1
+            give = self._maps_ch[ch] % self.grant_ahead_every == 0
             for sid, (until, n) in list(self.active.items()):
+                if self.sid_ch.get(sid, 1) != ch:
+                    continue
                 if start_ts > until or sid not in self.by_sid:
                     del self.active[sid]
                     continue
@@ -141,11 +191,6 @@ class CmtsCore:
     # ------------------------------------------------------------ bursts (upstream thread)
     def on_burst(self, ev):
         b = ev.burst
-        ch = getattr(ev, "us_ch", 1)
-        if ch != 1:
-            if b is not None and b.frame is not None:
-                self.log(f"[US{ch}] trame reçue : {b.info}")
-            return
         if b is None:                                   # nothing in a unicast grant
             if ev.iuc == mac.IUC_STATION_MAINT:
                 self._miss(ev.sid)
@@ -157,15 +202,26 @@ class CmtsCore:
             return
         info = b.info or {}
         where = {mac.IUC_INIT_MAINT: "IM", mac.IUC_STATION_MAINT: "SM", mac.IUC_REQUEST: "REQ"}.get(ev.iuc, ev.iuc)
+        ch = getattr(ev, "us_ch", 1)
+        if ch != 1:
+            where = f"{where}@US{ch}"
         if b.frame is None:
-            self.log(f"[US] rafale {where} non décodée ({b.error}): {b.power_db:.1f} dBFS, MER {b.mer:.1f} dB, "
+            self.log(f"[US{ch if ch != 1 else ''}] rafale {where} non décodée ({b.error}): {b.power_db:.1f} dBFS, MER {b.mer:.1f} dB, "
                      f"{ev.err_counts / TS_RATE * 1e6:+.2f} µs, {b.freq:+.0f} Hz, corr {b.rho:.2f}"
                      + (f"\n     début du 1er bloc RS : {b.head}" if b.head else ""))
             if ev.iuc == mac.IUC_STATION_MAINT:
                 self._miss(ev.sid)
             return
-        if ev.iuc in mac.data_iucs() and self.grant_ahead_s and self.grant_ahead_hold:
-            self._extend_ahead(ev.sid)                  # still sending: keep the grants coming
+        padding = info.get("kind") == "SEG" and not info["pfi"] and b.frame[mac.SEG_HDR_LEN] == mac.STUFF
+        if ev.iuc in mac.data_iucs() and self.grant_ahead_s and self.grant_ahead_hold and not padding:
+            # still sending: keep the grants coming (not for a segment of padding only: in
+            # Multiple Transmit Channel mode the modem answers every grant, data or not)
+            self._extend_ahead(ev.sid)
+        if padding:
+            self.n["empty"] += 1
+        if info.get("kind") == "SEG":                   # Multiple Transmit Channel mode
+            self._segment(ev, b, info, where)
+            return
         if info.get("fc") == mac.FC_CONCAT:             # several frames in one burst
             subs = mac.split_concat(b.frame, info)
             self.n["concat"] += 1
@@ -182,7 +238,12 @@ class CmtsCore:
         mtype = info.get("mtype")
         if kind == "MGMT" and mtype in (mac.RNG_REQ, mac.INIT_RNG_REQ, mac.B_INIT_RNG_REQ) \
                 and info.get("crc_ok"):
-            self._ranging(ev, b, info, where)
+            if getattr(ev, "us_ch", 1) != 1:
+                self._ranging_link(ev, b, info, where)
+            else:
+                self._ranging(ev, b, info, where)
+        elif kind == "REQ" and "qbytes" in info:      # queue-depth based (bytes / 4)
+            self._request_bytes(info["sid"], info["qbytes"] * REQ_MULT, b)
         elif kind == "REQ":
             self._request(info["sid"], info["minislots"], b)
         elif kind == "DATA":
@@ -225,6 +286,165 @@ class CmtsCore:
         else:
             self.req_unlogged += 1
 
+    # ------------------------------------------------------------ Multiple Transmit Channel mode
+    def _segment(self, ev, b, hdr, where):
+        """A segment of an upstream flow: back into MAC frames (Reassembler), then each frame
+        handled as if it had come alone. The segment header's request is a piggyback request."""
+        with self.lock:
+            m = self.by_sid.get(ev.sid)
+        if m is None or m.reasm is None:
+            self.log(f"[US] segment de SID {ev.sid:#06x} sans flux en mode MTC : ignoré")
+            return
+        if self._seg_logged < 12:               # diagnostic: the first segments of the run
+            self._seg_logged += 1
+            self.log(f"[US{getattr(ev, 'us_ch', 1)}] segment SID {ev.sid:#06x} : {hdr}, {len(b.frame)} octets, "
+                     f"début {b.frame[8:24].hex(' ')}")
+        if hdr["req"]:
+            self._request_bytes(ev.sid, hdr["req"] * REQ_MULT, b, piggyback=True)
+        with self.seg_lock:                     # two channels' threads: one at a time, in order
+            frames = m.reasm.add(getattr(ev, "us_ch", 1), hdr, b.frame[SEG_HDR:], time.monotonic())
+            for f in frames:
+                info = mac.parse_us_frame(f)
+                if info:
+                    self._dispatch(ev, b, f, info, where)
+
+    def _minislots(self, nbytes):
+        """Mini-slots of a data grant carrying `nbytes` of a segment-header-ON flow (the
+        segment header, FEC, preamble and guard added), long data profile, at most 255."""
+        if self._prof is None:
+            from .us_phy import profiles
+            self._prof = profiles()
+        p = self._prof[mac.data_iucs()[1]]
+        syms = p.burst_symbols(nbytes + SEG_HDR) + p.guard
+        return max(1, min(255, -(-syms // self.ms_syms)))
+
+    def _request_bytes(self, sid, nbytes, b, piggyback=False):
+        """Queue-depth request (bytes) of a flow in Multiple Transmit Channel mode: shared out
+        between the flow's ranged channels, each part granted to the flow's SID there."""
+        self.events.append((time.time(), "REQ", dict(sid=sid, nbytes=nbytes)))
+        with self.lock:
+            m = self.by_sid.get(sid)
+            if m is None or not nbytes:
+                return                          # 0: nothing more queued; grants in advance go on
+            sids = [m.sid] + [k.sid for k in m.links.values() if k.state == "ranged"]
+            share = -(-nbytes // len(sids))
+            n = self._minislots(share)
+            for s_ in sids:
+                self.pending[s_] = n
+                if self.grant_ahead_s:
+                    self.active[s_] = (self.mux.now_ts + int(self.grant_ahead_s * TS_RATE), n)
+        now = time.time()
+        if now - self.req_log_t > 1:
+            more = f" (+{self.req_unlogged} autres en 1 s)" if self.req_unlogged else ""
+            self.req_log_t, self.req_unlogged = now, 0
+            self.log(f"[US] REQ{' piggyback' if piggyback else ''} SID {sid:#06x}: {nbytes} octets -> "
+                     f"{len(sids)} canal(aux) × {n} mini-slots ({b.power_db:.1f} dBFS){more}")
+        else:
+            self.req_unlogged += 1
+
+    def _mtc_setup(self, m, tlvs, new_sid):
+        """REG-REQ-MP of a modem that can transmit on several channels: its SIDs on the further
+        channels (also their ranging SIDs), the TCC and the SID cluster of its upstream flow.
+        Returns (clusters {UCID: SID}, TCC TLV bytes) or (None, b"")."""
+        if not self.us_chans or len(self.us_chans) < 2:
+            return None, b""
+        caps = dict(cmcfg.parse(dict(tlvs).get(5, b"")))
+        ntx = caps.get(24, b"\x00")[0] if caps.get(24) else 0
+        if not ntx:
+            self.log(f"[REG] {fmt_mac(m.mac)} : pas de mode multi-canal montant (capacité 5.24 absente), 1 canal")
+            return None, b""
+        adds = []
+        for ucid, _f in self.us_chans[1:ntx]:
+            k = m.links.get(ucid)
+            if k is None:
+                k = m.links[ucid] = Link(ucid, new_sid())
+                with self.lock:
+                    self.sid_ch[k.sid] = ucid
+            k.state, k.next_sm, k.poll_deadline, k.misses = "ranging", None, None, 0
+            u = next(x for x in self.mux.extra_us if x["us_id"] == ucid)
+            _t, ucd = mac.ucd_body(u["us_id"], u["ccc"], u["ms_ticks"], u["ds_id"], u["freq"], u["mult"])
+            adds.append((ucid, ucd, k.sid))
+        # Dynamic Range Window: the one its RNG-RSPs already carry (same value -> "no action")
+        pr = None if m.pr_qdb is None else m.pr_qdb / 4
+        if m.drw_qdb is None:
+            m.drw_qdb = self._drw(m)
+        drw_db = m.drw_qdb / 4
+        clusters = {self.us_chans[0][0]: m.sid}
+        clusters.update({k.ucid: k.sid for k in m.links.values()})
+        with self.lock:
+            m.mtc = True
+            m.reasm = mac.Reassembler(channels=list(clusters))
+            self.mtc_sids.update(clusters.values())
+        self.log(f"[REG] {fmt_mac(m.mac)} : mode multi-canal montant ({ntx} émetteurs) -> canaux "
+                 + ", ".join(f"{u}:SID {s_:#06x}" for u, s_ in sorted(clusters.items()))
+                 + f" ; puissance déclarée {'?' if pr is None else f'{pr:.2f} dBmV'}, "
+                   f"fenêtre de dynamique {drw_db:.2f} dB sous Phi ({self.phi_db:.0f} dBmV)")
+        # no Dynamic Range Window TCC: with it (UCID 0, action "no action" or after the same value in
+        # the RNG-RSPs) the Sagem 3686 answered REG-ACK 209 reject-bad-tcc every time; without it,
+        # it ranged on channel 2 and came online at once (2026-10-10). The RNG-RSPs carry the DRW.
+        kw = dict(drw_action=None)
+        var = os.environ.get("MINI_CMTS_TCC_VARIANTS")     # diagnostic: a TCC variant per REG-REQ-MP
+        if var:
+            vs = var.split(",")
+            v = vs[self._tcc_try % len(vs)]
+            self._tcc_try += 1
+            kw = dict(keep_first="n" not in v, drw_action=None if "d" in v else (2 if "c" in v else 0),
+                      technique=None if "t0" in v else (1 if "t1" in v else (4 if "t4" in v else (3 if "t3" in v else 2))))
+            m.tcc_variant = v
+            self.log(f"[REG] variante TCC « {v} » : {kw}")
+        return clusters, registration.tcc_encodings(self.us_chans[0][0], adds, m.drw_qdb, **kw)
+
+    def _drw(self, m):
+        """Pload_min_set (1/4 dB below Phi) putting the modem's reported power in the middle of
+        the 12 dB Dynamic Range Window (PHYv3.0 6.2.18: Pload_min_set <= Phi - Pr <= it + 12)."""
+        if m.pr_qdb is None:
+            return 0
+        return max(0, min(255, round(4 * (self.phi_db - m.pr_qdb / 4 - 6))))
+
+    def _ranging_link(self, ev, b, info, where):
+        """RNG-REQ on a further upstream channel (unicast ranging of a TCC "add", then periodic
+        Station Maintenance): same corrections as on the first channel, RNG-RSP for that channel."""
+        ucid = getattr(ev, "us_ch", 1)
+        req_sid = info.get("sid", 0)
+        with self.lock:
+            m = self.by_sid.get(req_sid) or self.by_sid.get(ev.sid)
+            k = m.links.get(ucid) if m else None
+            if k is None or ev.sid != k.sid:
+                self.log(f"[US{ucid}] RNG-REQ de {fmt_mac(info['sa'])} SID {req_sid:#06x} en {where} : inattendu, ignoré")
+                return
+            k.misses = 0
+            k.n_req += 1
+            ta = round(ev.err_counts)
+            dp = self.target - b.power_db
+            pq = max(-128, min(127, round(4 * dp)))
+            fq = max(-32768, min(32767, round(b.freq if b.inverted else -b.freq)))
+            ok = abs(ev.err_counts) <= self.tol[0] and abs(dp) <= self.tol[1] and abs(b.freq) <= self.tol[2]
+            status = mac.RNG_SUCCESS if ok else mac.RNG_CONTINUE
+            newly = ok and k.state == "ranging"
+            if newly:
+                k.state = "ranged"
+            k.last = dict(err_us=ev.err_counts / TS_RATE * 1e6, power=b.power_db, freq=b.freq, mer=b.mer)
+            if "ssap" in info:
+                k.last["pr_dbmv"] = info["ssap"] / 4
+            rx_ts = ev.rx_ts
+        sname = "success" if ok else "continue"
+        self.log(f"[US{ucid}] RNG-REQ {fmt_mac(m.mac)} {where} SID {req_sid:#06x}: arrivée "
+                 f"{ev.err_counts / TS_RATE * 1e6:+8.3f} µs, {b.power_db:6.1f} dBFS, {b.freq:+6.0f} Hz, "
+                 f"MER {b.mer:4.1f} dB" + (f", Pr {info['ssap'] / 4:.2f} dBmV" if "ssap" in info else "")
+                 + f" -> RNG-RSP {sname} TA {ta:+d} P {pq / 4:+.2f} dB F {fq:+d} Hz")
+        if not self.respond:
+            return
+        frame = mac.rng_rsp_msg(self.mux.sa, m.mac, k.sid, ucid, ta, pq, fq, status)
+
+        def sent(air_ts, k=k, ok=ok):
+            with self.lock:
+                k.next_sm = air_ts + (self.sm_period if ok else self.sm_retry)
+                k.poll_deadline = None
+            self.n_rsp += 1
+        self.mux.ucast.append((frame, sent))
+        if newly:
+            self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {k.sid:#06x}: RANGING TERMINÉ (success)")
+
     def _registration(self, info, b):
         sid, body = info["sid"], info["body"]
         with self.lock:
@@ -235,6 +455,11 @@ class CmtsCore:
         if info["mtype"] == mac.REG_ACK:
             resp = body[2] if len(body) > 2 else None
             lost = []
+            try:
+                for e in registration.parse_tcc_errors(cmcfg.parse(body[3:])):
+                    self.log(f"[REG] !! {fmt_mac(m.mac)} REG-ACK {e}")
+            except ValueError:
+                pass
             if resp == 30:                              # partial service: registered, fewer channels
                 for t, v in cmcfg.parse(body[3:]):
                     if t == 49:
@@ -258,7 +483,8 @@ class CmtsCore:
                         self.log(f"[REG] {fmt_mac(m.mac)} : trafic unicast agrégé sur "
                                  f"{len(ok)} canaux ({', '.join(map(str, ok))}), DSID {m.dsid:#x}")
             else:
-                self.log(f"[REG] !! {fmt_mac(m.mac)} REG-ACK réponse {resp}: " + "; ".join(
+                self.log(f"[REG] !! {fmt_mac(m.mac)} REG-ACK réponse {resp} ({body.hex()})"
+                         + (f" [variante TCC « {m.tcc_variant} »]" if getattr(m, "tcc_variant", None) else "") + ": " + "; ".join(
                     cmcfg.describe(cmcfg.parse(body[3:]), indent="")))
             return
         mp = info["mtype"] == mac.REG_REQ_MP          # DOCSIS 3.0 (MDD present): SID, fragments, TLVs
@@ -308,9 +534,11 @@ class CmtsCore:
             return s
 
         bonded = bool(mp and self.bonding)
+        clusters, tcc = self._mtc_setup(m, tlvs, new_sid) if (mp and response == 0) else (None, b"")
         rsp_tlvs, flows = registration.build_response(tlvs, m.sid, new_sfid, new_sid,
                                                       version=3 if mp else getattr(self, "docsis_version", 1),
-                                                      bonded=bonded) if response == 0 else (b"", [])
+                                                      bonded=bonded, clusters=clusters) if response == 0 else (b"", [])
+        rsp_tlvs += tcc
         if bonded and response == 0:
             rcc, rcp_id = registration.receive_channel_config(tlvs, self.bonding)
             rsp_tlvs += rcc
@@ -324,7 +552,15 @@ class CmtsCore:
         m.reg, m.flows = (body, frame), flows
         if response == 0:
             m.state = "registering"
-        self.mux.ucast.append((frame, None))
+        if clusters:
+            def sent(air_ts, m=m):              # the modem now ranges on its new channels
+                with self.lock:
+                    for k in m.links.values():
+                        if k.state == "ranging":
+                            k.next_sm = air_ts + int(0.02 * TS_RATE)
+            self.mux.ucast.append((frame, sent))
+        else:
+            self.mux.ucast.append((frame, None))
         self.log(f"[REG] {'REG-RSP-MP' if mp else 'REG-RSP'} {registration.RESPONSE.get(response, response)} -> {fmt_mac(m.mac)}: "
                  + ", ".join(f"flux {d} réf {r} SFID {f}" + (f" SID {s:#06x}" if s else "") for d, r, f, s in flows))
 
@@ -332,6 +568,17 @@ class CmtsCore:
         with self.lock:
             m = self.by_sid.get(sid)
             if not m:
+                return
+            ucid = self.sid_ch.get(sid)
+            if ucid is not None and ucid in m.links:   # a further upstream channel
+                k = m.links[ucid]
+                k.misses += 1
+                k.poll_deadline = None
+                k.next_sm = self.mux.now_ts + self.sm_retry
+                if k.misses >= MAX_MISSES and k.state != "lost":
+                    k.state = "lost"
+                    self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {sid:#06x}: {MAX_MISSES} Station "
+                             f"Maintenance sans réponse, canal abandonné")
                 return
             m.misses += 1
             m.poll_deadline = None
@@ -369,6 +616,14 @@ class CmtsCore:
             if initial:                                 # (re)initialisation: forget the registration
                 m.state, m.reg, m.flows = "ranging", None, []
                 self.bonded.pop(m.mac, None)
+                if m.mtc:                               # back to one channel, no segments
+                    self.mtc_sids.discard(m.sid)
+                    for k in m.links.values():
+                        k.state = "lost"
+                        self.mtc_sids.discard(k.sid)
+                        self.pending.pop(k.sid, None)
+                        self.active.pop(k.sid, None)
+                    m.mtc, m.reasm = False, None
             m.misses = 0
             m.n_req += 1
             # measurements -> adjustments
@@ -384,6 +639,11 @@ class CmtsCore:
             if newly:
                 m.state, m.success_at = "ranged", time.time()
             m.last = dict(err_us=ev.err_counts / TS_RATE * 1e6, power=b.power_db, freq=b.freq, mer=b.mer)
+            if self.us_chans and len(self.us_chans) > 1 and "ssap" in info:
+                m.pr_qdb = info["ssap"]                    # transmit power reporting (MDD TLV 12)
+                m.last["pr_dbmv"] = m.pr_qdb / 4
+                if m.drw_qdb is None and not initial:      # set once, before registration
+                    m.drw_qdb = self._drw(m)
             rx_ts = ev.rx_ts
         line = (f"[US] RNG-REQ {fmt_mac(addr)} {where} SID {info.get('sid', 0):#06x} -> {m.sid:#06x}: "
                 f"arrivée {ev.err_counts / TS_RATE * 1e6:+8.3f} µs, {b.power_db:6.1f} dBFS, "
@@ -395,7 +655,7 @@ class CmtsCore:
         if not self.respond:
             self.log(line + "  (écoute seule, pas de RNG-RSP)")
             return
-        frame = mac.rng_rsp_msg(self.mux.sa, addr, m.sid, self.us_chan_id, ta, pq, fq, status)
+        frame = mac.rng_rsp_msg(self.mux.sa, addr, m.sid, self.us_chan_id, ta, pq, fq, status, drw_qdb=m.drw_qdb)
         sname = "success" if status == mac.RNG_SUCCESS else "continue"
 
         def sent(air_ts, m=m, ok=ok, rx_ts=rx_ts):
@@ -420,5 +680,7 @@ class CmtsCore:
 
     def summary(self):
         with self.lock:
-            return [dict(mac=fmt_mac(m.mac), sid=m.sid, state=m.state, n_req=m.n_req, **m.last)
+            return [dict(mac=fmt_mac(m.mac), sid=m.sid, state=m.state, n_req=m.n_req, **m.last,
+                         links={u: (k.sid, k.state) for u, k in m.links.items()} if m.mtc else {},
+                         reasm=dict(m.reasm.stats) if m.reasm else None)
                     for m in self.modems.values()]

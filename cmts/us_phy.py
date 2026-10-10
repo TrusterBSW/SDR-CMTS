@@ -390,8 +390,12 @@ class BurstDemod:
         m = np.abs(c1) + np.abs(c2)
         return m, m ** 2 / (pre.size * e), c1, c2
 
-    def detect(self, x, iuc, t_lo=0.0, t_hi=None, rho_min=0.35, max_frame=64, grant_syms=None, eq_key=None):
+    def detect(self, x, iuc, t_lo=0.0, t_hi=None, rho_min=0.35, max_frame=64, grant_syms=None, eq_key=None,
+               seg=False):
+        """seg: a Multiple Transmit Channel mode data grant (segment header ON): the burst is a
+        segment header and the grant's share of the service flow's byte stream, decoded whole."""
         self._last = None
+        self._seg = seg
         res = self._detect_any(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
         if res is None or res.frame is not None or eq_key is None:
             return res
@@ -554,11 +558,16 @@ class BurstDemod:
                 layouts.insert(0, [k] * (n - 1) + [min(last, k)])
             elif n > 1:                    # leftover too short for a codeword: unused
                 layouts.insert(0, [k] * (n - 1))
+        # segment header ON grant: the whole grant as a segment first; a plain MAC frame still
+        # tried after (the grants around the REG-RSP-MP that switches the modem to this mode)
+        modes = [(lay, False) for lay in layouts]
+        if getattr(self, "_seg", False) and fill:
+            modes = [(layouts[0], True)] + modes
         best = None                        # (header parsed?, error) of the most telling failure
         for rev in (True, False):          # LSB-first MAC bytes, as the real modem does
-            for lay in layouts:
+            for lay, seg in modes:
                 try:
-                    frame, info, fixed = self._rs_frame(prof, raw, rev, lay, out)
+                    frame, info, fixed = self._rs_frame(prof, raw, rev, lay, out, seg)
                     out.frame, out.info = frame, info
                     out.rs_fixed, out.bitrev, out.error = fixed, rev, ""
                     return
@@ -567,11 +576,34 @@ class BurstDemod:
                         best = (e.header_ok, f"RS/{e}")
         out.error = best[1] if best else "RS"
 
-    def _rs_frame(self, prof, raw, rev, layout, out):
+    def _rs_frame(self, prof, raw, rev, layout, out, seg=False):
         """RS-decode `raw` with the given codeword information lengths (None: from the header,
         the last codeword tried at its minimum length then up to 8 bytes longer)."""
         t, k = prof.fec_t, prof.fec_k
         flip = (lambda b: bytes(_BITREV[np.frombuffer(b, np.uint8)])) if rev else (lambda b: b)
+        if seg:                                           # segment: every codeword of the grant
+            if cdsp.AVAILABLE:
+                msg, fixed, bad = cdsp.rs_decode_many(raw, layout, 2 * t)
+                if bad >= 0:
+                    raise _DecodeError(f"uncorrectable (bloc {bad})", bad > 0)
+                data = flip(msg.tobytes())
+            else:
+                msgs, fixed, pos = [], 0, 0
+                for n_info in layout:
+                    cw = raw[pos:pos + n_info + 2 * t]
+                    try:
+                        m_, nf = prof.rs.decode(bytes(cw))
+                    except ValueError as e:
+                        raise _DecodeError(f"{e} (bloc {len(msgs)})", bool(msgs))
+                    msgs.append(m_)
+                    fixed += nf
+                    pos += n_info + 2 * t
+                data = flip(b"".join(msgs))
+            hdr = mac.parse_seg_header(data)
+            if hdr is None:
+                out.head += f"{'LSB' if rev else 'MSB'}-first {data[:12].hex(' ')} ; "
+                raise _DecodeError("HCS segment", False)
+            return data, dict(kind="SEG", total=len(data), **hdr), fixed
         if layout is not None and cdsp.AVAILABLE:          # known layout: codewords in C
             msg0, fixed, bad = cdsp.rs_decode_many(raw, layout[:1], 2 * t)
             if bad == 0:

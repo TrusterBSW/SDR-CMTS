@@ -102,8 +102,10 @@ class UpstreamRx:
 
     # ------------------------------------------------------------ inputs
     def add_grants(self, grants):
-        self.windows.extend(grants)
-        self.sched.extend(grants)
+        # IUC | mac.IUC_SEG: a data grant of a Multiple Transmit Channel mode flow (segments)
+        clean = [(s, e, iuc & ~mac.IUC_SEG, sid) for s, e, iuc, sid in grants]
+        self.windows.extend((s, e, iuc & ~mac.IUC_SEG, sid, bool(iuc & mac.IUC_SEG)) for s, e, iuc, sid in grants)
+        self.sched.extend(clean)
 
     def push(self, tick, x):
         """RX samples whose first one was sampled at device `tick`. Gaps (overflows) are
@@ -149,7 +151,7 @@ class UpstreamRx:
             return 0
         done = 0
         while self.windows:
-            start_ts, end_ts, iuc, sid = self.windows[0]
+            start_ts, end_ts, iuc, sid, seg = self.windows[0]
             prof_iuc = mac.IUC_REQUEST if iuc == mac.IUC_REQUEST else iuc
             if prof_iuc not in self.prof:   # data grants: not demodulated yet
                 self.windows.popleft()
@@ -182,14 +184,14 @@ class UpstreamRx:
                 self.stats["late"] += 1
                 continue
             t0, nb0 = time.perf_counter(), self.stats["bursts"]
-            self._handle(x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc)
+            self._handle(x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg)
             key = f"{iuc}{'+' if self.stats['bursts'] > nb0 else '-'}"
             c = self.timing.setdefault(key, [0, 0.0])
             c[0] += 1
             c[1] += time.perf_counter() - t0
         return done
 
-    def _handle(self, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc):
+    def _handle(self, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg=False):
         # energy gate on mini-slot sized blocks
         blk = max(8, int(self.ms_samples / 2))
         nb = x.size // blk
@@ -244,7 +246,7 @@ class UpstreamRx:
                 gsym = (s1 - s0) / self.demod.sps if data else None
                 bu = self.demod.detect(x, prof_iuc, t_lo, t_hi,
                                        max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64,
-                                       grant_syms=gsym, eq_key=sid if unicast else None)
+                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and data)
                 if bu is None:
                     continue
                 if iuc == mac.IUC_REQUEST and bu.frame is None and bu.rho < 0.6:
@@ -266,7 +268,7 @@ class UpstreamRx:
                 gsym = (s1 - s0) / self.demod.sps if iuc in DATA_IUCS else None
                 bu = self.demod.detect(x, prof_iuc, s0 - a - pre, s0 - a + 2 * blk,
                                        max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if gsym else 64,
-                                       grant_syms=gsym, eq_key=sid if unicast else None)
+                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and bool(gsym))
                 if bu is not None:
                     self.stats["grant_start_search"] += 1
                     found.append(bu)

@@ -121,9 +121,12 @@ def build(a, log=print):
                             {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod], log=log, **rx_kw)
     else:
         rx = UpstreamRx(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, log=log, **rx_kw)
+    core.ms_syms = int(round(a.minislot * 6.25e-6 * symrate))
     if a.us_channels > 1:
         rx, decim = build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log)
-    mux.on_grants = rx.add_grants
+        mux.on_grants = lambda g: rx.add_grants(core.mark_grants(g))     # segment grants flagged
+    else:
+        mux.on_grants = rx.add_grants
     mux.ack_ms = lambda: int(rx.processed_ts // mux.ms_counts)   # MAP Ack Time: upstream really processed
     mux.data_max_ms = a.ds_queue_ms
     mux.secondary = []
@@ -156,8 +159,12 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
         sys.exit("--us-channels > 1 : sur le matériel, avec --us-process, uniquement")
     a.us_center = (chans[0][1] + chans[-1][1]) / 2
     width = symrate * 1.25
-    if chans[-1][1] - chans[0][1] + width > 0.8 * mcr:
-        sys.exit(f"--us-channels/--us-spacing : {(chans[-1][1] - chans[0][1] + width) / 1e6:.1f} MHz à "
+    span = abs(chans[-1][1] - chans[0][1]) + width
+    if max(f for _, f in chans) + width / 2 > 65e6:
+        log(f"!! canal montant au-delà de 65 MHz : hors de la bande montante EuroDOCSIS, le modem refuse "
+            f"le TCC (REG-ACK 209, reject-bad-tcc, vu le 2026-10-10 avec 67 MHz)")
+    if span > 0.8 * mcr:
+        sys.exit(f"--us-channels/--us-spacing : {span / 1e6:.1f} MHz à "
                  f"recevoir, plus que les {0.8 * mcr / 1e6:.1f} MHz utiles à {mcr / 1e6:.3f} MS/s")
     ring = SampleRing(mcr, 1, history_s=0.5)
     factor = max(1, int(mcr // (2.5 * symrate)))
@@ -172,7 +179,8 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
                                   ddc=dict(offset=f - a.us_center, factor=factor, cutoff=width / 2 + 1e6),
                                   **rx_kw))
     for (ucid, f), r in zip(chans[1:], rxs[1:]):
-        mux.add_upstream(ucid, f, scheduler=core.channel_scheduler(ucid), on_grants=r.add_grants,
+        mux.add_upstream(ucid, f, scheduler=core.channel_scheduler(ucid),
+                         on_grants=lambda g, r=r: r.add_grants(core.mark_grants(g)),
                          ack_ms=lambda r=r: int(r.processed_ts // mux.ms_counts), im=False)
     core.us_rx = rxs
     rxs[0].all_channels = rxs
@@ -298,12 +306,21 @@ def _children(pid):
         return []
 
 
+def _take_lag(r):
+    lag, r.lag_max_ms = r.lag_max_ms, 0.0
+    return lag
+
+
 def status_line(mux, core, rx, extra=""):
     st = rx.stats
     fl = rx.noise_dbfs()
     mods = "; ".join(f"{m['mac']} SID {m['sid']:#06x} {m['state']}"
                      + (f" ({m['err_us']:+.2f} µs, {m['power']:.1f} dBFS, {m['freq']:+.0f} Hz, MER {m['mer']:.1f})"
-                        if 'err_us' in m else "") for m in core.summary()) or "aucun modem"
+                        if 'err_us' in m else "")
+                     + (" + " + ", ".join(f"US{u} SID {sid:#06x} {st}" for u, (sid, st) in sorted(m['links'].items()))
+                        if m.get('links') else "")
+                     + (f" [segments {m['reasm']['segments']}, trames {m['reasm']['frames']}, perdus {m['reasm']['lost']}]"
+                        if m.get('reasm') else "") for m in core.summary()) or "aucun modem"
     lag, rx.lag_max_ms = rx.lag_max_ms, 0.0
     if os.environ.get("MINI_CMTS_TIMING") and rx.timing:   # diagnostic: worker time per window type
         log("[TEMPS] " + ", ".join(f"{k}: {v[0]} × {v[1] * 1e3 / max(v[0], 1):.2f} ms = {v[1]:.2f} s"
@@ -314,7 +331,7 @@ def status_line(mux, core, rx, extra=""):
                                           if 'windows_queued' in st else "")
             + f", rafales {st['bursts']} (décodées {st['decoded']}, énergie brute {st['raw']}), "
             + "".join(f" | US{k + 2} : bruit {'?' if r.noise_dbfs() is None else f'{r.noise_dbfs():.1f}'} dBFS, "
-                      f"retard max {r.lag_max_ms:.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']})"
+                      f"retard max {_take_lag(r):.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']})"
                       for k, r in enumerate(getattr(rx, "all_channels", [rx])[1:]))
             + f", RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
             f"({core.n['empty']} vides), concat {core.n['concat']} | {mods}")
@@ -608,7 +625,7 @@ def run_usrp(a):
         # wideband: the LO between the channels (in the gap of --us-spacing - channel width)
         rx_target, lo_off = a.us_center, 0.0
         usrp.set_rx_freq(uhd.types.TuneRequest(rx_target))
-        usrp.set_rx_bandwidth(min(56e6, a.us_spacing * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6))
+        usrp.set_rx_bandwidth(min(56e6, abs(a.us_spacing) * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6))
     else:
         rx_target, lo_off = a.us_freq, rx_lo_offset(a)
         usrp.set_rx_freq(uhd.types.TuneRequest(a.us_freq, lo_off))
@@ -890,8 +907,9 @@ def parser():
     g.add_argument("--us-channels", type=int, default=1,
                    help="upstream channels (DOCSIS 3.0 upstream bonding, experimental): >1 receives one "
                         "wideband stream and runs one upstream process per channel")
-    g.add_argument("--us-spacing", type=float, default=7e6,
-                   help="upstream channel spacing (Hz); 7 MHz leaves 0.6 MHz between two 5.12 Msym/s channels "
+    g.add_argument("--us-spacing", type=float, default=-7e6,
+                   help="upstream channel spacing (Hz); -7 MHz: the next channel 7 MHz below (60 -> 53 MHz: the "
+                        "EuroDOCSIS upstream band ends at 65 MHz), 0.6 MHz between two 5.12 Msym/s channels "
                         "for the RX LO")
     g.add_argument("--us-mod", choices=("qpsk", "16qam", "64qam"), default="64qam",
                    help="modulation of the upstream data bursts (16qam: twice the bits per symbol; 64qam: "
