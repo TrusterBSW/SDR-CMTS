@@ -914,9 +914,12 @@ def run_usrp(a):
             # GIL from the encoder and shaper, which fell further behind: -13 s, never caught up.
             # Dropping locally costs nothing; the stream skips to its schedule (a gap on the air,
             # like an underflow, the DOCSIS time base unchanged).
+            # (only a block clearly late, > 5 ms: the B210 time is known to a few ms at best, and
+            # with a 1 ms threshold a biased clock reading dropped a third of the blocks of a
+            # stream that was on time, 2026-10-10: TX LED blinking, modem never locked)
             if sync[0] > 0 and not a.tx_untimed:
                 ahead = t_start + n_sent / fs_tx - (sync[1] + time.perf_counter() - sync[0])
-                if ahead < 1e-3:
+                if ahead < -5e-3:
                     n_sent += x.size
                     counters["skip"] = counters.get("skip", 0) + 1
                     counters["skip_ms"] = counters.get("skip_ms", 0.0) + x.size / fs_tx * 1e3
@@ -941,7 +944,8 @@ def run_usrp(a):
                 p0 = time.perf_counter()
                 dev = usrp.get_time_now().get_real_secs()
                 now_p = time.perf_counter()
-                sync = ((p0 + now_p) / 2, dev)
+                if now_p - p0 < 2e-3:                 # a slow reading (busy USB, GIL) is off by up to
+                    sync = ((p0 + now_p) / 2, dev)    # half its round trip: kept only when quick
             if sync[0] > 0:
                 m_min = min(m_min, t_start + n_sent / fs_tx - (sync[1] + now_p - sync[0]))
             if time.time() - t_last > 5:
