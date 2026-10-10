@@ -446,6 +446,78 @@ def split_cpus(child_pids):
             f"{','.join(map(str, sorted(rest)))}")
 
 
+def tx_dc_calibrate(uhd, usrp, tx_stream, rx_stream, tx_center, rx_restore, log, delta=0.02):
+    """Measure the B210's TX LO leakage with its own RX and return the complex constant that,
+    added to the TX baseband, cancels it. A channel sitting on the TX centre (3 bonded channels:
+    the middle one) had the leakage in its middle, ~-31 dBc measured with the HackRF (2026-10-10).
+
+    The RX is tuned 100 kHz above the TX centre (the leakage at -100 kHz, away from the RX's own
+    DC); the TX sends a constant c (c0, c0 +- d, c0 + jd); the leakage power |L + g c|^2 at
+    -100 kHz is a paraboloid in c whose minimum c* = -L/g follows from the four powers (no phase
+    reference needed). Two rounds, the second around the first estimate with a smaller d.
+    The TX is fed by a thread during each capture: send() returns before the samples are on the
+    air, and a TX that runs dry in the middle of a capture biased the first version (2026-10-10:
+    -18 dB on one start, -2 dB on the next). rx_restore(): retunes the RX to the upstream."""
+    fs = usrp.get_rx_rate()
+    usrp.set_rx_freq(uhd.types.TuneRequest(tx_center + 100e3, 2e6))
+    n = int(fs * 0.02)
+    blk_n = int(usrp.get_tx_rate() * 0.002)
+
+    def power(c):
+        stop = threading.Event()
+        blk = np.full(blk_n, c, np.complex64)
+
+        def feed():
+            md = uhd.types.TXMetadata()
+            md.start_of_burst, md.end_of_burst = True, False
+            while not stop.is_set():
+                tx_stream.send(blk, md)
+                md.start_of_burst = False
+            md.end_of_burst = True
+            tx_stream.send(np.zeros(16, np.complex64), md)
+        th = threading.Thread(target=feed, daemon=True)
+        th.start()
+        time.sleep(0.05)                                  # the constant is on the air by now
+        buf = np.zeros((1, n), np.complex64)
+        rmd = uhd.types.RXMetadata()
+        cmd = uhd.types.StreamCMD(uhd.types.StreamMode.num_done)
+        cmd.num_samps, cmd.stream_now = n, True
+        rx_stream.issue_stream_cmd(cmd)
+        got = 0
+        while got < n:
+            k = rx_stream.recv(buf[:, got:], rmd, 1.0)
+            if k == 0:
+                break
+            got += k
+        stop.set()
+        th.join(1.0)
+        x = buf[0, :got]
+        t = np.arange(x.size) / fs
+        return float(np.abs(np.mean(x * np.exp(2j * np.pi * 100e3 * t))) ** 2)
+
+    def solve(c0, d):
+        p0, p1, p2, p3 = power(c0), power(c0 + d), power(c0 - d), power(c0 + 1j * d)
+        g2 = (p1 + p2 - 2 * p0) / (2 * d ** 2)
+        if g2 <= 0:
+            raise ValueError("mesure incohérente")
+        cr = (d ** 2 - (p1 - p0) / g2) / (2 * d)
+        ci = (d ** 2 - (p3 - p0) / g2) / (2 * d)
+        return c0 + complex(cr, ci), p0
+    try:
+        c1, p_raw = solve(0j, delta)
+        c2, _ = solve(c1, max(0.002, abs(c1) / 2))
+        best = min(((power(c), c) for c in (c1, c2)), key=lambda pc: pc[0])
+        pc, c = best
+        rx_restore()
+        if pc >= p_raw or abs(c) > 0.1:
+            return 0j, f"calibration de la fuite TX : sans effet ({10 * np.log10(pc / p_raw):+.1f} dB), non appliquée"
+        return c, (f"calibration de la fuite TX : correction {c.real:+.4f}{c.imag:+.4f}j (|c| {abs(c):.4f}), "
+                   f"fuite {10 * np.log10(pc / p_raw):+.1f} dB")
+    except (ValueError, RuntimeError) as e:
+        rx_restore()
+        return 0j, f"!! calibration de la fuite TX impossible : {e}"
+
+
 def herd_irqs(irq_cpus):
     """Move every hardware interrupt except the USB host controllers' onto `irq_cpus` (the core
     already left to the B210's USB interrupts). The kernel places them where it likes and moves
@@ -646,6 +718,12 @@ def run_usrp(a):
     tx_args.args = "underflow_policy=next_packet"     # a late block is dropped, the stream goes on
     tx_stream = usrp.get_tx_stream(tx_args)
     rx_stream = usrp.get_rx_stream(uhd.usrp.StreamArgs("fc32", "sc16"))
+    tx_dc = 0j
+    if a.tx_dc_cal:
+        rx_freq_now, rx_lo_now = usrp.get_rx_freq(), usrp.get_rx_freq() + lo_off
+        tx_dc, msg = tx_dc_calibrate(uhd, usrp, tx_stream, rx_stream, tx_center,
+                                     lambda: usrp.set_rx_freq(uhd.types.TuneRequest(rx_freq_now, rx_lo_now - rx_freq_now)), log)
+        log(msg)
 
     stop = threading.Event()
     qsym = queue.Queue(maxsize=2)
@@ -697,6 +775,8 @@ def run_usrp(a):
                 for h in helpers:
                     cdsp.add_into(x, h["done"].get())
                 cdsp.scale_clip(x, scale)
+            if tx_dc:
+                x += np.complex64(tx_dc)              # cancels the TX LO leakage (tx_dc_calibrate)
             q.put(x)
 
     last_push = [time.monotonic()]
@@ -896,6 +976,10 @@ def parser():
                         "all, or a list like 1-3,5-7")
     g.add_argument("--performance", action=argparse.BooleanOptionalAction, default=True,
                    help="put every CPU in the 'performance' governor for the run (sudo), restored on exit")
+    g.add_argument("--tx-dc-cal", action=argparse.BooleanOptionalAction, default=False,
+                   help="measure and cancel the TX LO leakage at start (the B210 RX tuned to the TX centre "
+                        "for a moment). It lowered the leakage in the middle of 3 channels (-31 dBc) by 2-24 dB "
+                        "but did not make the modem acquire channel 2 more often (2026-10-10): off by default")
     g.add_argument("--tx-untimed", action="store_true",
                    help="only the first block is timed (old behaviour: an underflow shifts the downstream)")
     g = ap.add_argument_group("upstream")

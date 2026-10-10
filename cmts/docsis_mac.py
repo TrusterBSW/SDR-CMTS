@@ -331,8 +331,11 @@ class Reassembler:
     stuff byte (0xFF) where a frame header should start is the padding of a segment's end. After
     a loss, parsing resumes at the first MAC header a later segment points to (PFI/pointer)."""
 
-    def __init__(self, channels=None, timeout_s=0.1):
-        """channels: the upstream channel ids the flow uses (None: those seen so far)."""
+    def __init__(self, channels=None, timeout_s=1.0):
+        """channels: the upstream channel ids the flow uses (None: those seen so far).
+        timeout_s: a hole waits at most this long. Each channel has its own upstream process,
+        and one can deliver 100+ ms behind the other: a 0.1 s timeout cut a REG-ACK whose second
+        segment came from the late channel (2026-10-10, the modem then never got online here)."""
         self.channels = set(channels or ())
         self.timeout = timeout_s
         self.next = 0                # next sequence number expected (a flow's first segment is 0)

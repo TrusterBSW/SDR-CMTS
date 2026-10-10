@@ -5,7 +5,8 @@
 A Cable Modem Termination System written in Python (with C kernels) that drives a single
 Ettus/NI **USRP B210** and brings a real, unmodified cable modem **online** in a closed lab:
 EuroDOCSIS downstream, DOCSIS 1.x/2.0 upstream, ranging, DHCP/TFTP/ToD, registration
-(DOCSIS 1.1 and 3.0), downstream channel bonding and an Ethernet bridge to the Linux host.
+(DOCSIS 1.1 and 3.0), downstream channel bonding, DOCSIS 3.0 upstream channel bonding (Multiple
+Transmit Channel mode) and an Ethernet bridge to the Linux host.
 
 As far as we know there was no open-source CMTS able to do this with a low-cost SDR: this project
 exists to learn DOCSIS hands-on and to let others do the same.
@@ -22,6 +23,14 @@ exists to learn DOCSIS hands-on and to let others do the same.
 
 Both are the physical limits of the channels used (2 × 256-QAM ≈ 100 Mbit/s;
 1 × 64-QAM ATDMA ≈ 25 Mbit/s after FEC and burst overhead).
+
+Also working (experimental, 2026-10-10, not the defaults):
+
+| | Configuration | Status |
+|---|---|---|
+| Downstream | 3 bonded channels (306 + 314 + 322 MHz) | 142.8 Mbit/s measured once; the modem often leaves one channel out (partial service), see below |
+| Upstream bonding | 2 channels ATDMA 64-QAM 5.12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem online in Multiple Transmit Channel mode, ranged on both channels, frames reassembled from segments sent on both; throughput not measured yet |
+| Together | 3 downstream + 2 upstream channels | modem online (with 2 or 3 downstream channels acquired) |
 
 ## ⚠ Safety and legal
 
@@ -70,6 +79,8 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--us-target` | -14 dBFS | burst level the modems are ranged to |
 | `--grant-ahead-hold/-every/-scale` | on, 3, 4 | unsolicited grants keeping the upload going |
 | `--us-process` | on | upstream demodulation in its own process |
+| `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
+| `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 200000000"` (already the defaults) |
 
 `python3 mini_cmts.py --help` lists everything; `--sim SECONDS` runs a simulated modem without
@@ -89,6 +100,14 @@ hardware.
   (timing/power/frequency), bandwidth requests and grants (including grants in advance),
   REG-REQ(-MP)/REG-RSP(-MP)/REG-ACK with CMTS MIC, receive channel configuration and DSID for
   bonding, MDD for DOCSIS 3.0.
+- **Upstream bonding** (`--us-channels 2`): the B210 receives one 27.808 MS/s stream centred
+  between the upstream channels; one process per channel takes its channel out with a C DDC
+  (shift, low-pass, decimation) and demodulates it. A DOCSIS 3.0 modem gets, in its REG-RSP-MP,
+  Multiple Transmit Channel mode, a Transmit Channel Configuration (TLV 46: keep channel 1, add
+  channel 2 with unicast ranging, its UCD) and a SID cluster (TLV 47). It then sends its data as
+  segments (8-byte segment header, sequence number) on both channels; the CMTS puts them back in
+  order and cuts them into MAC frames again (Continuous Concatenation and Fragmentation). Requests
+  are in bytes (queue-depth based requests), granted on every ranged channel.
 - **Bridge** (`cmts/bridge.py`): Ethernet frames between the modems and the TAP interface.
 - **Provisioning** (`provision.py`, `cmts/cmcfg.py`): DHCP, TFTP, ToD, config file generator.
 
@@ -102,6 +121,14 @@ hardware.
 - The Sagem puts a zero piggyback request in almost every frame: grants in advance must not stop on it.
 - The modem's upstream symbol clock was 4.3 ppm off: harmless on short bursts, fatal on 3 ms ones.
 - 16-QAM TDMA preambles are 16-QAM too (the label/point map had to be found by brute force).
+- Upstream bonding with the Sagem: an upstream channel above 65 MHz (the top of the EuroDOCSIS
+  upstream band) or a Dynamic Range Window TCC in the REG-RSP-MP both get REG-ACK 209
+  (reject-bad-tcc), with no further detail. The modem pads every grant with a segment of stuff
+  bytes: those must not keep the grants in advance going.
+- The modem only locks when the B210 master clock is 27.808 MHz (4 samples per symbol): with
+  41.712 or 55.616 MHz it never locks, even on one channel (cause not found). 27.808 MS/s holds
+  3 channels of 8 MHz at most, which is why 4+ downstream channels need a second B210.
+- With 3 channels the middle one sits on the TX LO: its leakage was ~-31 dBc in that channel.
 
 Details, measurements and every bug found: `docs/JOURNAL.fr.md` (French) and `docs/TESTS.fr.md`.
 
@@ -115,9 +142,9 @@ Most tests replay real bursts of the modem (`tests/data/sagem3686/`).
 
 ## Roadmap
 
-- 4 downstream channels in real time (C synthesis done; the CPU of the test laptop is the limit),
-  then 5-6.
-- DOCSIS 3.0 upstream bonding (several upstream channels).
+- Upstream bonding: throughput measurement (needs a client behind the modem), more than 2 channels.
+- 3 downstream channels reliably (the modem often leaves one out), then 4+: blocked by the
+  27.808 MHz master clock constraint above, i.e. a second B210 sharing the same 10 MHz / PPS.
 - Spreading the CMTS over several SDRs / PCs.
 
 ## Licence

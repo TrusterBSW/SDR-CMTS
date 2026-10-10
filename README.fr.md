@@ -6,7 +6,7 @@ Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C.
 **USRP B210** Ettus/NI et met **en ligne** un vrai modem câble, non modifié, dans un labo fermé :
 - voie descendante EuroDOCSIS, voie montante DOCSIS 1.x/2.0, ranging ;
 - DHCP, TFTP, ToD, enregistrement DOCSIS 1.1 et 3.0 ;
-- agrégation de canaux descendants, pont Ethernet vers le PC Linux.
+- agrégation de canaux descendants et montants (DOCSIS 3.0), pont Ethernet vers le PC Linux.
 
 À notre connaissance, aucun CMTS libre ne faisait cela avec un SDR bon marché. Le projet sert à
 apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
@@ -23,6 +23,14 @@ apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 
 Ce sont les limites physiques des canaux utilisés : 2 × 256-QAM ≈ 100 Mbit/s ; 1 × 64-QAM ATDMA
 ≈ 25 Mbit/s, une fois retirés le RS et les en-têtes de rafale.
+
+Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
+
+| | Configuration | État |
+|---|---|---|
+| Descendant | 3 canaux agrégés (306 + 314 + 322 MHz) | 142,8 Mbit/s mesurés une fois ; le modem laisse souvent un canal de côté (service partiel), voir plus bas |
+| Agrégation montante | 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem en ligne en mode multi-canal (MTC), ranging sur les deux canaux, trames reconstituées à partir de segments envoyés sur les deux ; débit pas encore mesuré |
+| Ensemble | 3 canaux descendants + 2 montants | modem en ligne (avec 2 ou 3 canaux descendants acquis) |
 
 ## ⚠ Sécurité et cadre légal
 
@@ -77,6 +85,8 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--us-target` | −14 dBFS | niveau visé pour les rafales des modems |
 | `--grant-ahead-hold/-every/-scale` | oui, 3, 4 | grants non sollicités qui entretiennent l'envoi |
 | `--us-process` | oui | démodulation montante dans un processus séparé |
+| `--us-channels`, `--us-spacing` | 1, −7 MHz | canaux montants (2 : agrégation montante DOCSIS 3.0, le second 7 MHz plus bas) |
+| `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 200000000"` (déjà les défauts) |
 
 `python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
@@ -101,6 +111,16 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - demandes de bande passante et grants, y compris les grants en avance ;
   - REG-REQ(-MP) / REG-RSP(-MP) / REG-ACK avec CMTS MIC ;
   - RCC et DSID pour l'agrégation, MDD pour DOCSIS 3.0.
+- **Agrégation montante** (`--us-channels 2`) :
+  - le B210 reçoit un seul flux à 27,808 MS/s centré entre les canaux montants ;
+  - un processus par canal extrait le sien (DDC en C : décalage, filtre, décimation) et le
+    démodule ;
+  - un modem DOCSIS 3.0 reçoit dans son REG-RSP-MP le mode multi-canal (MTC), une configuration
+    des canaux d'émission (TCC, TLV 46 : garder le canal 1, ajouter le canal 2 avec ranging
+    unicast, son UCD) et un cluster de SID (TLV 47) ;
+  - il envoie alors ses données en segments (en-tête de 8 octets, numéro de séquence) sur les
+    deux canaux ; le CMTS les remet dans l'ordre et les recoupe en trames MAC (CCF) ;
+  - les requêtes sont en octets (requêtes « queue-depth »), accordées sur chaque canal rangé.
 - **Pont** (`cmts/bridge.py`) : trames Ethernet entre les modems et l'interface TAP.
 - **Provisionnement** (`provision.py`, `cmts/cmcfg.py`) : DHCP, TFTP, ToD, générateur de fichier
   de configuration.
@@ -121,6 +141,14 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   courtes, fatal sur celles de 3 ms.
 - **En TDMA 16-QAM, le préambule est lui aussi en 16-QAM** : il a fallu retrouver la
   correspondance étiquettes/points par recherche exhaustive.
+- **Agrégation montante avec le Sagem** : un canal montant au-delà de 65 MHz (haut de la bande
+  montante EuroDOCSIS), ou un TCC de fenêtre de dynamique (DRW) dans le REG-RSP-MP, valent tous
+  deux un REG-ACK 209 (reject-bad-tcc), sans autre détail. Le modem remplit chaque grant d'un
+  segment de bourrage : ces segments ne doivent pas relancer les grants en avance.
+- **Le modem ne se cale qu'avec une horloge maître du B210 à 27,808 MHz** (4 échantillons par
+  symbole) : à 41,712 ou 55,616 MHz, jamais, même sur un seul canal (cause non trouvée). Or
+  27,808 MS/s ne contiennent que 3 canaux de 8 MHz : au-delà, il faut un second B210.
+- **À 3 canaux, celui du milieu tombe sur l'oscillateur local TX** : sa fuite y était à ~−31 dBc.
 
 Détails, mesures et tous les bogues rencontrés : `docs/JOURNAL.fr.md` et `docs/TESTS.fr.md`.
 
@@ -134,9 +162,10 @@ La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/
 
 ## Feuille de route
 
-- 4 canaux descendants en temps réel : la synthèse en C est faite, le processeur du portable de
-  test est la limite. Puis 5 à 6.
-- Agrégation montante DOCSIS 3.0 (plusieurs canaux montants).
+- Agrégation montante : mesure du débit (il faut un client derrière le modem), plus de 2 canaux.
+- 3 canaux descendants de façon fiable (le modem en laisse souvent un), puis 4 et plus : bloqué
+  par la contrainte d'horloge à 27,808 MHz ci-dessus, donc un second B210 sur la même référence
+  10 MHz / PPS.
 - Répartition du CMTS sur plusieurs SDR et PC.
 
 ## Licence

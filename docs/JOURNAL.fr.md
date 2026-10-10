@@ -573,3 +573,65 @@ d'un SDR qui prépare le signal 36 ms à l'avance.
 
 **Diagnostics ajoutés :** ligne d'état `retard max` (traitement montant), `RX écart max`, `MINI_CMTS_TIMING=1` (temps
 par type de fenêtre), `kill -USR1` sur le processus montant (piles dans `/tmp/usproc_<pid>.stack`).
+
+## Agrégation montante DOCSIS 3.0 : 2 canaux montants (nuit du 9 au 10/10/2026)
+
+```bash
+python3 mini_cmts.py --all-in-one --us-channels 2          # + --ds-channels 3 possible
+```
+
+**Résultat :** le Sagem F@st 3686 passe en mode multi-canal montant (MTC). Il range sur le second canal, répond REG-ACK
+ok et reste en ligne avec 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 et 53 MHz), en plus de 2 ou 3 canaux descendants. Ses
+données arrivent en segments sur les deux canaux et sont réassemblées sans perte (ping 20/20 à travers ce chemin). Le
+débit montant agrégé n'a pas pu être mesuré : aucun client derrière le modem cette nuit, et SNMP/HTTP sont fermés côté
+câble.
+
+**Réception :** un seul flux RX du B210 à 27,808 MS/s, centré entre les canaux (LO à 56,5 MHz, dans l'écart de 0,6 MHz
+entre les deux canaux de 6,4 MHz) :
+- un anneau partagé (`cmts/usproc.py`, `SampleRing`) ;
+- un processus par canal : DDC en C (`usdsp.c` `ddc_decim`, `cdsp.Ddc` : décalage, FIR 63 coefficients, décimation par
+  2), puis le récepteur habituel ;
+- le retard du FIR (31 échantillons) est retranché de l'origine des temps : même instant d'arrivée qu'en direct
+  (+0,12 comptes contre +0,13 dans `tests/test_usproc.py`) ;
+- coût : ~0,2 cœur de DDC par canal, ~40 % d'un cœur par processus au repos.
+
+**Enregistrement (REG-RSP-MP) :**
+- capacité 5.24 renvoyée (le MTC n'était jusqu'ici jamais activé : 5.24 = 0) ; 5.37 = 0 (MAP et UCD sur le primaire) ;
+- TCC (TLV 46) :
+  - « no action » sur le canal 1 ;
+  - « add » du canal 2 : SID de ranging, technique 2 (ranging unicast), paramètres de ranging relatifs au canal 1 ;
+  - l'UCD du canal 2 (306 octets) découpé en fragments 46.5 sur plusieurs TLV 46, avec la référence TCC en tête de
+    chaque fragment ;
+- cluster de SID (TLV 47) du flux montant, à la place du SID 24.3 ;
+- MDD : liste d'ambiguïté (TLV 8 = canal 1) et rapport de puissance (TLV 12) ; les RNG-RSP portent la fenêtre de
+  dynamique (TLV 14).
+
+**Données (MTC) :**
+- chaque grant de données d'un flux MTC est décodé en entier comme un segment (en-tête de 8 octets avec HCS, `IUC_SEG`
+  sur l'IUC transmis au récepteur) ;
+- les segments sont remis dans l'ordre par numéro de séquence, quel que soit le canal (`docsis_mac.Reassembler`) ;
+- la fin de segment est du bourrage 0xFF ; un trou est abandonné dès que chaque canal l'a dépassé ;
+- les requêtes sont en octets (FC 0xC8, ×4) ou dans l'en-tête de segment, et accordées sur chaque canal rangé.
+
+| Problème | Cause / correction |
+|---|---|
+| Processus montants à 100 % de CPU | au démarrage, chaque processus saute le retard accumulé : fenêtres lues dans des zéros, bruit mesuré à 0, recherche de préambule partout → plancher de bruit jamais pris sur des zéros |
+| REG-ACK 209 (reject-bad-tcc) avec le canal 2 à 67 MHz | au-delà de 65 MHz, haut de la bande montante EuroDOCSIS → `--us-spacing -7e6` (canal 2 à 53 MHz) |
+| REG-ACK 209 toujours | le TCC de fenêtre de dynamique (46.9, canal 0), en « no action » comme après le TLV 14 des RNG-RSP. Trouvé en faisant varier le TCC à chaque tentative du modem (`MINI_CMTS_TCC_VARIANTS`) : sans lui, en ligne du premier coup |
+| Grants en avance sans fin | le modem remplit chaque grant d'un segment de bourrage (PFI 0, 0xFF) ; ces segments ne prolongent plus les grants |
+
+**Observations :**
+- le modem déclare 52,5 dBmV (Phi = 54 dBmV à 2 canaux). `--us-gain 30` le fait descendre à 42,75 dBmV mais coûte 2,5 dB
+  de MER ;
+- diaphonie de ~−27 dB entre les deux canaux (image IQ autour du LO) ;
+- MER des RNG-REQ : 22,4 dB sur le canal 1 contre 29 dB sur le canal 2.
+
+**3 canaux descendants + 2 montants :** en ligne, mais le modem laisse souvent le canal descendant 2 (le central),
+parfois le 3 ; 1 essai sur 4 avec les trois.
+- Le canal central est posé sur l'oscillateur local TX : fuite mesurée au HackRF à ~−31 dBc (48 dB au-dessus de la DSP
+  locale).
+- La calibration ajoutée (`--tx-dc-cal`, le RX du B210 accordé un instant sur le TX, constante complexe compensatrice)
+  baisse cette fuite de 2 à 24 dB, sans effet sur l'acquisition du canal 2 : désactivée par défaut.
+
+**4 canaux descendants et plus :** toujours bloqué. Le modem ne se cale qu'avec une horloge maître de 27,808 MHz, qui ne
+contient que 3 canaux de 8 MHz. Voie possible : un second B210 sur la même référence 10 MHz / PPS.
