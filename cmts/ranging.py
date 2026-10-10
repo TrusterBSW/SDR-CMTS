@@ -19,6 +19,7 @@ from . import docsis_mac as mac
 from .upstream import TS_RATE
 
 SM_MINISLOTS = 12          # Station Maintenance grant (RNG-REQ burst = 9 mini-slots at 1.28 Msym/s)
+SPLIT_MIN_BYTES = 4000     # MTC: a request up to this size is granted on one channel only
 REQ_MULT = 4               # bytes per request unit of a flow without TLV 24.26 (MULPIv3.0 C.2.2.8.12)
 SEG_HDR = 8
 MAX_MISSES = 16
@@ -178,6 +179,11 @@ class CmtsCore:
                 self.n["req"] += 1
             self._maps_ch[ch] += 1
             give = self._maps_ch[ch] % self.grant_ahead_every == 0
+            # an MTC flow's grants in advance go to its channels in turn (one per `every` MAPs),
+            # not to all of them at once: the modem pads every grant it gets, data or not, and
+            # each padding burst still costs the receiver a preamble search
+            nch = len(self.us_chans) if self.us_chans else 1
+            turn = (self._maps_ch[ch] // self.grant_ahead_every) % nch == (ch - 1) % nch
             for sid, (until, n) in list(self.active.items()):
                 if self.sid_ch.get(sid, 1) != ch:
                     continue
@@ -185,7 +191,7 @@ class CmtsCore:
                     del self.active[sid]
                     continue
                 n = min(255, max(n, int(round(n * self.grant_ahead_scale))))
-                if give and sid not in granted and used + n <= free_ms:
+                if give and (turn or sid not in self.mtc_sids) and sid not in granted and used + n <= free_ms:
                     out.append((sid, iuc_s if n <= short else iuc_l, n))
                     used += n
                     self.n["ahead"] += 1
@@ -332,11 +338,21 @@ class CmtsCore:
             if m is None or not nbytes:
                 return                          # 0: nothing more queued; grants in advance go on
             sids = [m.sid] + [k.sid for k in m.links.values() if k.state == "ranged"]
-            share = -(-nbytes // len(sids))
+            # a small request (TCP ACKs...) on ONE channel, in turn: split, it made two bursts
+            # where one does, and each burst costs the upstream processes about the same whatever
+            # its size (2026-10-10: ~350 bursts/s against ~230 with one channel, processing
+            # 250-1000 ms behind, grants dropped)
+            if nbytes <= SPLIT_MIN_BYTES and len(sids) > 1:
+                m.rr = (getattr(m, "rr", 0) + 1) % len(sids)
+                grant_sids = [sids[m.rr]]
+            else:
+                grant_sids = sids
+            share = -(-nbytes // len(grant_sids))
             n = self._minislots(share)
-            for s_ in sids:
+            for s_ in grant_sids:
                 self.pending[s_] = n
-                if self.grant_ahead_s:
+            if self.grant_ahead_s:
+                for s_ in sids:
                     self.active[s_] = (self.mux.now_ts + int(self.grant_ahead_s * TS_RATE), n)
         now = time.time()
         if now - self.req_log_t > 1:

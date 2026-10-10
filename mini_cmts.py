@@ -177,7 +177,7 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
             ev.us_ch = ucid
             core.on_burst(ev)
         rxs.append(RemoteUpstream(mcr, 1, symrate, tb, mux.ms_counts, on_burst, a.us_mode, bits,
-                                  history_s=0.6, log=log, ring=ring, name=f"upstream{ucid}",
+                                  history_s=1.0, log=log, ring=ring, name=f"upstream{ucid}",
                                   ddc=dict(offset=f - a.us_center, factor=factor, cutoff=width / 2 + 1e6),
                                   **rx_kw))
     for (ucid, f), r in zip(chans[1:], rxs[1:]):
