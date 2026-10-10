@@ -904,6 +904,7 @@ def run_usrp(a):
     wd.armed_at = wd.last + t_start + 0.5
     sync = (-1e9, 0.0)                          # (perf_counter, B210 time) pair, refreshed every second
     t_skip_log = [0.0]
+    catching_up = [False]
     m_min = float("inf")
     threading.Thread(target=wd.run, args=(stop,), name="watchdog", daemon=True).start()
     try:
@@ -916,12 +917,18 @@ def run_usrp(a):
             # GIL from the encoder and shaper, which fell further behind: -13 s, never caught up.
             # Dropping locally costs nothing; the stream skips to its schedule (a gap on the air,
             # like an underflow, the DOCSIS time base unchanged).
-            # (only a block clearly late, > 5 ms: the B210 time is known to a few ms at best, and
-            # with a 1 ms threshold a biased clock reading dropped a third of the blocks of a
-            # stream that was on time, 2026-10-10: TX LED blinking, modem never locked)
+            # Once late, blocks are dropped until a reserve of 8 ms is back (hysteresis): with a
+            # plain threshold the stream settled 5 ms late for good after a hiccup, every block
+            # late by 0-5 ms sent, discarded by the B210 and answered by "late" messages whose
+            # handling kept the producer from catching up (2026-10-10, TX dead after a USB
+            # adapter was plugged in).
             if sync[0] > 0 and not a.tx_untimed:
                 ahead = t_start + n_sent / fs_tx - (sync[1] + time.perf_counter() - sync[0])
-                if ahead < -5e-3:
+                if ahead < -1e-3:
+                    catching_up[0] = True
+                elif ahead > 8e-3:
+                    catching_up[0] = False
+                if catching_up[0]:
                     n_sent += x.size
                     counters["skip"] = counters.get("skip", 0) + 1
                     counters["skip_ms"] = counters.get("skip_ms", 0.0) + x.size / fs_tx * 1e3
