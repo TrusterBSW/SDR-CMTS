@@ -57,6 +57,10 @@ class BurstEvent:
     rx_ts: float = 0.0        # measured arrival, 10.24 MHz counts
 
 
+DATA_SWAP = {mac.IUC_SHORT_DATA: mac.IUC_LONG_DATA, mac.IUC_LONG_DATA: mac.IUC_SHORT_DATA,
+             mac.IUC_ADV_SHORT: mac.IUC_ADV_LONG, mac.IUC_ADV_LONG: mac.IUC_ADV_SHORT}
+
+
 class UpstreamRx:
     """Keeps the recent RX samples (indexed by device tick) and demodulates every scheduled
     upstream interval once its samples have arrived. Thread use: add_grants() from the
@@ -246,7 +250,10 @@ class UpstreamRx:
                 gsym = (s1 - s0) / self.demod.sps if data else None
                 bu = self.demod.detect(x, prof_iuc, t_lo, t_hi,
                                        max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64,
-                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and data)
+                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and data,
+                                       alt_iuc=DATA_SWAP.get(prof_iuc) if data else None)
+                if bu is not None and bu.swapped:
+                    self.stats["iuc_swap"] += 1
                 if bu is None:
                     continue
                 if iuc == mac.IUC_REQUEST and bu.frame is None and bu.rho < 0.6:

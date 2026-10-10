@@ -335,6 +335,7 @@ class Burst:
     rs_fixed: int = 0
     bitrev: bool = False
     inverted: bool = False
+    swapped: bool = False  # decoded with the other data profile than the grant's (detect alt_iuc)
     error: str = ""
     peak: float = 0.0     # max |sample| over the preamble (1.0 = ADC full scale)
     head: str = ""        # first bytes of the first RS codeword when its MAC header fails (debug)
@@ -391,12 +392,23 @@ class BurstDemod:
         return m, m ** 2 / (pre.size * e), c1, c2
 
     def detect(self, x, iuc, t_lo=0.0, t_hi=None, rho_min=0.35, max_frame=64, grant_syms=None, eq_key=None,
-               seg=False):
+               seg=False, alt_iuc=None):
         """seg: a Multiple Transmit Channel mode data grant (segment header ON): the burst is a
-        segment header and the grant's share of the service flow's byte stream, decoded whole."""
+        segment header and the grant's share of the service flow's byte stream, decoded whole.
+        alt_iuc: another profile to try when the grant's own fails (res.swapped then True); tried
+        BEFORE the equalizer / clock drift of eq_key are re-estimated: re-estimated from a burst
+        read with the wrong profile, the drift came out wrong and spoiled the next bursts of that
+        SID too (2026-10-10)."""
         self._last = None
         self._seg = seg
         res = self._detect_any(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
+        if res is not None and res.frame is None and alt_iuc in self.prof:
+            last = self._last
+            res2 = self._detect_any(x, alt_iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
+            if res2 is not None and res2.frame is not None:
+                res2.swapped = True
+                return res2
+            self._last = last
         if res is None or res.frame is not None or eq_key is None:
             return res
         retry = self.eq.pop(eq_key, None) is not None             # fresh equalizer fit
@@ -576,29 +588,53 @@ class BurstDemod:
                         best = (e.header_ok, f"RS/{e}")
         out.error = best[1] if best else "RS"
 
+    @staticmethod
+    def _rs1(prof, cw):
+        """One RS codeword -> (message bytes, corrected symbols); ValueError if uncorrectable."""
+        cw = np.ascontiguousarray(cw, dtype=np.uint8)
+        if cdsp.AVAILABLE:
+            msg, fixed, bad = cdsp.rs_decode_many(cw, [cw.size - 2 * prof.fec_t], 2 * prof.fec_t)
+            if bad >= 0:
+                raise ValueError("uncorrectable")
+            return msg.tobytes(), fixed
+        return prof.rs.decode(bytes(cw))
+
     def _rs_frame(self, prof, raw, rev, layout, out, seg=False):
         """RS-decode `raw` with the given codeword information lengths (None: from the header,
         the last codeword tried at its minimum length then up to 8 bytes longer)."""
         t, k = prof.fec_t, prof.fec_k
         flip = (lambda b: bytes(_BITREV[np.frombuffer(b, np.uint8)])) if rev else (lambda b: b)
-        if seg:                                           # segment: every codeword of the grant
-            if cdsp.AVAILABLE:
-                msg, fixed, bad = cdsp.rs_decode_many(raw, layout, 2 * t)
-                if bad >= 0:
-                    raise _DecodeError(f"uncorrectable (bloc {bad})", bad > 0)
-                data = flip(msg.tobytes())
-            else:
-                msgs, fixed, pos = [], 0, 0
-                for n_info in layout:
-                    cw = raw[pos:pos + n_info + 2 * t]
+        if seg:
+            # a segment: the grant's full codewords, as many as the modem sent. With nothing more to
+            # send, the Sagem ends its burst early with a shortened last codeword (2026-10-10: 78 +
+            # 78 + 78 + 63 bytes in a 723-byte grant); idle, it pads the whole grant with 0xFF.
+            # Decoding the grant's whole layout lost every such burst (10-15 % of the upstream
+            # under a speedtest, MER 44 dB): codewords are decoded one by one, and the first one
+            # that fails at full length is tried shortened (it is then the last).
+            n2 = 2 * t
+            msgs, fixed, pos = [], 0, 0
+            for i, n_info in enumerate(layout):
+                got = None
+                for L in [n_info] + list(range(min(n_info, prof.fec_k) - 1, 15, -1)):
+                    if pos + L + n2 > len(raw):
+                        continue
                     try:
-                        m_, nf = prof.rs.decode(bytes(cw))
-                    except ValueError as e:
-                        raise _DecodeError(f"{e} (bloc {len(msgs)})", bool(msgs))
-                    msgs.append(m_)
-                    fixed += nf
-                    pos += n_info + 2 * t
-                data = flip(b"".join(msgs))
+                        got = self._rs1(prof, raw[pos:pos + L + n2])
+                        break
+                    except ValueError:
+                        if not (msgs or L == n_info):
+                            pass
+                if got is None:
+                    if not msgs:
+                        raise _DecodeError("uncorrectable (bloc 0)", False)
+                    break                                 # what came before is the segment
+                m_, nf = got
+                msgs.append(m_)
+                fixed += nf
+                pos += len(m_) + n2
+                if len(m_) < n_info:
+                    break                                 # a shortened codeword ends the burst
+            data = flip(b"".join(msgs))
             hdr = mac.parse_seg_header(data)
             if hdr is None:
                 out.head += f"{'LSB' if rev else 'MSB'}-first {data[:12].hex(' ')} ; "
