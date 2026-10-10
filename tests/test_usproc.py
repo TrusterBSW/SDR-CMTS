@@ -69,11 +69,11 @@ if __name__ == "__main__":
     # two upstream channels (DOCSIS 3.0 upstream bonding): one wideband stream, channel 1 at
     # -3.5 MHz and channel 2 at +3.5 MHz from its centre, the same real burst on both at the same
     # time (plus a copy of the noise); one process per channel shares the ring. Rings: 27.808 MS/s
-    # (master clock, 1-3 DS) and 55.616 / 3 = 18.539 MS/s (5-6 DS: the ring at a third of the
-    # master clock, mini_cmts.build_us_bonding)
+    # (master clock, 1-3 DS), 55.616 / 3 = 18.539 MS/s, and 48.664 / 2 = 24.332 MS/s (5 DS + 2 US,
+    # mini_cmts.build_us_bonding) decimated by 2 before demodulation: 2.38 samples per symbol
     from scipy.signal import resample_poly
     from cmts.usproc import SampleRing
-    for wmcr, wdec, up_p, up_q, factor in ((mcr, 1, 2, 1, 2), (55.616e6, 3, 4, 3, 1)):
+    for wmcr, wdec, up_p, up_q, factor in ((mcr, 1, 2, 1, 2), (55.616e6, 3, 4, 3, 1), (48.664e6, 2, 7, 4, 2)):
         wfs = wmcr / wdec
         wtb = Timebase(wmcr, 0, 8)
         ring = SampleRing(wfs, wdec, history_s=1.0)

@@ -193,7 +193,10 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
         decim = int(os.environ["MINI_CMTS_DECIM"])
     fs = mcr / decim
     ring = SampleRing(fs, decim, history_s=0.5)
-    factor = max(1, int(fs // (2.5 * symrate)))
+    # decimated before demodulation down to >= 2.3 samples per symbol (5.12 Msym/s occupies 6.4 MHz):
+    # 24.332 MS/s / 2 = 2.38 per symbol, MER 35.8 dB instead of 36.7 on the real burst of
+    # tests/test_usproc.py, for about half the demodulation work (2026-10-10)
+    factor = max(1, int(fs // (2.3 * symrate)))
     bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
     rxs = []
     for ucid, f in chans:
