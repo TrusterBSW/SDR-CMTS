@@ -392,13 +392,13 @@ class BurstDemod:
         return m, m ** 2 / (pre.size * e), c1, c2
 
     def detect(self, x, iuc, t_lo=0.0, t_hi=None, rho_min=0.35, max_frame=64, grant_syms=None, eq_key=None,
-               seg=False, alt_iuc=None):
+               seg=False, alt_iuc=None, retry=True):
         """seg: a Multiple Transmit Channel mode data grant (segment header ON): the burst is a
         segment header and the grant's share of the service flow's byte stream, decoded whole.
         alt_iuc: another profile to try when the grant's own fails (res.swapped then True); tried
         BEFORE the equalizer / clock drift of eq_key are re-estimated: re-estimated from a burst
         read with the wrong profile, the drift came out wrong and spoiled the next bursts of that
-        SID too (2026-10-10)."""
+        SID too (2026-10-10). retry=False: no re-estimation at all (a partial look at a burst)."""
         self._last = None
         self._seg = seg
         res = self._detect_any(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
@@ -409,7 +409,7 @@ class BurstDemod:
                 res2.swapped = True
                 return res2
             self._last = last
-        if res is None or res.frame is not None or eq_key is None:
+        if res is None or res.frame is not None or eq_key is None or not retry:
             return res
         retry = self.eq.pop(eq_key, None) is not None             # fresh equalizer fit
         last = self._last

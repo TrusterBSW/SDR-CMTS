@@ -61,6 +61,13 @@ DATA_SWAP = {mac.IUC_SHORT_DATA: mac.IUC_LONG_DATA, mac.IUC_LONG_DATA: mac.IUC_S
              mac.IUC_ADV_SHORT: mac.IUC_ADV_LONG, mac.IUC_ADV_LONG: mac.IUC_ADV_SHORT}
 
 
+def _is_padding(bu):
+    """A segment carrying nothing: no MAC frame starts in it and its bytes are all stuff (0xFF)."""
+    info = bu.info or {}
+    body = bu.frame[mac.SEG_HDR_LEN:]
+    return info.get("kind") == "SEG" and not info.get("pfi") and len(body) > 0 and body.count(mac.STUFF) == len(body)
+
+
 class UpstreamRx:
     """Keeps the recent RX samples (indexed by device tick) and demodulates every scheduled
     upstream interval once its samples have arrived. Thread use: add_grants() from the
@@ -195,6 +202,30 @@ class UpstreamRx:
             c[1] += time.perf_counter() - t0
         return done
 
+    def _detect_data(self, x, prof_iuc, t_lo, t_hi, gsym, eq_key, seg, data):
+        """detect() for one interval. Multiple Transmit Channel mode data grant (seg): the modem
+        answers every grant, one it has no data for with a segment of stuff bytes; the first
+        codeword alone tells (no frame start, nothing but 0xFF), and the rest is not demodulated.
+        Decoding every such grant whole (up to 255 mini-slots), 100+ grants in advance per second
+        and channel, put the upstream processes 200-450 ms behind (2026-10-10: speedtest 18/0.4
+        Mbit/s, against 92/20 with one channel without segments)."""
+        if seg:
+            # only the start of the window: the matched filter would otherwise run over the
+            # whole grant (70,000 samples for 255 mini-slots) before the preamble search
+            pr = self.prof[prof_iuc]
+            lo = max(0, int(t_lo) - 64)
+            hi = min(x.size, int(t_hi + pr.burst_symbols(pr.fec_k) * self.demod.sps) + 256)
+            head = self.demod.detect(x[lo:hi], prof_iuc, t_lo - lo, t_hi - lo, max_frame=pr.fec_k, grant_syms=gsym,
+                                     eq_key=eq_key, seg=True, retry=False)
+            if head is not None and head.frame is not None and _is_padding(head):
+                head.t += lo
+                self.stats["padding"] += 1
+                return head
+        return self.demod.detect(x, prof_iuc, t_lo, t_hi,
+                                 max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64,
+                                 grant_syms=gsym, eq_key=eq_key, seg=seg,
+                                 alt_iuc=DATA_SWAP.get(prof_iuc) if data else None)
+
     def _handle(self, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg=False):
         # energy gate on mini-slot sized blocks
         blk = max(8, int(self.ms_samples / 2))
@@ -248,10 +279,7 @@ class UpstreamRx:
                 # data bursts: up to the whole grant (a 16-QAM concatenation of 36 frames was
                 # 3030 bytes; a 2048-byte cap cut it short)
                 gsym = (s1 - s0) / self.demod.sps if data else None
-                bu = self.demod.detect(x, prof_iuc, t_lo, t_hi,
-                                       max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64,
-                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and data,
-                                       alt_iuc=DATA_SWAP.get(prof_iuc) if data else None)
+                bu = self._detect_data(x, prof_iuc, t_lo, t_hi, gsym, sid if unicast else None, seg and data, data)
                 if bu is not None and bu.swapped:
                     self.stats["iuc_swap"] += 1
                 if bu is None:
@@ -273,9 +301,8 @@ class UpstreamRx:
                 # and this one then form one cluster, searched where that tail begins. A ranged
                 # modem starts at the grant start: search there.
                 gsym = (s1 - s0) / self.demod.sps if iuc in DATA_IUCS else None
-                bu = self.demod.detect(x, prof_iuc, s0 - a - pre, s0 - a + 2 * blk,
-                                       max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if gsym else 64,
-                                       grant_syms=gsym, eq_key=sid if unicast else None, seg=seg and bool(gsym))
+                bu = self._detect_data(x, prof_iuc, s0 - a - pre, s0 - a + 2 * blk, gsym,
+                                       sid if unicast else None, seg and bool(gsym), bool(gsym))
                 if bu is not None:
                     self.stats["grant_start_search"] += 1
                     found.append(bu)
