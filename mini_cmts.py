@@ -165,8 +165,9 @@ def build(a, log=print):
 
 def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     """Several upstream channels (DOCSIS 3.0 upstream bonding): the B210 receives one wideband
-    stream at the master clock rate, centred between the channels; one upstream process per
-    channel takes its channel out of the shared ring (cmts/usproc.py, C DDC) and demodulates it.
+    stream centred between the channels, at the lowest master clock / decim rate that holds them
+    (at 55.616 MHz, 5-6 DS, the full rate would be 445 MB/s of USB with the TX); one upstream
+    process per channel takes its channel out of the shared ring (cmts/usproc.py, C DDC).
     Channel 1 is the one modems range on; the others get their own UCD and MAP stream.
     Returns (receiver of channel 1, RX decimation)."""
     chans = us_channels(a)
@@ -181,15 +182,25 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     if span > 0.8 * mcr:
         sys.exit(f"--us-channels/--us-spacing : {span / 1e6:.1f} MHz à "
                  f"recevoir, plus que les {0.8 * mcr / 1e6:.1f} MHz utiles à {mcr / 1e6:.3f} MS/s")
-    ring = SampleRing(mcr, 1, history_s=0.5)
-    factor = max(1, int(mcr // (2.5 * symrate)))
+    # powers of 2 only: the B210's FPGA decimates by 2 with half-band filters; an odd factor goes
+    # through its CIC alone, and 5 DS + 2 US at 55.616 MHz / 3 left the upstream at MER 14 dB
+    # instead of 26 (2026-10-10). At /2 the same pair took 333 MB/s of USB: TX late, RX overflows.
+    decim = max(d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d)
+    if (mcr + mcr / decim) * 4 > 300e6:
+        log(f"!! USB : {(mcr + mcr / decim) * 4 / 1e6:.0f} Mo/s (émission + réception large bande) : au-delà "
+            f"d'environ 300 Mo/s, le B210 décroche (essai du 2026-10-10)")
+    if os.environ.get("MINI_CMTS_DECIM"):          # diagnostic: force the RX decimation
+        decim = int(os.environ["MINI_CMTS_DECIM"])
+    fs = mcr / decim
+    ring = SampleRing(fs, decim, history_s=0.5)
+    factor = max(1, int(fs // (2.5 * symrate)))
     bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
     rxs = []
     for ucid, f in chans:
         def on_burst(ev, ucid=ucid):
             ev.us_ch = ucid
             core.on_burst(ev)
-        rxs.append(RemoteUpstream(mcr, 1, symrate, tb, mux.ms_counts, on_burst, a.us_mode, bits,
+        rxs.append(RemoteUpstream(fs, decim, symrate, tb, mux.ms_counts, on_burst, a.us_mode, bits,
                                   history_s=1.0, log=log, ring=ring, name=f"upstream{ucid}",
                                   ddc=dict(offset=f - a.us_center, factor=factor, cutoff=width / 2 + 1e6),
                                   **rx_kw))
@@ -201,9 +212,9 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     rxs[0].all_channels = rxs
     core.us_chans = chans
     log(f"{len(chans)} canaux montants : " + ", ".join(f"{u}@{f / 1e6:.2f} MHz" for u, f in chans)
-        + f" ; réception large bande {mcr / 1e6:.3f} MS/s centrée sur {a.us_center / 1e6:.2f} MHz, "
+        + f" ; réception large bande {fs / 1e6:.3f} MS/s centrée sur {a.us_center / 1e6:.2f} MHz, "
           f"1 processus par canal (DDC /{factor})")
-    return rxs[0], 1
+    return rxs[0], decim
 
 
 def attach_pcap(path, mux, rx, wall_of_ts):
