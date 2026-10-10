@@ -637,10 +637,12 @@ parfois le 3 ; 1 essai sur 4 avec les trois.
 contient que 3 canaux de 8 MHz. Voie possible : un second B210 sur la même référence 10 MHz / PPS.
 
 **Suite de la nuit (03:00-03:35) :**
-- **Gain TX et 3 canaux descendants.** Les 3 canaux sont tous acquis 1 fois sur 4 à `--gain 52` (le gain automatique
-  pour 3 canaux), 2 sur 4 à 47, 3 sur 4 à 44. C'est cohérent avec une intermodulation dans l'étage TX : le battement
-  306 + 322 − 314 tombe pile sur le canal 2. Le HackRF, trop peu dynamique ici (canaux à ~10 dB de son plancher), ne
-  permet pas de le voir. La règle de gain automatique n'est pas changée ; `--gain 44` est recommandé à 3 canaux.
+- **Gain TX et 3 canaux descendants.**
+  - 1re série : 1 sur 4 à `--gain 52` (le gain automatique), 2 sur 4 à 47, 3 sur 4 à 44 ; l'intermodulation semblait
+    en cause (le battement 306 + 322 − 314 tombe sur le canal 2).
+  - Contre-épreuve à 44 : 0 sur 4. Au total, 6 lancements sur 19 avec les 3 canaux, sans lien net avec le gain.
+  - Cause toujours inconnue ; le HackRF, trop peu dynamique ici (canaux à ~10 dB de son plancher), ne tranche pas.
+  - La règle de gain automatique n'est pas changée.
 - **REG-ACK perdu.** Il était coupé entre un segment du canal 1 et un segment du canal 2 livré plus de 100 ms plus tard
   par son processus. Le délai d'abandon d'un trou passe de 0,1 à 1 s.
 - **4 canaux montants** (`--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20`, 2,56 Msym/s, 60 / 56,4 /

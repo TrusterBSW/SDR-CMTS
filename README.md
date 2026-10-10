@@ -31,7 +31,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Downstream | 3 bonded channels (306 + 314 + 322 MHz) | 142.8 Mbit/s measured once; the modem often leaves one channel out (partial service), see below |
 | Upstream bonding | 2 channels ATDMA 64-QAM 5.12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem online in Multiple Transmit Channel mode, ranged on both channels, frames reassembled from segments sent on both; throughput not measured yet |
 | Upstream bonding | 4 channels ATDMA 64-QAM 2.56 Msym/s (60 / 56.4 / 52.8 / 49.2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | online, ping 30/30, 2640 segments from the 4 channels reassembled, none lost |
-| Together | 3 downstream + 2 upstream channels (`--gain 44`) | online; all 3 downstream channels acquired 3 times out of 4 at `--gain 44` (1 out of 4 at the automatic 52) |
+| Together | 3 downstream + 2 upstream channels | online every time; all 3 downstream channels acquired in 6 of 19 starts (TX gain 44-52 makes no clear difference), otherwise partial service on 2 |
 | Together | 3 downstream + 4 upstream channels | online once with every channel, at the CPU limit of the 4-core laptop (upstream ~150 ms behind) |
 
 ## ⚠ Safety and legal
