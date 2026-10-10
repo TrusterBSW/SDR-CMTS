@@ -402,6 +402,39 @@ int rs_decode_many(const uint8_t *buf, int nbuf, const int *info, int ncw, int n
     return -1;
 }
 
+/* The last, shortened codeword of a burst that ended early: its information length is
+ * unknown (2026-10-10, MTC segments). Tries lengths lmax down to lmin at buf: first a length
+ * whose syndromes are all zero (a clean burst: one Horner pass each), then a full decode at
+ * each length. Returns the length found (message in msg_out, corrections in *fixed) or -1.
+ * One C call instead of up to 200 Python round trips (60 % of a burst's decoding time). */
+int rs_find_last(const uint8_t *buf, int nbuf, int lmax, int lmin, int nsym, int fcr,
+                 uint8_t *msg_out, int *fixed)
+{
+    uint8_t cw[255];
+    *fixed = 0;
+    if (nsym <= 0 || nsym > 64 || fcr < 0 || fcr + nsym > 64) return -1;
+    for (int L = lmax; L >= lmin; L--) {
+        int n = L + nsym;
+        if (n > 255 || n > nbuf) continue;
+        int any = 0;
+        for (int i = 0; i < nsym && !any; i++) {
+            const uint8_t *M = RMUL[fcr + i];
+            uint8_t y = 0;
+            for (int j = 0; j < n; j++) y = M[y] ^ buf[j];
+            any |= y;
+        }
+        if (!any) { memcpy(msg_out, buf, L); return L; }
+    }
+    for (int L = lmax; L >= lmin; L--) {
+        int n = L + nsym;
+        if (n > 255 || n > nbuf) continue;
+        memcpy(cw, buf, n);
+        int r = rs_decode(cw, n, nsym, fcr);
+        if (r >= 0) { memcpy(msg_out, cw, L); *fixed = r; return L; }
+    }
+    return -1;
+}
+
 /* ------------------------------------------------------------------ matched filter
  * Full convolution of a complex signal by real taps (numpy.convolve(x, h, "full")):
  * out has nx + nh - 1 samples. */

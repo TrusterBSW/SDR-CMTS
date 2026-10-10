@@ -615,14 +615,21 @@ class BurstDemod:
             msgs, fixed, pos = [], 0, 0
             for i, n_info in enumerate(layout):
                 got = None
-                for L in [n_info] + list(range(min(n_info, prof.fec_k) - 1, 15, -1)):
-                    if pos + L + n2 > len(raw):
-                        continue
+                if pos + n_info + n2 <= len(raw):
                     try:
-                        got = self._rs1(prof, raw[pos:pos + L + n2])
-                        break
+                        got = self._rs1(prof, raw[pos:pos + n_info + n2])
                     except ValueError:
-                        if not (msgs or L == n_info):
+                        pass
+                if got is None and cdsp.AVAILABLE:         # shortened: the burst ends here
+                    got = cdsp.rs_find_last(raw[pos:], min(n_info, prof.fec_k) - 1, 16, n2)
+                elif got is None:
+                    for L in range(min(n_info, prof.fec_k) - 1, 15, -1):
+                        if pos + L + n2 > len(raw):
+                            continue
+                        try:
+                            got = self._rs1(prof, raw[pos:pos + L + n2])
+                            break
+                        except ValueError:
                             pass
                 if got is None:
                     if not msgs:

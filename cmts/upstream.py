@@ -203,14 +203,16 @@ class UpstreamRx:
             c[1] += time.perf_counter() - t0
         return done
 
-    def _detect_data(self, x, prof_iuc, t_lo, t_hi, gsym, eq_key, seg, data):
+    def _detect_data(self, x, prof_iuc, t_lo, t_hi, gsym, eq_key, seg, data, burst_end=None, grant_end=None):
         """detect() for one interval. Multiple Transmit Channel mode data grant (seg): the modem
         answers every grant, one it has no data for with a segment of stuff bytes; the first
         codeword alone tells (no frame start, nothing but 0xFF), and the rest is not demodulated.
         Decoding every such grant whole (up to 255 mini-slots), 100+ grants in advance per second
         and channel, put the upstream processes 200-450 ms behind (2026-10-10: speedtest 18/0.4
         Mbit/s, against 92/20 with one channel without segments)."""
-        if seg:
+        # padding fills the whole grant: energy that stops well before the grant's end is data
+        early_end = burst_end is not None and grant_end is not None and burst_end < grant_end - 4 * self.ms_samples
+        if seg and not early_end:
             # only the start of the window: the matched filter would otherwise run over the
             # whole grant (70,000 samples for 255 mini-slots) before the preamble search
             pr = self.prof[prof_iuc]
@@ -222,8 +224,18 @@ class UpstreamRx:
                 head.t += lo
                 self.stats["padding"] += 1
                 return head
-        return self.demod.detect(x, prof_iuc, t_lo, t_hi,
-                                 max_frame=int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64,
+        max_frame = int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64
+        if seg and burst_end is not None:
+            # the burst ends where its energy does (a modem with little data ends its segment
+            # early): demodulated up to there plus one codeword, not the whole grant. Whole, a
+            # long-data grant cost 5-6 ms with a few TCP ACKs in it, and the upstream process
+            # was ~90 % busy under a speedtest (2026-10-10)
+            pr = self.prof[prof_iuc]
+            cw = pr.fec_k + 2 * pr.fec_t
+            span = (burst_end - t_lo) / self.demod.sps            # symbols from the earliest start
+            max_frame = min(max_frame, int(span * pr.bps / 8) + 2 * cw)
+            x = x[:min(x.size, int(burst_end + (cw * 8 / pr.bps + 64) * self.demod.sps))]
+        return self.demod.detect(x, prof_iuc, t_lo, t_hi, max_frame=max_frame,
                                  grant_syms=gsym, eq_key=eq_key, seg=seg,
                                  alt_iuc=DATA_SWAP.get(prof_iuc) if data else None)
 
@@ -262,6 +274,11 @@ class UpstreamRx:
             for c0, c1 in zip(np.concatenate([[0], cut + 1]), np.concatenate([cut, [hot.size - 1]])):
                 if not (hot[c0] == 0 and hot[c1] * blk <= s0 - a):    # (same grace block)
                     clusters.append(hot[c0])
+        burst_end = None                            # end of the energy inside the grant (samples of x)
+        if seg and hot.size and iuc in DATA_IUCS:
+            ing = hot[(hot * blk >= s0 - a - 2 * blk) & (hot * blk < s1 - a)]
+            if ing.size:
+                burst_end = (int(ing[-1]) + 2) * blk
         if clusters:
             starts = clusters
             # a cluster that begins with the tail of the previous burst is searched from the
@@ -293,7 +310,8 @@ class UpstreamRx:
                 # data bursts: up to the whole grant (a 16-QAM concatenation of 36 frames was
                 # 3030 bytes; a 2048-byte cap cut it short)
                 gsym = (s1 - s0) / self.demod.sps if data else None
-                bu = self._detect_data(x, prof_iuc, t_lo, t_hi, gsym, sid if unicast else None, seg and data, data)
+                bu = self._detect_data(x, prof_iuc, t_lo, t_hi, gsym, sid if unicast else None, seg and data, data,
+                                       burst_end, s1 - a)
                 if bu is not None and bu.swapped:
                     self.stats["iuc_swap"] += 1
                 if bu is None:
@@ -316,7 +334,7 @@ class UpstreamRx:
                 # modem starts at the grant start: search there.
                 gsym = (s1 - s0) / self.demod.sps if iuc in DATA_IUCS else None
                 bu = self._detect_data(x, prof_iuc, s0 - a - pre, s0 - a + 2 * blk, gsym,
-                                       sid if unicast else None, seg and bool(gsym), bool(gsym))
+                                       sid if unicast else None, seg and bool(gsym), bool(gsym), burst_end, s1 - a)
                 if bu is not None:
                     self.stats["grant_start_search"] += 1
                     found.append(bu)

@@ -57,6 +57,8 @@ def _load():
     dll.symbols_to_bytes.restype = ctypes.c_int
     dll.rs_decode_many.argtypes = [U8, ctypes.c_int, I32, ctypes.c_int, ctypes.c_int, ctypes.c_int, U8, I32]
     dll.rs_decode_many.restype = ctypes.c_int
+    dll.rs_find_last.argtypes = [U8, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, U8, I32]
+    dll.rs_find_last.restype = ctypes.c_int
     dll.ddc_decim.argtypes = [F, ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_double), F, ctypes.c_int,
                               ctypes.c_int, F, I32, F]
     dll.ddc_decim.restype = ctypes.c_int
@@ -293,6 +295,17 @@ def rs_decode_many(raw, info_lens, nsym, fcr=0):
     bad = _DLL.rs_decode_many(buf.ctypes.data_as(_U8P), buf.size, lens.ctypes.data_as(_I32P), lens.size,
                               nsym, fcr, out.ctypes.data_as(_U8P), ctypes.byref(fixed))
     return out, fixed.value, bad
+
+
+def rs_find_last(raw, lmax, lmin, nsym, fcr=0):
+    """Shortened last codeword of unknown length at raw[0:] (usdsp.c rs_find_last) ->
+    (message bytes, corrected count) or None."""
+    buf = np.ascontiguousarray(raw, dtype=np.uint8)
+    out = np.empty(max(lmax, 1), np.uint8)
+    fixed = ctypes.c_int(0)
+    L = _DLL.rs_find_last(buf.ctypes.data_as(_U8P), buf.size, lmax, lmin, nsym, fcr,
+                          out.ctypes.data_as(_U8P), ctypes.byref(fixed))
+    return None if L < 0 else (out[:L].tobytes(), fixed.value)
 
 
 # ---------------------------------------------------------------- multichannel synthesis (C)
