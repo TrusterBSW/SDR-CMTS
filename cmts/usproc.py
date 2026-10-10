@@ -253,6 +253,14 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                              log=lambda s: q_out.put(("log", s)), buf=buf, **p["rx_kwargs"])
     ctl[_ALIVE] = 1
     t_stats = time.monotonic() + 0.5
+    # diagnostic: MINI_CMTS_PROFILE_US=<file> profiles this process (pstats <file>.<pid>, every 20 s)
+    prof_path = os.environ.get("MINI_CMTS_PROFILE_US")
+    prof = None
+    if prof_path:
+        import cProfile
+        prof = cProfile.Profile()
+        prof.enable()
+        t_dump = time.monotonic() + 20
     try:
         while True:
             try:
@@ -312,6 +320,10 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                 q_out.put(("stats", st, rx.noise_dbfs(), rx.lag_max_ms, dict(rx.timing)))
                 rx.lag_max_ms = 0.0
                 rx.timing.clear()
+            if prof and time.monotonic() > t_dump:
+                prof.dump_stats(f"{prof_path}.{os.getpid()}")
+                prof.enable()                          # dump_stats() disables it
+                t_dump = time.monotonic() + 20
             if not n and t1 - t0 < 0.002:
                 time.sleep(0.002)
     finally:

@@ -506,21 +506,28 @@ int ddc_decim(const float *x, int n, double step, double *phase, const float *h,
 {
     int nh = ntaps - 1, nout = 0;
     double ph = *phase;
-    /* work buffer: history then the new block, shifted */
-    float *buf = ddc_buf(2L * (nh + n));
+    /* taps doubled (h0 h0 h1 h1 ...) and padded to a multiple of 8 floats: each output is then a
+     * plain dot product over the interleaved samples, even lanes real, odd lanes imaginary,
+     * which AVX2 runs 8 wide (the stride-2 loop took 0.28 core per channel on the i5-9500 with
+     * no AVX-512, 2026-10-10) */
+    int nf = (2 * ntaps + 7) & ~7;
+    float hh[nf];
+    for (int j = 0; j < nf; j++) hh[j] = j < 2 * ntaps ? h[j / 2] : 0.f;
+    /* work buffer: history then the new block, shifted, then the padding the last dot reads */
+    float *buf = ddc_buf(2L * (nh + n) + nf);
     if (!buf) return 0;
     memcpy(buf, hist, sizeof(float) * 2 * nh);
     ddc_mix(x, n, step, ph, buf + 2 * nh);
+    memset(buf + 2L * (nh + n), 0, sizeof(float) * nf);
     int k = *skip;
     for (; k < n; k += decim) {
         const float *b = buf + 2 * k;                   /* taps over buf[k .. k + nh] */
-        float ar = 0.f, ai = 0.f;
-        for (int j = 0; j < ntaps; j++) {
-            ar += h[j] * b[2 * j];
-            ai += h[j] * b[2 * j + 1];
-        }
-        out[2 * nout] = ar;
-        out[2 * nout + 1] = ai;
+        float acc[8] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+        for (int j = 0; j < nf; j += 8)
+            for (int l = 0; l < 8; l++)
+                acc[l] += hh[j + l] * b[j + l];
+        out[2 * nout] = (acc[0] + acc[2]) + (acc[4] + acc[6]);
+        out[2 * nout + 1] = (acc[1] + acc[3]) + (acc[5] + acc[7]);
         nout++;
     }
     *skip = k - n;

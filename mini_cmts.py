@@ -673,6 +673,35 @@ def cpu_governor(want):
     return f"gouverneur CPU performance (était {'/'.join(current)}, restauré à l'arrêt)"
 
 
+# holds the PM QoS request until its stdin closes (our exit, even a crash): the kernel drops it
+# with the file descriptor
+_LATENCY_HOLDER = ("import os, struct, sys; fd = os.open('/dev/cpu_dma_latency', os.O_WRONLY); "
+                   "os.write(fd, struct.pack('i', 0)); sys.stdin.read()")
+
+
+def cpu_latency(want):
+    """--performance: no deep C-state for the run (/dev/cpu_dma_latency = 0, released when the
+    file is closed). On the Proxmox host (C10, 890 µs exit) the B210 at 27.8 MS/s both ways
+    lost 13 RX overruns and 62 TX underruns in 90 s of benchmark_rate, 0 and 1 with this
+    (2026-10-10); in the CMTS, 85 ms TX+RX stalls that cost the modem its second channel."""
+    if not want or not os.path.exists("/dev/cpu_dma_latency"):
+        return None
+    if os.access("/dev/cpu_dma_latency", os.W_OK):
+        cmd = [sys.executable, "-c", _LATENCY_HOLDER]
+    else:
+        cmd = ["sudo", "-n", sys.executable, "-c", _LATENCY_HOLDER]
+    try:
+        holder = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        return f"!! états de veille profonds non bloqués ({e})"
+    time.sleep(0.3)
+    if holder.poll() is not None:
+        err = holder.stderr.read().decode(errors="replace").strip().splitlines()
+        return f"!! états de veille profonds non bloqués ({err[-1] if err else holder.returncode})"
+    globals()["_latency_holder"] = holder       # the pipe stays open as long as we run
+    return "états de veille profonds bloqués (/dev/cpu_dma_latency 0) pendant l'exécution"
+
+
 def run_usrp(a):
     if a.tap and not ensure_tap(a.tap, log):
         log(f"!! interface {a.tap} indisponible : relance avec --tap none pour tourner sans pont")
@@ -692,6 +721,9 @@ def run_usrp(a):
     gov = cpu_governor(a.performance)
     if gov:
         log(gov)
+    lat = cpu_latency(a.performance)
+    if lat:
+        log(lat)
     # UHD's own one-letter U/L/O prints are replaced by the dated lines of StallWatch
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
     import uhd
@@ -845,6 +877,7 @@ def run_usrp(a):
                 time.sleep(0.002)
             if prof and time.monotonic() > t_dump:
                 prof.dump_stats(prof_path)
+                prof.enable()                          # dump_stats() disables it
                 t_dump = time.monotonic() + 20
 
     def async_loop():
@@ -1027,7 +1060,8 @@ def parser():
                    help="CPUs for the whole process: auto = all but the core taking the USB interrupts, "
                         "all, or a list like 1-3,5-7")
     g.add_argument("--performance", action=argparse.BooleanOptionalAction, default=True,
-                   help="put every CPU in the 'performance' governor for the run (sudo), restored on exit")
+                   help="put every CPU in the 'performance' governor and block the deep C-states "
+                        "(/dev/cpu_dma_latency) for the run (sudo), restored on exit")
     g.add_argument("--tx-dc-cal", action=argparse.BooleanOptionalAction, default=False,
                    help="measure and cancel the TX LO leakage at start (the B210 RX tuned to the TX centre "
                         "for a moment). It lowered the leakage in the middle of 3 channels (-31 dBc) by 2-24 dB "
