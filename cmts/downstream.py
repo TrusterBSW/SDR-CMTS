@@ -153,7 +153,7 @@ class DownstreamMux:
             if u["on_grants"]:
                 u["on_grants"]([((start + o) * self.ms_counts, (start + o + n) * self.ms_counts, iuc, sid)
                                 for sid, iuc, o, n in ies])
-            ies = [(sid, iuc, o) for sid, iuc, o, _ in ies]
+            ies = [(sid, iuc & mac.IUC_MASK, o) for sid, iuc, o, _ in ies]   # (receiver flags off)
             ack = u["ack_ms"]() if u["ack_ms"] else start - self.map_len
             frames.append(mac.map_msg(self.sa, u["us_id"], u["ccc"], start,
                                       min(ack, start), ies, length))

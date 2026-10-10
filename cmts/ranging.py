@@ -85,6 +85,9 @@ class CmtsCore:
         self.req_log_t = 0.0
         self.req_unlogged = 0
         self.pending = {}     # SID -> mini-slots requested, granted in the next MAP
+        # SID -> bytes of a Multiple Transmit Channel request beyond its first grant (at most 255
+        # mini-slots): granted in the following MAPs, until the flow's next request replaces it
+        self.pending_more = {}
         self.secret, self.strict_mic = secret, strict_mic
         self.on_data = on_data            # on_data(ethernet frame, fcs_ok, sid): bridge hook
         self.next_sfid = 1
@@ -139,11 +142,12 @@ class CmtsCore:
 
     def mark_grants(self, grants):
         """MAP intervals for the upstream receiver: the data grants of a Multiple Transmit
-        Channel mode flow flagged (IUC | mac.IUC_SEG), so that they are decoded as segments."""
+        Channel mode flow flagged (IUC | mac.IUC_SEG), so that they are decoded as segments
+        (the IUC may already carry mac.IUC_AHEAD)."""
         if not self.mtc_sids:
             return grants
         data = mac.data_iucs()
-        return [(s, e, iuc | mac.IUC_SEG if iuc in data and sid in self.mtc_sids else iuc, sid)
+        return [(s, e, iuc | mac.IUC_SEG if (iuc & mac.IUC_MASK) in data and sid in self.mtc_sids else iuc, sid)
                 for s, e, iuc, sid in grants]
 
     def _polls(self, ch):
@@ -181,6 +185,12 @@ class CmtsCore:
                     self.mtc_stat[ch]["req_grants"] += 1
                     self.mtc_stat[ch]["req_ms"] += n
                 used += n
+                more = self.pending_more.pop(sid, 0)
+                if more > 0:                            # the rest of a big request: next MAP
+                    self.pending[sid] = self._minislots(more)
+                    if more > self._bytes_255():
+                        self.pending_more[sid] = more - self._bytes_255()
+                    continue
                 del self.pending[sid]
                 granted.add(sid)
                 self.grants += 1
@@ -200,7 +210,9 @@ class CmtsCore:
                     continue
                 n = min(255, max(n, int(round(n * self.grant_ahead_scale))))
                 if give and (turn or self.ahead_all or sid not in self.mtc_sids) and sid not in granted and used + n <= free_ms:
-                    out.append((sid, iuc_s if n <= short else iuc_l, n))
+                    # flagged for the upstream receiver (stripped from the MAP): only such a grant
+                    # can come back as padding, so only it gets the padding look first
+                    out.append((sid, (iuc_s if n <= short else iuc_l) | mac.IUC_AHEAD, n))
                     self.mtc_stat[ch]["ahead_grants"] += 1
                     self.mtc_stat[ch]["ahead_ms"] += n
                     used += n
@@ -346,6 +358,24 @@ class CmtsCore:
         syms = p.burst_symbols(nbytes + SEG_HDR) + p.guard
         return max(1, min(255, -(-syms // self.ms_syms)))
 
+    def _bytes_255(self):
+        """Most bytes a 255 mini-slot segment grant carries (long data profile)."""
+        if getattr(self, "_b255", None) is None:
+            lo, hi = 0, 1 << 16
+            while lo < hi:                              # largest nbytes still within 255 mini-slots
+                mid = (lo + hi + 1) // 2
+                p = self._prof[mac.data_iucs()[1]] if self._prof else None
+                if p is None:
+                    self._minislots(1)
+                    p = self._prof[mac.data_iucs()[1]]
+                syms = p.burst_symbols(mid + SEG_HDR) + p.guard
+                if -(-syms // self.ms_syms) <= 255:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            self._b255 = lo
+        return self._b255
+
     def _request_bytes(self, sid, nbytes, b, piggyback=False):
         """Queue-depth request (bytes) of a flow in Multiple Transmit Channel mode: shared out
         between the flow's ranged channels, each part granted to the flow's SID there."""
@@ -369,8 +399,17 @@ class CmtsCore:
                 grant_sids = sids
             share = -(-nbytes // len(grant_sids))
             n = self._minislots(share)
+            # a share beyond one grant (255 mini-slots, ~13.8 KB at 64-QAM 5.12 Msym/s) is kept and
+            # granted in the next MAPs: it was dropped, and each channel got one full grant per
+            # request round trip (~45 ms): ~22 Mbit/s up whatever the number of channels, requests
+            # of up to 256 KB (2026-10-11)
+            more = share - self._bytes_255() if share > self._bytes_255() else 0
             for s_ in grant_sids:
                 self.pending[s_] = n
+                if more:
+                    self.pending_more[s_] = more
+                else:
+                    self.pending_more.pop(s_, None)
             if self.grant_ahead_s:
                 for s_ in sids:
                     self.active[s_] = (self.mux.now_ts + int(self.grant_ahead_s * TS_RATE), n)
@@ -689,6 +728,7 @@ class CmtsCore:
                     k.state = "lost"
                     for s_ in (k.sid,):
                         self.pending.pop(s_, None)
+                        self.pending_more.pop(s_, None)
                         self.active.pop(s_, None)
                     self.log(f"[CMTS] {fmt_mac(m.mac)} canal montant {ucid} SID {sid:#06x}: {k.misses} Station "
                              f"Maintenance sans réponse, canal mis de côté (polls toutes les "
@@ -703,6 +743,7 @@ class CmtsCore:
                 for s in [s for s, x in self.by_sid.items() if x is m]:
                     del self.by_sid[s]
                     self.pending.pop(s, None)
+                    self.pending_more.pop(s, None)
                 del self.modems[m.mac]
 
     def _ranging(self, ev, b, info, where):
@@ -736,6 +777,7 @@ class CmtsCore:
                         k.state = "off"                 # until the next registration
                         self.mtc_sids.discard(k.sid)
                         self.pending.pop(k.sid, None)
+                        self.pending_more.pop(k.sid, None)
                         self.active.pop(k.sid, None)
                     m.mtc, m.reasm = False, None
             m.misses = 0

@@ -225,19 +225,20 @@ class B2:
 core2._request(1, 30, B2())
 g1 = core2.schedule(10_000, 300)
 g2 = core2.schedule(10_080, 300)
+# (a grant in advance carries mac.IUC_AHEAD for the upstream receiver; stripped from the MAP)
 check("grant en avance : la demande puis le même grant au MAP suivant",
-      g1 == [(1, mac.IUC_LONG_DATA, 30)] and g2 == [(1, mac.IUC_LONG_DATA, 30)] and core2.n["ahead"] == 1,
+      g1 == [(1, mac.IUC_LONG_DATA, 30)] and g2 == [(1, mac.IUC_LONG_DATA | mac.IUC_AHEAD, 30)] and core2.n["ahead"] == 1,
       f"{g1} puis {g2}")
 core2._request(1, 0, B2())                                   # piggyback 0: nothing more right now
 check("un piggyback de 0 ne coupe pas les grants en avance (Sagem : ~100/s)",
-      core2.schedule(10_160, 300) == [(1, mac.IUC_LONG_DATA, 30)])
+      core2.schedule(10_160, 300) == [(1, mac.IUC_LONG_DATA | mac.IUC_AHEAD, 30)])
 from cmts.upstream import BurstEvent
 core2.on_burst(BurstEvent(mac.IUC_LONG_DATA, 1, 10_240 * mux2.ms_counts))   # one grant came back empty
-check("un grant revenu vide ne les coupe pas non plus", core2.schedule(10_240, 300) == [(1, mac.IUC_LONG_DATA, 30)])
+check("un grant revenu vide ne les coupe pas non plus", core2.schedule(10_240, 300) == [(1, mac.IUC_LONG_DATA | mac.IUC_AHEAD, 30)])
 core2._request(1, 12, B2())
 core2.schedule(10_250, 300)                                  # the request itself
 check("taille : celle de la dernière demande (12)",
-      core2.schedule(10_260, 300) == [(1, mac.IUC_SHORT_DATA if 12 <= mac.BURST_PROFILES[mac.IUC_SHORT_DATA]["max_burst"] else mac.IUC_LONG_DATA, 12)])
+      core2.schedule(10_260, 300) == [(1, (mac.IUC_SHORT_DATA if 12 <= mac.BURST_PROFILES[mac.IUC_SHORT_DATA]["max_burst"] else mac.IUC_LONG_DATA) | mac.IUC_AHEAD, 12)])
 mux2.now_ts = 10_400 * mux2.ms_counts + int(0.08 * 10.24e6)   # 80 ms later, still inside the window
 class B3:
     power_db, frame, info, error, mer, rho, head, freq = -20.0, b"x", {"kind": "OTHER"}, "", 30.0, 1.0, "", 0.0
@@ -257,7 +258,7 @@ core2._request(1, 20, B2())
 core2.schedule(10_900, 300)                                  # the request itself
 gs = [core2.schedule(10_910 + 10 * i, 300) for i in range(6)]
 check("un grant en avance tous les 3 MAP, 3 fois plus gros",
-      sum(1 for g in gs if g) == 2 and all(g == [(1, mac.IUC_LONG_DATA, 60)] for g in gs if g), str(gs))
+      sum(1 for g in gs if g) == 2 and all(g == [(1, mac.IUC_LONG_DATA | mac.IUC_AHEAD, 60)] for g in gs if g), str(gs))
 core2.grant_ahead_every, core2.grant_ahead_scale = 1, 1.0
 core2.grant_ahead_hold = False                    # former rule (default)
 core2._request(1, 30, B2())
@@ -270,6 +271,32 @@ core2.grant_ahead_s = 0
 core2._request(1, 30, B2())
 core2.schedule(10_400, 300)
 check("--grant-ahead-ms 0 : une demande = un grant", core2.schedule(10_480, 300) == [])
+
+# ---- 7. Multiple Transmit Channel mode: a queue-depth request beyond one grant (255 mini-slots)
+# is granted over the next MAPs (it was dropped beyond the first grant), and the flow's next
+# request replaces what is left (it is the modem's queue depth)
+from cmts.ranging import Modem  # noqa: E402
+core2.pending.clear()
+core2.active.clear()
+core2.grant_ahead_s = 0                          # requests only
+mm = Modem(b"\x24\x7f\x20\xa8\x38\xb8", 1)
+mm.mtc = True
+core2.by_sid[1] = mm
+core2.mtc_sids = {1}
+b255 = core2._bytes_255()
+core2._request_bytes(1, 60_000, B2())
+gs = [core2.schedule(12_000 + 10 * i, 300) for i in range(-(-60_000 // b255) + 2)]
+sizes = [g[0][2] for g in gs if g]
+check("MTC : une demande de 60 000 octets = grants de 255 mini-slots aux MAP suivants",
+      len(sizes) == -(-60_000 // b255) and all(n == 255 for n in sizes[:-1]) and gs[-1] == [],
+      f"{b255} octets par grant de 255 ; {sizes}")
+core2._request_bytes(1, 60_000, B2())
+core2.schedule(13_100, 300)
+core2._request_bytes(1, 1_000, B2())             # the modem's queue is down to 1000 bytes
+g = core2.schedule(13_110, 300)
+check("MTC : la demande suivante remplace le reste", len(g) == 1 and g[0][2] < 255 and core2.schedule(13_120, 300) == [],
+      str(g))
+core2.mtc_sids = set()
 
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

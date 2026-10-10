@@ -114,9 +114,11 @@ class UpstreamRx:
 
     # ------------------------------------------------------------ inputs
     def add_grants(self, grants):
-        # IUC | mac.IUC_SEG: a data grant of a Multiple Transmit Channel mode flow (segments)
-        clean = [(s, e, iuc & ~mac.IUC_SEG, sid) for s, e, iuc, sid in grants]
-        self.windows.extend((s, e, iuc & ~mac.IUC_SEG, sid, bool(iuc & mac.IUC_SEG)) for s, e, iuc, sid in grants)
+        # IUC | mac.IUC_SEG: a data grant of a Multiple Transmit Channel mode flow (segments);
+        # IUC | mac.IUC_AHEAD: a grant in advance (the only kind that can come back as padding)
+        clean = [(s, e, iuc & mac.IUC_MASK, sid) for s, e, iuc, sid in grants]
+        self.windows.extend((s, e, iuc & mac.IUC_MASK, sid, bool(iuc & mac.IUC_SEG), bool(iuc & mac.IUC_AHEAD))
+                            for s, e, iuc, sid in grants)
         self.sched.extend(clean)
 
     def push(self, tick, x):
@@ -163,7 +165,7 @@ class UpstreamRx:
             return 0
         done = 0
         while self.windows:
-            start_ts, end_ts, iuc, sid, seg = self.windows[0]
+            start_ts, end_ts, iuc, sid, seg, ahead = self.windows[0]
             prof_iuc = mac.IUC_REQUEST if iuc == mac.IUC_REQUEST else iuc
             if prof_iuc not in self.prof:   # data grants: not demodulated yet
                 self.windows.popleft()
@@ -196,6 +198,7 @@ class UpstreamRx:
                 self.stats["late"] += 1
                 continue
             t0, nb0 = time.perf_counter(), self.stats["bursts"]
+            self._ahead = ahead
             self._handle(x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg)
             key = f"{iuc}{'+' if self.stats['bursts'] > nb0 else '-'}"
             c = self.timing.setdefault(key, [0, 0.0])
@@ -210,9 +213,12 @@ class UpstreamRx:
         Decoding every such grant whole (up to 255 mini-slots), 100+ grants in advance per second
         and channel, put the upstream processes 200-450 ms behind (2026-10-10: speedtest 18/0.4
         Mbit/s, against 92/20 with one channel without segments)."""
-        # padding fills the whole grant: energy that stops well before the grant's end is data
+        # padding fills the whole grant: energy that stops well before the grant's end is data.
+        # Only a grant in advance is looked at as padding first: a grant the modem asked for
+        # carries its data, and the look (a second preamble search) was ~11 % of an upstream
+        # process under upload, 4 DS + 2 US (2026-10-11)
         early_end = burst_end is not None and grant_end is not None and burst_end < grant_end - 4 * self.ms_samples
-        if seg and not early_end:
+        if seg and not early_end and getattr(self, "_ahead", True):
             # only the start of the window: the matched filter would otherwise run over the
             # whole grant (70,000 samples for 255 mini-slots) before the preamble search
             pr = self.prof[prof_iuc]

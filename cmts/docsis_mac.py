@@ -301,6 +301,8 @@ def parse_us_frame(buf):
 # ---------------------------------------------------------------- Multiple Transmit Channel mode
 SEG_HDR_LEN = 8
 IUC_SEG = 0x40         # flag on the IUC of a grant given to the upstream receiver: segment header ON
+IUC_AHEAD = 0x80       # flag (scheduler -> upstream receiver): a grant in advance, not asked for
+IUC_MASK = 0x0F        # the IUC itself (4 bits), what goes into the MAP
 STUFF = 0xFF           # PHY stuff byte: a segment's padding after its last MAC byte
 
 
