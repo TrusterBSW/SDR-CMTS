@@ -514,6 +514,7 @@ class BurstDemod:
         else:
             data, idx, _ = cdsp.dd_track(data_in, pts)        # decision-directed phase tracking (C)
         dec = pts[idx]
+        self._sym_pow = np.abs(data) ** 2               # per data symbol, ~1 in the burst (segment ends)
         out = Burst(iuc=iuc, t=t, rho=float(rho[j]), power_db=float(power), freq=float(freq), mer=0.0,
                     peak=float(seg.max()) if seg.size else 0.0)
         if cdsp.AVAILABLE:
@@ -634,7 +635,18 @@ class BurstDemod:
                 if got is None:
                     if not msgs:
                         raise _DecodeError("uncorrectable (bloc 0)", False)
-                    break                                 # what came before is the segment
+                    # the burst's end, or an error in its middle? After its end the symbols are
+                    # mere noise (power ~0, the burst's symbols ~1); in its middle they are not.
+                    # A segment cut at an error in its middle was taken for whole: the next
+                    # segment, with no frame start to check against, was stitched to it and
+                    # 1514-byte frames came out with a wrong Ethernet FCS (66 in one speedtest,
+                    # 2026-10-10). Such a segment is now lost whole: a clean hole.
+                    pw = getattr(self, "_sym_pow", None)
+                    a_ = pos * 8 // prof.bps
+                    b_ = (pos + n_info + n2) * 8 // prof.bps
+                    if pw is not None and b_ <= pw.size and float(np.mean(pw[a_:b_])) > 0.25:
+                        raise _DecodeError(f"segment illisible au bloc {i}", True)
+                    break                                 # the burst ended: what came before is the segment
                 m_, nf = got
                 msgs.append(m_)
                 fixed += nf
