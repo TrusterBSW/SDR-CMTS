@@ -309,6 +309,13 @@ class UpstreamRx:
             for h in starts:
                 t_lo = max(s0 - a - pre, h * blk - 2 * blk)
                 t_hi = min(s1 - a + post, (h + 1) * blk + blk)
+                if h == first and unicast:
+                    # a cluster carried over from the previous burst (back-to-back grants, MTC):
+                    # searched up to the grant start, where a ranged modem begins. Searched only
+                    # up to 2 blocks before it, the burst was missed, then found by the search at
+                    # the grant start below: two matched filters and preamble searches per burst,
+                    # 29 % of an upstream process under upload (6 DS + 2 US, 2026-10-11)
+                    t_hi = min(s1 - a + post, max(t_hi, s0 - a + 2 * blk))
                 if t_hi < t_lo:
                     continue
                 self.stats["searched"] += 1

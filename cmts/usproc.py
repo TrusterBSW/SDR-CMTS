@@ -137,6 +137,7 @@ class RemoteUpstream:
         self.ctl[:] = (0, -1, 0, 0, 0)
         self.gring = np.ndarray((_GRING, 4), np.int64, self._g_shm.buf)
         self._gw = 0
+        self._last_end = 0                         # end of the last interval granted (DOCSIS counts)
         self.stats = collections.Counter()
         self.timing = {}
         self.lag_max_ms = 0.0
@@ -177,6 +178,7 @@ class RemoteUpstream:
         for g in grants:
             self.gring[self._gw % _GRING] = g
             self._gw += 1
+            self._last_end = max(self._last_end, g[1])
         self.ctl[_GW] = self._gw
 
     def push(self, tick, x):
@@ -186,6 +188,17 @@ class RemoteUpstream:
     @property
     def processed_ts(self):
         return int(self.ctl[_PROCESSED])
+
+    @property
+    def lag_now_ms(self):
+        """How far behind the RX stream the worker is (ms): DOCSIS time of the samples received,
+        or of the end of the last interval granted if earlier, minus the end of the last interval
+        it handled. Computed here, not by the worker: a worker short of CPU would not report."""
+        t0 = self.ring.rx_tick0
+        if t0 is None or not self._last_end:
+            return 0.0
+        rec = self.tb.ts(t0 + self.ring.written * self.ring.decim)
+        return max(0.0, (min(rec, self._last_end) - self.processed_ts) / 10.24e3)
 
     def process(self):          # done by the worker process
         return 0
@@ -271,7 +284,6 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
     if ddc:                                            # this channel out of the wideband ring
         dd = cdsp.Ddc(p["ring_fs"], ddc["offset"], ddc["factor"], ddc["cutoff"], ntaps=DDC_TAPS)
         buf = np.zeros(int(p["history_s"] * p["fs"]), np.complex64)
-        dpos = nw = 0                                  # wideband samples consumed, narrow written
     else:
         buf = ring
     rx = upstream.UpstreamRx(p["fs"], p["decim"], p["symrate"], p["tb"], p["ms_counts"],
@@ -301,6 +313,44 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
         prof = cProfile.Profile()
         prof.enable()
         t_dump = time.monotonic() + 20
+    ddc_stop = threading.Event()
+    ddc_nw = [0]                                       # narrow samples in buf, published by ddc_loop
+
+    def ddc_loop():
+        """The DDC in a thread of its own (2026-10-11): its C call releases the GIL, so it runs
+        beside the demodulation. 6 DS + 2 US on shared cores: one thread doing both was busy
+        72 % and waiting for a core 25 % of the time under upload, 0.1-2 s behind."""
+        dpos = nw = 0
+        L, Ln = ring.size, buf.size
+        while not ddc_stop.is_set():
+            written = int(rctl[_WRITTEN])
+            if written - dpos > L // 2:                # far behind: skip, keep the indices right
+                skip = (written - L // 4 - dpos) // ddc["factor"] * ddc["factor"]
+                dpos += skip
+                nw += skip // ddc["factor"]
+                rx.stats["ddc_skipped"] += skip
+            if dpos >= written:
+                time.sleep(0.001)
+                continue
+            t0 = time.perf_counter()
+            while dpos < written:
+                i = dpos % L
+                k = min(written - dpos, L - i, 1 << 16)
+                y = dd.process(ring[i:i + k])
+                j = nw % Ln
+                m = min(y.size, Ln - j)
+                buf[j:j + m] = y[:m]
+                buf[:y.size - m] = y[m:]
+                nw += y.size
+                dpos += k
+            ddc_nw[0] = nw                             # once the samples are in buf
+            c = rx.timing.setdefault("ddc", [0, 0.0])
+            c[0] += 1
+            c[1] += time.perf_counter() - t0
+    ddc_th = None
+    if ddc:
+        ddc_th = threading.Thread(target=ddc_loop, name="ddc", daemon=True)
+        ddc_th.start()
     try:
         while True:
             try:
@@ -319,30 +369,7 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
             if rx.rx_tick0 is None and rctl[_TICK0] >= 0:
                 rx.rx_tick0 = int(rctl[_TICK0]) + p["tick_shift"]
             t0 = time.perf_counter()
-            if ddc:
-                written, L, Ln = int(rctl[_WRITTEN]), ring.size, buf.size
-                if written - dpos > L // 2:            # far behind: skip, keep the indices right
-                    skip = (written - L // 4 - dpos) // ddc["factor"] * ddc["factor"]
-                    dpos += skip
-                    nw += skip // ddc["factor"]
-                    rx.stats["ddc_skipped"] += skip
-                while dpos < written:
-                    i = dpos % L
-                    k = min(written - dpos, L - i, 1 << 16)
-                    y = dd.process(ring[i:i + k])
-                    j = nw % Ln
-                    m = min(y.size, Ln - j)
-                    buf[j:j + m] = y[:m]
-                    buf[:y.size - m] = y[m:]
-                    nw += y.size
-                    dpos += k
-                rx.written = nw
-                c = rx.timing.setdefault("ddc", [0, 0.0])
-                c[0] += 1
-                c[1] += time.perf_counter() - t0
-                t0 = time.perf_counter()
-            else:
-                rx.written = int(rctl[_WRITTEN])
+            rx.written = ddc_nw[0] if ddc else int(rctl[_WRITTEN])
             n = rx.process()
             t1 = time.perf_counter()
             rx.scan_raw()
@@ -367,6 +394,9 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
             if not n and t1 - t0 < 0.002:
                 time.sleep(0.002)
     finally:
+        ddc_stop.set()
+        if ddc_th is not None:
+            ddc_th.join(1.0)
         ctl[_ALIVE] = 0
         del ring, rctl, ctl, gring, buf
         shm.close()

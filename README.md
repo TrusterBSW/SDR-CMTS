@@ -37,7 +37,8 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Together, radio process | `--radio-process --ds-channels 3 --us-channels 2`, same PC | 130.8 / 15.8 Mbit/s: upstream bonding brings no throughput yet (upstream processes at 70-90 %, ~93 ms latency) |
 | Downstream, radio process | `--radio-process --ds-channels 4`: master clock 34.76 MHz (5 samples/symbol), 6-core PC | **156 Mbit/s** downstream (131 in another run), 19.3 upstream; each of the 4 channels carries a quarter of the traffic; the 2 middle channels (either side of the TX LO) sometimes drop and come back through CM-STATUS |
 | Downstream, radio process | `--radio-process --ds-channels 5`: master clock 55.616 MHz, AVX2 synthesis, 6-core PC | **215.6 Mbit/s** downstream, 20.2 upstream, ping 91 ms; 6 DS: 208-209 Mbit/s but the upstream collapses (2.9 Mbit/s) and ping up to 1 s, to be resumed |
-| Downstream, radio process | `--radio-process --ds-channels 6 --ds-layout around`: 290-330 MHz, 306 primary in the middle, 55.616 MHz, 16 KB USB frames | **234-258 Mbit/s** downstream, 21 upstream, ping ~97 ms; 6 DS + 2 US does not fit on 5 cores |
+| Downstream, radio process | `--radio-process --ds-channels 6 --ds-layout around`: 290-330 MHz, 306 primary in the middle, 55.616 MHz, 16 KB USB frames | **234-258 Mbit/s** downstream, 21 upstream, ping ~97 ms (170 ms during an upload); **the default** since 2026-10-11 |
+| Together, radio process | 6 DS + `--us-channels 2`: upstream processes on every core at a lower priority than the transmit side, back-pressure on their delay, DDC in a thread of its own, one preamble search per burst | **230 Mbit/s downstream / 21-22 Mbit/s upstream**, modem never lost, 99.9 % of bursts decoded, ping ~100 ms (~430 during an upload, as 4 DS + 2 US) |
 
 ## ⚠ Safety and legal
 
@@ -80,16 +81,19 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | Option | Default | Meaning |
 |---|---|---|
 | `--freq` | 306 MHz | first downstream channel; bonded ones every `--ds-spacing` (8 MHz) |
-| `--ds-channels` | 2 | 1 to 6 (master clock 27.808 / 34.76 / 55.616 MHz; 5-6 beyond a 6-core CPU) |
+| `--ds-channels` | 6 | 1 to 6 (master clock 27.808 / 34.76 / 55.616 MHz); 6: 234-258 / 21 Mbit/s on the 6-core PC |
 | `--qam` | 256 | downstream QAM |
 | `--us-freq`, `--us-rate`, `--us-mode`, `--us-mod` | 60 MHz, 32 (5.12 Msym/s), atdma, 64qam | upstream channel |
 | `--us-target` | -14 dBFS | burst level the modems are ranged to |
 | `--grant-ahead-hold/-every/-scale` | on, 3, 4 | unsolicited grants keeping the upload going |
 | `--us-process` | on | upstream demodulation in its own process |
-| `--radio-process` | off | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
+| `--radio-process` | on | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
 | `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
 | `--send-frame-size`, `--tx-frames` | 16360, 64 | 16 KB USB send frames (UHD: 8 KB) and how many in flight: half the USB submissions, send thread 23 -> 16 % of a core at 55.6 MS/s, 6 DS without late sends |
-| `--ds-layout` | up | `around`: `--freq` (the primary) in the middle, the others on both sides; with 6 DS the only layout where the Sagem uses its upstream grants (234-247 / 21 Mbit/s) |
+| `--ds-layout` | around | `--freq` (the primary) in the middle, the others on both sides (`up`: all above it); with 6 DS the only layout where the Sagem uses its upstream grants (234-247 / 21 Mbit/s) |
+| `--recv-frame-size` | 16360 | 16 KB USB receive frames: the radio's RX thread 24 -> 14 % of a core at 27.8 MS/s |
+| `--us-cpus` | auto | `own`: a core per upstream process; `shared`: every core, real-time priority 10 below the transmit side; `auto`: `shared` only when cores of their own would leave the transmit side of 5-6 DS fewer than 4 (6 DS + 2 US) |
+| `--us-lag-limit` | 150 ms | back-pressure: an upstream channel whose receiver is this far behind gets no data grant (half of it: no grant in advance) until it catches up; 0 = off |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways) |
 

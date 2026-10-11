@@ -115,6 +115,14 @@ class CmtsCore:
         self.ahead_all = bool(os.environ.get("MINI_CMTS_AHEAD_ALL"))
         # diagnostic (MINI_CMTS_TIMING): per upstream channel, MTC grants and what came back
         self.mtc_stat = collections.defaultdict(collections.Counter)
+        # back-pressure (2026-10-11): rx_lag_ms(ucid) -> how far behind its RX stream that
+        # channel's receiver is (set by mini_cmts.py). Granting more air time than the receiver
+        # decodes only piles up delay: 6 DS + 2 US under upload, both upstream processes short
+        # of CPU, 0.5-2.4 s behind. Beyond lag_ahead_ms the channel gets no grant in advance,
+        # beyond lag_data_ms no data grant at all (the requests wait, polls go on); 0 = off.
+        self.rx_lag_ms = None
+        self.lag_ahead_ms, self.lag_data_ms = 80.0, 150.0
+        self.n_held = collections.Counter()     # MAPs without grants in advance / data grants, per channel
         self._maps = 0
         self.active = {}      # SID -> (DOCSIS time the advance grants stop, mini-slots)
         self.n = dict(req=0, ahead=0, empty=0, concat=0)   # grants asked, given in advance, unused
@@ -177,8 +185,15 @@ class CmtsCore:
             iuc_s, iuc_l = mac.data_iucs()
             short = mac.BURST_PROFILES[iuc_s]["max_burst"]
             granted = set()
+            lag = self.rx_lag_ms(ch) if self.rx_lag_ms else 0.0
+            hold_data = bool(self.lag_data_ms) and lag > self.lag_data_ms
+            hold_ahead = bool(self.lag_ahead_ms) and lag > self.lag_ahead_ms
+            if hold_data:
+                self.n_held[f"data{ch}"] += 1
+            elif hold_ahead:
+                self.n_held[f"ahead{ch}"] += 1
             for sid, n in list(self.pending.items()):
-                if self.sid_ch.get(sid, 1) != ch or used + n > free_ms:
+                if hold_data or self.sid_ch.get(sid, 1) != ch or used + n > free_ms:
                     continue
                 out.append((sid, iuc_s if n <= short else iuc_l, n))
                 if self.mtc_sids:
@@ -209,7 +224,8 @@ class CmtsCore:
                     del self.active[sid]
                     continue
                 n = min(255, max(n, int(round(n * self.grant_ahead_scale))))
-                if give and (turn or self.ahead_all or sid not in self.mtc_sids) and sid not in granted and used + n <= free_ms:
+                if (give and not hold_ahead and (turn or self.ahead_all or sid not in self.mtc_sids)
+                        and sid not in granted and used + n <= free_ms):
                     # flagged for the upstream receiver (stripped from the MAP): only such a grant
                     # can come back as padding, so only it gets the padding look first
                     out.append((sid, (iuc_s if n <= short else iuc_l) | mac.IUC_AHEAD, n))

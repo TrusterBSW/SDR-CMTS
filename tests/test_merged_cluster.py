@@ -1,7 +1,9 @@
 """Real ATDMA 64-QAM 5.12 Msym/s windows (Sagem 3686, 2026-10-09) where the guard time (147
 samples) is shorter than an energy block (174 samples): the tail of the previous burst and the
 burst of this grant form one energy cluster. UpstreamRx._handle searched only where that cluster
-began and missed the preamble (32 grants in 3 minutes); it must now find and decode the burst."""
+began and missed the preamble (32 grants in 3 minutes); it must now find and decode the burst,
+with ONE search: the cluster is searched up to the grant start (2026-10-11; before, a second
+search at the grant start found it, two matched filters per back-to-back burst)."""
 import collections
 import glob
 import os
@@ -56,6 +58,9 @@ for _ in range(50):
 dt = (time.perf_counter() - t) / 50
 empty = len(got) == 50 and all(e.burst is None for e in got) and u.stats["searched"] == n0
 print(f"{'OK ' if empty else 'KO '} grant vide avec la queue de la rafale précédente : vide, sans recherche, {dt * 1e3:.2f} ms")
-good = files and ok == len(files) and u.stats["grant_start_search"] == len(files) and empty
+one = u.stats["grant_start_search"] == 0 and u.stats["searched"] == len(files)
+print(f"{'OK ' if one else 'KO '} une seule recherche par rafale : {u.stats['searched']} recherches, "
+      f"{u.stats['grant_start_search']} de secours au début du grant")
+good = files and ok == len(files) and one and empty
 print("PASS" if good else "FAIL")
 sys.exit(0 if good else 1)

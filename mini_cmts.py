@@ -102,8 +102,8 @@ def build(a, log=print):
         # 4 channels, 156 Mbit/s carried (2026-10-10, Proxmox host, --radio-process).
         # Above 34.76 MHz the Sagem used not to lock: UHD's TX quadrature calibration ran with the
         # RX filter at the upstream width and failed from 41.712 MHz on (radio.TX_CAL_RX_BW).
-        # Since that fix it locks at 41.712 and 55.616 MHz (1 channel); 5 channels at 55.616 MS/s
-        # are beyond the Proxmox host's CPU (the radio process fell behind for good, 2026-10-10).
+        # Since that fix it locks at 41.712 and 55.616 MHz; 5-6 channels at 55.616 MS/s run on the
+        # Proxmox host with the AVX2 synthesis and 16 KB USB frames (2026-10-11).
         a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
         if a.ds_channels >= 4:
             # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
@@ -111,9 +111,6 @@ def build(a, log=print):
             # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
             # behind, ping 86-388 ms (2026-10-10)
             a.synth_threads = max(a.synth_threads, (a.ds_channels + 1) // 2)
-        if a.ds_channels >= 5:
-            log("!! 5-6 canaux descendants : 55,616 MS/s, au-delà du processeur de l'hôte Proxmox (i5-9500) "
-                "à l'essai du 2026-10-10")
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
@@ -152,6 +149,10 @@ def build(a, log=print):
     else:
         mux.on_grants = rx.add_grants
     mux.ack_ms = lambda: int(rx.processed_ts // mux.ms_counts)   # MAP Ack Time: upstream really processed
+    # back-pressure: a channel whose receiver falls behind gets fewer grants (CmtsCore.rx_lag_ms)
+    rx_by_ch = dict(zip([u for u, _ in us_channels(a)], getattr(rx, "all_channels", None) or [rx]))
+    core.rx_lag_ms = lambda ch: getattr(rx_by_ch.get(ch), "lag_now_ms", 0.0)
+    core.lag_ahead_ms, core.lag_data_ms = a.us_lag_limit / 2, a.us_lag_limit
     mux.data_max_ms = a.ds_queue_ms
     mux.secondary = []
     if a.docsis30:                             # MAC Domain Descriptor: the modem runs in DOCSIS 3.0 mode
@@ -396,7 +397,9 @@ def status_line(mux, core, rx, extra=""):
                       + (f", profil inversé {r.stats['iuc_swap']}" if r.stats.get('iuc_swap') else "") + ")"
                       for k, r in enumerate(getattr(rx, "all_channels", [rx])[1:]))
             + f", RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
-            f"({core.n['empty']} vides), concat {core.n['concat']} | {mods}")
+            f"({core.n['empty']} vides), concat {core.n['concat']}"
+            + ("".join(f", retenus {k} {v} MAP" for k, v in sorted(core.n_held.items())) if core.n_held else "")
+            + f" | {mods}")
 
 
 # ---------------------------------------------------------------- offline simulation
@@ -477,6 +480,12 @@ def raise_priority(prio):
         return "!! priorité normale : temps réel et nice refusés par le système\n" + RT_HELP
 
 
+def tx_cores(a):
+    """Cores the transmit side (radio, MAC layer, bridge) needs to itself: 6 DS + 2 US with 3
+    was late on the Proxmox host; 4 DS + 2 US with 3 and 6 DS + 1 US with 4 ran (2026-10-11)."""
+    return 4 if a.ds_channels >= 5 else (3 if a.ds_channels == 4 else 2)
+
+
 def _all_tasks(pid):
     try:
         return [int(t) for t in os.listdir(f"/proc/{pid}/task")]
@@ -484,10 +493,14 @@ def _all_tasks(pid):
         return [pid]
 
 
-def split_cpus(child_pids, shared_pids=()):
+def split_cpus(child_pids, shared_pids=(), tx_need=2, mode="auto", prio=0):
     """Give the upstream process (cmts/usproc.py) a physical core of its own, the last one
     allowed, and keep every thread of this process (TX feed, encoder, UHD) on the others: they
-    no longer compete for the same cores (2026-10-09: TX gaps of 0.3-2 s under load)."""
+    no longer compete for the same cores (2026-10-09: TX gaps of 0.3-2 s under load).
+    tx_need: cores the transmit side needs (6 DS: 4). When cores of their own would leave it
+    fewer (mode "auto"), or mode "shared": the upstream processes run on every core at a lower
+    real-time priority (prio - 10), the transmit side preempting them (2026-10-11, 6 DS + 2 US:
+    radio on 3 cores late, or both upstream processes on 1 core 0.6-1.6 s behind)."""
     allowed = sorted(os.sched_getaffinity(0))
 
     def core(c):
@@ -497,6 +510,9 @@ def split_cpus(child_pids, shared_pids=()):
         except OSError:
             return c
     cores = sorted({core(c) for c in allowed})
+    # (auto: only from 5 DS on, the case measured; fewer channels keep the split below)
+    if mode == "shared" or (mode == "auto" and tx_need >= 4 and len(cores) - len(child_pids) < tx_need):
+        return share_cpus(child_pids, allowed, prio)
     if len(cores) < 3:
         return f"processus montant : CPU partagés ({','.join(map(str, allowed))}, trop peu de cœurs pour en réserver un)"
     # one physical core per upstream process while at least two stay for the transmit side (a
@@ -523,6 +539,22 @@ def split_cpus(child_pids, shared_pids=()):
         return f"!! répartition des CPU impossible : {e}"
     return (f"processus montant sur les CPU {','.join(map(str, sorted(mine)))}, émission sur "
             f"{','.join(map(str, sorted(rest)))}")
+
+
+def share_cpus(child_pids, allowed, prio):
+    """split_cpus() without cores of their own: every upstream process on every allowed CPU,
+    real-time priority 10 below the transmit side's (SCHED_RR, inherited by their later threads)."""
+    us_prio = max(1, prio - 10) if prio > 0 else 0
+    try:
+        for pid in child_pids:
+            for tid in _all_tasks(pid):
+                os.sched_setaffinity(tid, allowed)
+                if us_prio:
+                    os.sched_setscheduler(tid, os.SCHED_RR, os.sched_param(us_prio))
+    except OSError as e:
+        return f"!! répartition des CPU impossible : {e}"
+    return (f"processus montants sur les CPU {','.join(map(str, allowed))}, partagés avec l'émission"
+            + (f" (priorité temps réel {us_prio}, l'émission passe devant)" if us_prio else ""))
 
 
 def tx_dc_calibrate(uhd, usrp, tx_stream, rx_stream, tx_center, rx_restore, log, delta=0.02):
@@ -833,7 +865,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     log("réception montante dans un processus séparé (cmts/usproc.py)"
         + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "") + f" ; radio : pid {radio.pid}")
     if a.cpus == "auto":
-        log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid]))
+        log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid], tx_need=tx_cores(a), mode=a.us_cpus,
+                       prio=a.rt_prio))
     try:
         while True:
             time.sleep(5)
@@ -904,6 +937,10 @@ def run_usrp(a):
         # went from 23 to 16 % of a core (kernel time 15.5 -> 10 %), and 6 DS lost its 1-6 ms late
         # sends and channel drops (2026-10-11, T53). --tx-frames halved to keep the same reserve.
         args += f",send_frame_size={a.send_frame_size}"
+    if a.recv_frame_size and "recv_frame_size" not in a.args:
+        # same on the receive side: 6 DS + 2 US, RX at 27.8 MS/s, the radio's RX thread went
+        # from 24 to 14 % of a core (2026-10-11)
+        args += f",recv_frame_size={a.recv_frame_size}"
     if a.radio_process:
         return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
     usrp = uhd.usrp.MultiUSRP(args)
@@ -1087,7 +1124,7 @@ def run_usrp(a):
         log("réception montante dans un processus séparé (cmts/usproc.py)"
             + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else ""))
         if a.cpus == "auto":
-            log(split_cpus([r.pid for r in rxs]))
+            log(split_cpus([r.pid for r in rxs], tx_need=tx_cores(a), mode=a.us_cpus, prio=a.rt_prio))
     workers = [rx_loop] + ([] if remote else [worker_timed if os.environ.get("MINI_CMTS_TIMING") else worker])
     for f in workers:
         threading.Thread(target=f, daemon=True).start()
@@ -1227,6 +1264,9 @@ def parser():
     g.add_argument("--send-frame-size", type=int, default=16360,
                    help="UHD USB send frame size (bytes; UHD's default 8176): larger frames, fewer USB "
                         "submissions, less kernel time in the send thread; 0 = UHD's default")
+    g.add_argument("--recv-frame-size", type=int, default=16360,
+                   help="UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX "
+                        "stream; 0 = UHD's")
     g.add_argument("--args", default="type=b200", help="UHD device args")
     g.add_argument("--rt-prio", type=int, default=50,
                    help="real-time priority (SCHED_RR 1-99) of the whole process, 0 = normal")
@@ -1270,6 +1310,14 @@ def parser():
     g.add_argument("--us-process", action=argparse.BooleanOptionalAction, default=True,
                    help="upstream demodulation in a separate process (own GIL and core); "
                         "--no-us-process: a thread, as before 2026-10-09")
+    g.add_argument("--us-cpus", choices=("auto", "own", "shared"), default="auto",
+                   help="with --cpus auto: 'own' gives each upstream process a core of its own; 'shared' runs "
+                        "them on every core at a lower real-time priority than the transmit side; 'auto': "
+                        "own cores unless that leaves the transmit side of 5-6 DS fewer than 4 (6 DS + 2 US "
+                        "on 6 cores)")
+    g.add_argument("--us-lag-limit", type=float, default=150.0,
+                   help="ms: an upstream channel whose receiver is this far behind its RX stream gets no data "
+                        "grant until it catches up (half of it: no grant in advance); 0 = off")
     g.add_argument("--us-target", type=float, default=-14.0,
                    help="burst power the modems are ranged to (dBFS); -14 since 2026-10-10 (64-QAM, raw MER 21 -> 28 dB "
                         "with a -49 dBFS noise floor), -20 before")
@@ -1294,17 +1342,17 @@ def parser():
     g.add_argument("--strict-mic", action="store_true", help="refuse a REG-REQ whose CMTS MIC is wrong")
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
-    g.add_argument("--ds-channels", type=int, default=2,
-                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0): 1-4 work (4: master clock "
-                        "34.76 MHz, 156 Mbit/s carried with --radio-process, 2026-10-10); 5-6 run at 55.616 "
-                        "MS/s, which the Sagem locks on but the Proxmox host's CPU cannot synthesize")
+    g.add_argument("--ds-channels", type=int, default=6,
+                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1-6 (5-6: master clock "
+                        "55.616 MHz; 6 with --ds-layout around: 234-258 / 21 Mbit/s on the Proxmox host, "
+                        "2026-10-11)")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
-    g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=False,
+    g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=True,
                    help="B210, J.83 encoding, shaping and timed send in a process of their own "
                         "(cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge")
     g.add_argument("--ds-spacing", type=float, default=8e6, help="spacing of the bonded downstream channels (Hz)")
-    g.add_argument("--ds-layout", choices=("up", "around"), default="up",
+    g.add_argument("--ds-layout", choices=("up", "around"), default="around",
                    help="bonded downstream channels: 'up' from --freq every --ds-spacing; 'around': --freq (the "
                         "primary) in the middle, the others on both sides (6 channels: the only layout where the "
                         "Sagem used its upstream grants, 2026-10-11)")

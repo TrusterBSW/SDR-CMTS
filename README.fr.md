@@ -37,7 +37,8 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 | Ensemble, processus radio | `--radio-process --ds-channels 3 --us-channels 2`, même PC | 130,8 / 15,8 Mbit/s : l'agrégation montante n'apporte pas encore de débit (les processus montants sont à 70-90 %, latence ~93 ms) |
 | Descendant, processus radio | `--radio-process --ds-channels 4` : horloge maître 34,76 MHz (5 éch./symbole), PC 6 cœurs | **156 Mbit/s** descendant (131 sur un autre essai), 19,3 montant ; les 4 canaux portent chacun un quart du trafic ; les 2 canaux centraux (de part et d'autre de l'oscillateur local) décrochent parfois et reviennent par CM-STATUS |
 | Descendant, processus radio | `--radio-process --ds-channels 5` : horloge maître 55,616 MHz, synthèse AVX2, PC 6 cœurs | **215,6 Mbit/s** descendant, 20,2 montant, ping 91 ms ; 6 DS : 208-209 Mbit/s mais montant effondré (2,9 Mbit/s) et ping jusqu'à 1 s, à reprendre |
-| Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **234-258 Mbit/s** descendant, 21 montant, ping ~97 ms ; 6 DS + 2 US ne tient pas sur 5 cœurs |
+| Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **234-258 Mbit/s** descendant, 21 montant, ping ~97 ms (170 ms pendant un envoi) ; **c'est le défaut** depuis le 2026-10-11 |
+| Ensemble, processus radio | 6 DS + `--us-channels 2` : processus montants sur tous les cœurs à priorité plus basse que l'émission, contre-réaction sur le retard, DDC dans son propre fil, une seule recherche de préambule par rafale | **230 Mbit/s descendant / 21-22 Mbit/s montant**, modem jamais oublié, 99,9 % des rafales décodées, ping ~100 ms (~430 pendant un envoi, comme 4 DS + 2 US) |
 
 ## ⚠ Sécurité et cadre légal
 
@@ -86,16 +87,19 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | Option | Défaut | Rôle |
 |---|---|---|
 | `--freq` | 306 MHz | premier canal descendant ; les suivants tous les `--ds-spacing` (8 MHz) |
-| `--ds-channels` | 2 | 1 à 6 (horloge 27,808 / 34,76 / 55,616 MHz ; 5-6 au-delà d'un processeur 6 cœurs) |
+| `--ds-channels` | 6 | 1 à 6 (horloge maître 27,808 / 34,76 / 55,616 MHz) ; 6 : 234-258 / 21 Mbit/s sur le PC 6 cœurs |
 | `--qam` | 256 | modulation descendante |
 | `--us-freq`, `--us-rate`, `--us-mode`, `--us-mod` | 60 MHz, 32 (5,12 Msym/s), atdma, 64qam | canal montant |
 | `--us-target` | −14 dBFS | niveau visé pour les rafales des modems |
 | `--grant-ahead-hold/-every/-scale` | oui, 3, 4 | grants non sollicités qui entretiennent l'envoi |
 | `--us-process` | oui | démodulation montante dans un processus séparé |
-| `--radio-process` | non | B210, encodage J.83, mise en forme et émission dans un processus séparé (`cmts/radio.py`) : sans lui, 3 canaux descendants décrochent sur un PC plus lent (GIL partagé avec la couche MAC) |
+| `--radio-process` | oui | B210, encodage J.83, mise en forme et émission dans un processus séparé (`cmts/radio.py`) : sans lui, 3 canaux descendants décrochent sur un PC plus lent (GIL partagé avec la couche MAC) |
 | `--us-channels`, `--us-spacing` | 1, −7 MHz | canaux montants (2 : agrégation montante DOCSIS 3.0, le second 7 MHz plus bas) |
 | `--send-frame-size`, `--tx-frames` | 16360, 64 | trames USB d'envoi de 16 Ko (UHD : 8 Ko) et nombre en vol : moitié moins de soumissions USB, fil d'envoi 23 → 16 % d'un cœur à 55,6 MS/s, 6 DS sans retard d'émission |
-| `--ds-layout` | up | `around` : `--freq` (le canal principal) au milieu, les autres de part et d'autre ; en 6 DS, la seule disposition où le Sagem utilise ses grants montants (234-247 / 21 Mbit/s) |
+| `--ds-layout` | around | `--freq` (le canal principal) au milieu, les autres de part et d'autre (`up` : tous au-dessus) ; en 6 DS, la seule disposition où le Sagem utilise ses grants montants (234-247 / 21 Mbit/s) |
+| `--recv-frame-size` | 16360 | trames USB de réception de 16 Ko : fil de réception de la radio 24 → 14 % d'un cœur à 27,8 MS/s |
+| `--us-cpus` | auto | `own` : un cœur par processus montant ; `shared` : tous les cœurs, priorité temps réel 10 en dessous de l'émission ; `auto` : `shared` seulement si des cœurs réservés laisseraient moins de 4 cœurs à l'émission de 5-6 DS (6 DS + 2 US) |
+| `--us-lag-limit` | 150 ms | contre-réaction : un canal montant dont le récepteur a ce retard ne reçoit plus de grant de données (la moitié : plus de grant en avance) jusqu'à ce qu'il ait rattrapé ; 0 = sans |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) |
 
