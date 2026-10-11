@@ -884,6 +884,11 @@ def run_usrp(a):
     # num_send_frames: samples already handed to USB are the only reserve against a delay of the
     # main (send) thread; the --tx-queue blocks before it only cover the encoder and shaper
     args = f"{a.args},master_clock_rate={mcr},num_recv_frames=256,num_send_frames={a.tx_frames}"
+    if a.send_frame_size and "send_frame_size" not in a.args:
+        # 16 KB USB frames instead of UHD's 8 KB: half the submissions; the send thread at 55.6 MS/s
+        # went from 23 to 16 % of a core (kernel time 15.5 -> 10 %), and 6 DS lost its 1-6 ms late
+        # sends and channel drops (2026-10-11, T53). --tx-frames halved to keep the same reserve.
+        args += f",send_frame_size={a.send_frame_size}"
     if a.radio_process:
         return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
     usrp = uhd.usrp.MultiUSRP(args)
@@ -1201,9 +1206,12 @@ def parser():
     g.add_argument("--block", type=int, default=64, help="TS packets per block (multiple of 8)")
     g.add_argument("--tx-queue", type=int, default=6,
                    help="blocks buffered before the send thread (2.5 ms each; covers encoder delays, adds latency)")
-    g.add_argument("--tx-frames", type=int, default=128,
-                   help="UHD send frames in flight on USB (~0.15 ms each): reserve against delays of the "
-                        "sending thread, adds the same latency")
+    g.add_argument("--tx-frames", type=int, default=64,
+                   help="UHD send frames in flight on USB (~0.3 ms each at 27.8 MS/s with 16 KB frames): "
+                        "reserve against delays of the sending thread, adds the same latency")
+    g.add_argument("--send-frame-size", type=int, default=16360,
+                   help="UHD USB send frame size (bytes; UHD's default 8176): larger frames, fewer USB "
+                        "submissions, less kernel time in the send thread; 0 = UHD's default")
     g.add_argument("--args", default="type=b200", help="UHD device args")
     g.add_argument("--rt-prio", type=int, default=50,
                    help="real-time priority (SCHED_RR 1-99) of the whole process, 0 = normal")

@@ -87,6 +87,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--us-process` | on | upstream demodulation in its own process |
 | `--radio-process` | off | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
 | `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
+| `--send-frame-size`, `--tx-frames` | 16360, 64 | 16 KB USB send frames (UHD: 8 KB) and how many in flight: half the USB submissions, send thread 23 -> 16 % of a core at 55.6 MS/s, 6 DS without late sends |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 200000000"` (already the defaults) |
 
