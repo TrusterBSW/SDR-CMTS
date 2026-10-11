@@ -37,11 +37,29 @@ def ensure_tap(name, log):
     return True
 
 
+# TAP queue towards this process, in frames. Linux's 1000 is ~46 ms at 260 Mbit/s: the read loop
+# below (one os.read per frame, sharing the GIL with the TS packet builder) paused longer, and the
+# TAP dropped its frames by bursts: 9,700 in a 15 s download, as many as TCP retransmitted
+# (2026-10-11, 6 DS). The frames are dated and dropped after --ds-queue-ms only once read, so a
+# longer TAP queue only absorbs the pauses of the reader.
+TAP_QLEN = 10000
+
+
+def set_qlen(name, qlen, log):
+    cmd = ["ip", "link", "set", "dev", name, "txqueuelen", str(qlen)]
+    if os.geteuid() != 0:
+        cmd = ["sudo", "-n", *cmd]
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if r.returncode:
+        log(f"[PONT] !! file de {name} laissée telle quelle ({' '.join(cmd)} : {r.stderr.strip()})")
+
+
 class TapBridge:
     def __init__(self, name, log):
         self.name, self.log = name, log
         self.fd = os.open("/dev/net/tun", os.O_RDWR)
         fcntl.ioctl(self.fd, TUNSETIFF, struct.pack("16sH", name.encode(), IFF_TAP | IFF_NO_PI))
+        set_qlen(name, TAP_QLEN, log)
         self.stats = dict(up=0, down=0, bad_fcs=0)
 
     def upstream(self, eth):

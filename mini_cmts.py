@@ -814,6 +814,18 @@ def cpu_latency(want):
     return "états de veille profonds bloqués (/dev/cpu_dma_latency 0) pendant l'exécution"
 
 
+def ds_fill(mux, prev):
+    """Share of the TS packets of each downstream channel that were not null since the last
+    call ("remplissage 97/96/... %"): a channel near 100 % is full. prev: dict kept by the caller."""
+    out = []
+    for k, m in enumerate([mux] + list(getattr(mux, "secondary", []))):
+        p, nul = m.p, m.stats["null"]
+        p0, n0 = prev.get(k, (p, nul))
+        prev[k] = (p, nul)
+        out.append(f"{100 * (1 - (nul - n0) / (p - p0)):.0f}" if p > p0 else "-")
+    return "remplissage " + "/".join(out) + " %, "
+
+
 def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center):
     """--radio-process: the B210, J.83 encoding, shaping and the timed send in a process of
     their own (cmts/radio.py); this process keeps the MAC layer, the bridge and builds the TS
@@ -867,6 +879,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     if a.cpus == "auto":
         log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid], tx_need=tx_cores(a), mode=a.us_cpus,
                        prio=a.rt_prio))
+    fill_prev = {}
     try:
         while True:
             time.sleep(5)
@@ -875,8 +888,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                 break
             st = mux.stats
             split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
-            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}file DS {len(mux.data)}, attente max "
-                    f"{st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
+            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{ds_fill(mux, fill_prev)}file DS "
+                    f"{len(mux.data)}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
             st["data_max_ms"] = 0.0
             log("\n" + status_line(mux, core, rx, radio.status() + pont))
     except KeyboardInterrupt:

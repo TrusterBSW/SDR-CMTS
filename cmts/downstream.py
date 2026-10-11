@@ -71,7 +71,11 @@ class DownstreamMux:
         # piling up seconds of delay). Several data frames are packed into the same TS packets.
         self.data = collections.deque()            # (enqueue time, frame)
         self.data_max_ms = 100.0
-        self.data_pack = 8                         # TS packets per batch of data frames
+        # TS packets per batch of data frames. Each batch starts on a packet boundary and its last
+        # packet is stuffed: with 8 (1464 bytes) every full-size frame (~1530 bytes with its
+        # DOCSIS headers) went alone in 9 packets, ~10 % of the channel stuffing. 32: 3 frames,
+        # ~2 % (0.94 ms of air: a MAP due meanwhile still leaves with >= 3 ms of lead, 2026-10-11)
+        self.data_pack = 32
         self.mdd = None            # MDD frame (DOCSIS 3.0), sent every mdd_iv when set
         self.mdd_iv = int(1.0 * 10240 * 1000)
         self.next_mdd = 0
@@ -259,7 +263,7 @@ class SecondaryMux:
         self.queue = []
         self.data = collections.deque()
         self.data_max_ms = 100.0
-        self.data_pack = 8
+        self.data_pack = 32                        # (as DownstreamMux.data_pack)
         self.mdd = None
         self.mdd_every = int(SYMRATE * self.m / (RS_LEN * 8))   # TS packets per second
         self.p = 0
