@@ -74,7 +74,11 @@ def us_channels(a):
 
 def ds_channels(a):
     """[(DCID, frequency)] of the downstream channels; the first one is primary."""
-    return [(k + 1, a.freq + k * a.ds_spacing) for k in range(a.ds_channels)]
+    freqs = [a.freq + k * a.ds_spacing for k in range(a.ds_channels)]
+    if os.environ.get("MINI_CMTS_PRIMARY_IDX"):     # diagnostic: the k-th frequency is the primary
+        k = int(os.environ["MINI_CMTS_PRIMARY_IDX"])
+        freqs = [freqs[k]] + freqs[:k] + freqs[k + 1:]
+    return [(k + 1, f) for k, f in enumerate(freqs)]
 
 
 def build(a, log=print):
@@ -110,6 +114,7 @@ def build(a, log=print):
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
+                        map_lead_ms=float(os.environ.get("MINI_CMTS_MAP_LEAD_MS", 4)),   # (diagnostic override)
                         minislot_ticks=a.minislot, cmts_mac=a.mac, invert=not a.no_invert)
     core = CmtsCore(mux, target_db=a.us_target, sm_period=a.sm_period, respond=not a.no_rsp, log=log,
                     secret=a.shared_secret, strict_mic=a.strict_mic, grant_ahead_s=a.grant_ahead_ms / 1e3,
@@ -146,6 +151,8 @@ def build(a, log=print):
     if a.docsis30:                             # MAC Domain Descriptor: the modem runs in DOCSIS 3.0 mode
         chans = ds_channels(a)
         plan = [(cid, f, a.qam, cid == 1) for cid, f in chans]
+        if os.environ.get("MINI_CMTS_MDD_MAX"):   # diagnostic: only the first k channels in the MDD
+            plan = plan[:int(os.environ["MINI_CMTS_MDD_MAX"])]
         ucids = [u for u, _ in us_channels(a)]
         # several upstream channels: ranging only on the first one (ambiguity resolution list),
         # transmit power reporting on (without it no CM may get more than one upstream channel)
@@ -160,6 +167,8 @@ def build(a, log=print):
             mux.secondary.append(m2)
         if len(chans) > 1:
             core.bonding = chans
+            if os.environ.get("MINI_CMTS_RCC_MAX"):   # diagnostic: only the first k bonded (all transmitted)
+                core.bonding = chans[:int(os.environ["MINI_CMTS_RCC_MAX"])]
     return mux, core, rx, tb, mcr, decim
 
 

@@ -95,7 +95,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--us-channels`, `--us-spacing` | 1, −7 MHz | canaux montants (2 : agrégation montante DOCSIS 3.0, le second 7 MHz plus bas) |
 | `--send-frame-size`, `--tx-frames` | 16360, 64 | trames USB d'envoi de 16 Ko (UHD : 8 Ko) et nombre en vol : moitié moins de soumissions USB, fil d'envoi 23 → 16 % d'un cœur à 55,6 MS/s, 6 DS sans retard d'émission |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
-| `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 200000000"` (déjà les défauts) |
+| `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) |
 
 `python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
 

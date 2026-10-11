@@ -221,8 +221,9 @@ def parser():
     ap.add_argument("--config", help="serve this config file instead of the generated one")
     ap.add_argument("--tftp-root", help="also serve the files of this directory")
     ap.add_argument("--secret", default="docsis-lab", help="CMTS shared secret (CMTS MIC)")
-    ap.add_argument("--ds-rate", type=int, default=200_000_000, help="generated config: downstream max rate (bit/s)")
-    ap.add_argument("--us-rate", type=int, default=200_000_000, help="generated config: upstream max rate (bit/s)")
+    # 1 Gbit/s: 6 bonded downstream channels carried 258 Mbit/s (2026-10-11), past the former 200
+    ap.add_argument("--ds-rate", type=int, default=1_000_000_000, help="generated config: downstream max rate (bit/s)")
+    ap.add_argument("--us-rate", type=int, default=1_000_000_000, help="generated config: upstream max rate (bit/s)")
     ap.add_argument("--us-burst", type=int, default=64_000,
                     help="generated config: upstream Maximum Traffic Burst (bytes, TLV 24.9; DOCSIS default 3044). "
                          "The modem never requests more than this at once: with a ~60 ms request-to-grant cycle, "
