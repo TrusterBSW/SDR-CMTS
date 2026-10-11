@@ -74,11 +74,17 @@ def us_channels(a):
 
 def ds_channels(a):
     """[(DCID, frequency)] of the downstream channels; the first one is primary."""
-    freqs = [a.freq + k * a.ds_spacing for k in range(a.ds_channels)]
+    k = 0                                           # index of the primary among the frequencies
+    if getattr(a, "ds_layout", "up") == "around":
+        # --freq (the primary: where the Sagem looks first) in the middle, the others on both
+        # sides. 6 channels 306-346 MHz: the modem left 25-47 % of its upstream grants empty
+        # under upload; 290-330 MHz with 306 primary: 0 %, 20.9 Mbit/s up, 247 down (2026-10-11)
+        k = (a.ds_channels - 1) // 2
+    freqs = [a.freq + (j - k) * a.ds_spacing for j in range(a.ds_channels)]
     if os.environ.get("MINI_CMTS_PRIMARY_IDX"):     # diagnostic: the k-th frequency is the primary
         k = int(os.environ["MINI_CMTS_PRIMARY_IDX"])
-        freqs = [freqs[k]] + freqs[:k] + freqs[k + 1:]
-    return [(k + 1, f) for k, f in enumerate(freqs)]
+    freqs = [freqs[k]] + freqs[:k] + freqs[k + 1:]
+    return [(j + 1, f) for j, f in enumerate(freqs)]
 
 
 def build(a, log=print):
@@ -1298,6 +1304,10 @@ def parser():
                    help="B210, J.83 encoding, shaping and timed send in a process of their own "
                         "(cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge")
     g.add_argument("--ds-spacing", type=float, default=8e6, help="spacing of the bonded downstream channels (Hz)")
+    g.add_argument("--ds-layout", choices=("up", "around"), default="up",
+                   help="bonded downstream channels: 'up' from --freq every --ds-spacing; 'around': --freq (the "
+                        "primary) in the middle, the others on both sides (6 channels: the only layout where the "
+                        "Sagem used its upstream grants, 2026-10-11)")
     g.add_argument("--docsis30", action="store_true",
                    help="send a MAC Domain Descriptor (MDD): the modem initialises in DOCSIS 3.0 mode "
                         "(experimental, needed for channel bonding)")

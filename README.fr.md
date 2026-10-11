@@ -37,6 +37,7 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 | Ensemble, processus radio | `--radio-process --ds-channels 3 --us-channels 2`, même PC | 130,8 / 15,8 Mbit/s : l'agrégation montante n'apporte pas encore de débit (les processus montants sont à 70-90 %, latence ~93 ms) |
 | Descendant, processus radio | `--radio-process --ds-channels 4` : horloge maître 34,76 MHz (5 éch./symbole), PC 6 cœurs | **156 Mbit/s** descendant (131 sur un autre essai), 19,3 montant ; les 4 canaux portent chacun un quart du trafic ; les 2 canaux centraux (de part et d'autre de l'oscillateur local) décrochent parfois et reviennent par CM-STATUS |
 | Descendant, processus radio | `--radio-process --ds-channels 5` : horloge maître 55,616 MHz, synthèse AVX2, PC 6 cœurs | **215,6 Mbit/s** descendant, 20,2 montant, ping 91 ms ; 6 DS : 208-209 Mbit/s mais montant effondré (2,9 Mbit/s) et ping jusqu'à 1 s, à reprendre |
+| Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **234-258 Mbit/s** descendant, 21 montant, ping ~97 ms ; 6 DS + 2 US ne tient pas sur 5 cœurs |
 
 ## ⚠ Sécurité et cadre légal
 
@@ -94,6 +95,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--radio-process` | non | B210, encodage J.83, mise en forme et émission dans un processus séparé (`cmts/radio.py`) : sans lui, 3 canaux descendants décrochent sur un PC plus lent (GIL partagé avec la couche MAC) |
 | `--us-channels`, `--us-spacing` | 1, −7 MHz | canaux montants (2 : agrégation montante DOCSIS 3.0, le second 7 MHz plus bas) |
 | `--send-frame-size`, `--tx-frames` | 16360, 64 | trames USB d'envoi de 16 Ko (UHD : 8 Ko) et nombre en vol : moitié moins de soumissions USB, fil d'envoi 23 → 16 % d'un cœur à 55,6 MS/s, 6 DS sans retard d'émission |
+| `--ds-layout` | up | `around` : `--freq` (le canal principal) au milieu, les autres de part et d'autre ; en 6 DS, la seule disposition où le Sagem utilise ses grants montants (234-247 / 21 Mbit/s) |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) |
 

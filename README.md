@@ -37,6 +37,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Together, radio process | `--radio-process --ds-channels 3 --us-channels 2`, same PC | 130.8 / 15.8 Mbit/s: upstream bonding brings no throughput yet (upstream processes at 70-90 %, ~93 ms latency) |
 | Downstream, radio process | `--radio-process --ds-channels 4`: master clock 34.76 MHz (5 samples/symbol), 6-core PC | **156 Mbit/s** downstream (131 in another run), 19.3 upstream; each of the 4 channels carries a quarter of the traffic; the 2 middle channels (either side of the TX LO) sometimes drop and come back through CM-STATUS |
 | Downstream, radio process | `--radio-process --ds-channels 5`: master clock 55.616 MHz, AVX2 synthesis, 6-core PC | **215.6 Mbit/s** downstream, 20.2 upstream, ping 91 ms; 6 DS: 208-209 Mbit/s but the upstream collapses (2.9 Mbit/s) and ping up to 1 s, to be resumed |
+| Downstream, radio process | `--radio-process --ds-channels 6 --ds-layout around`: 290-330 MHz, 306 primary in the middle, 55.616 MHz, 16 KB USB frames | **234-258 Mbit/s** downstream, 21 upstream, ping ~97 ms; 6 DS + 2 US does not fit on 5 cores |
 
 ## ⚠ Safety and legal
 
@@ -88,6 +89,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--radio-process` | off | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
 | `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
 | `--send-frame-size`, `--tx-frames` | 16360, 64 | 16 KB USB send frames (UHD: 8 KB) and how many in flight: half the USB submissions, send thread 23 -> 16 % of a core at 55.6 MS/s, 6 DS without late sends |
+| `--ds-layout` | up | `around`: `--freq` (the primary) in the middle, the others on both sides; with 6 DS the only layout where the Sagem uses its upstream grants (234-247 / 21 Mbit/s) |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways) |
 
