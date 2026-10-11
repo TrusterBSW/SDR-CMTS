@@ -1269,11 +1269,14 @@ def parser():
     g.add_argument("--mac", default="02:00:00:ca:fe:01")
     g.add_argument("--no-invert", action="store_true")
     g.add_argument("--block", type=int, default=64, help="TS packets per block (multiple of 8)")
-    g.add_argument("--tx-queue", type=int, default=6,
-                   help="blocks buffered before the send thread (2.5 ms each; covers encoder delays, adds latency)")
-    g.add_argument("--tx-frames", type=int, default=64,
-                   help="UHD send frames in flight on USB (~0.3 ms each at 27.8 MS/s with 16 KB frames): "
-                        "reserve against delays of the sending thread, adds the same latency")
+    # 3 and 48 since 2026-10-11 (6 and 64 before): downstream latency ~36 -> ~25 ms, ping 100 -> 78 ms,
+    # smallest TX margin 6.7 ms instead of 14-17 (6 DS + 2 US, no underflow nor late packet; T58)
+    g.add_argument("--tx-queue", type=int, default=3,
+                   help="blocks buffered before the send thread (~1.9 ms each; covers encoder delays, adds latency)")
+    g.add_argument("--tx-frames", type=int, default=48,
+                   help="UHD send frames in flight on USB (~0.3 ms each at 27.8 MS/s with 16 KB frames, scaled "
+                        "with the sample rate: 14 ms of reserve): reserve against delays of the sending thread, "
+                        "adds the same latency")
     g.add_argument("--send-frame-size", type=int, default=16360,
                    help="UHD USB send frame size (bytes; UHD's default 8176): larger frames, fewer USB "
                         "submissions, less kernel time in the send thread; 0 = UHD's default")
