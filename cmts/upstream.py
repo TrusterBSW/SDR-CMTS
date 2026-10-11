@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import docsis_mac as mac
+from . import cdsp, docsis_mac as mac
 from .j83a import PulseShaper
 from .us_phy import BurstDemod, profiles
 
@@ -152,7 +152,10 @@ class UpstreamRx:
             return None
         i = n0 % L
         if i + (n1 - n0) <= L:
-            return self.buf[i:i + n1 - n0].copy()
+            # a view while the ring is far from writing over it (nothing modifies a window in
+            # place): the copy of every window was ~6 % of an upstream process (2026-10-11)
+            w = self.buf[i:i + n1 - n0]
+            return w if self.written - n0 < L // 2 else w.copy()
         return np.concatenate([self.buf[i:], self.buf[:i + n1 - n0 - L]])
 
     def sample_of_ts(self, ts):
@@ -249,9 +252,12 @@ class UpstreamRx:
         # energy gate on mini-slot sized blocks
         blk = max(8, int(self.ms_samples / 2))
         nb = x.size // blk
-        v = np.ascontiguousarray(x[:nb * blk], np.complex64).view(np.float32).reshape(nb, 2 * blk)
-        p = np.einsum("ij,ij->i", v, v) / blk          # power per block (no sqrt as with abs()**2)
-        lowest = float(np.partition(p, nb // 5)[nb // 5])   # 20th percentile, without interpolation
+        if cdsp.AVAILABLE:                              # power per block, 20th percentile (C)
+            p, lowest = cdsp.block_power(x, blk, nb // 5)
+        else:
+            v = np.ascontiguousarray(x[:nb * blk], np.complex64).view(np.float32).reshape(nb, 2 * blk)
+            p = np.einsum("ij,ij->i", v, v) / blk      # power per block (no sqrt as with abs()**2)
+            lowest = float(np.partition(p, nb // 5)[nb // 5])   # 20th percentile, without interpolation
         if not self.floor:
             # never from zero-filled samples (an RX gap, or the part of the stream an upstream
             # process skips at its start): a floor of 0 made every block "hot" and every window
@@ -265,7 +271,7 @@ class UpstreamRx:
         found = []
         # (energy only outside the grant is a neighbouring burst: an unused grant)
         # (one block of grace at the start: the previous burst's tail often spills into it)
-        inside = hot[(hot * blk >= s0 - a) & (hot * blk < s1 - a - blk)]
+        inside = hot[(hot * blk >= s0 - a) & (hot * blk < s1 - a - blk)] if hot.size else hot
         # A unicast data grant or a request contention region with no energy of its own is
         # empty: no preamble search. The tail of the previous burst in its lead-in used to start
         # one (1-5.5 ms instead of 0.1 ms per window); with a grant in advance in every MAP
@@ -434,8 +440,11 @@ class UpstreamRx:
             self.raw_pos = end
             return
         nb = x.size // blk
-        p = (np.abs(x[:nb * blk]) ** 2).reshape(nb, blk).mean(1)
-        med = float(np.median(p))
+        if cdsp.AVAILABLE:
+            p, med = cdsp.block_power(x, blk, nb // 2)
+        else:
+            p = (np.abs(x[:nb * blk]) ** 2).reshape(nb, blk).mean(1)
+            med = float(np.median(p))
         self.raw_floor = med if self.raw_floor is None else 0.9 * self.raw_floor + 0.1 * med
         hot = np.nonzero(p > max(self.raw_floor, 1e-15) * 10 ** (thr_db / 10))[0]
         nxt = self.raw_pos + nb * blk

@@ -19,6 +19,40 @@ TICK = 64                                   # 6.25 us time tick in 10.24 MHz cou
 MAX_IL_DELAY = RS_LEN * (INTER_I - 1)       # bytes
 
 
+NULL_RUN = 8      # null packets written at once at most when there is nothing to send (~0.23 ms)
+
+
+def _fill(mux, n):
+    """n TS packets of `mux` (DownstreamMux or SecondaryMux) into one array: the packets of the
+    message or batch in progress (mux._q from mux._qi), then mux._item() for what comes next,
+    nulls by runs of NULL_RUN at most, cut at the next SYNC / MAP / MDD / UCD (the stream is the
+    one the packet by packet loop made; only a data frame arriving meanwhile waits, ~0.23 ms). One
+    Python call per packet (~207,000/s for 6 channels) took ~0.3 core idle, ~0.55 downloading
+    (2026-10-11)."""
+    out = np.empty((n, 188), np.uint8)
+    i = 0
+    while i < n:
+        q = mux._q
+        if q is None:
+            q = mux._item()
+            if q is None:
+                r = mux._null_run(min(NULL_RUN, n - i))
+                out[i:i + r] = mux.pk.null
+                mux.p += r
+                mux.stats["null"] += r
+                i += r
+                continue
+            mux._q, mux._qi = q, 0
+        k = min(n - i, q.shape[0] - mux._qi)
+        out[i:i + k] = q[mux._qi:mux._qi + k]
+        mux._qi += k
+        mux.p += k
+        i += k
+        if mux._qi >= q.shape[0]:
+            mux._q = None
+    return out
+
+
 class DownstreamMux:
     def __init__(self, qam=64, sps=2, us_freq=40e6, us_symrate_mult=8, minislot_ticks=4,
                  cmts_mac="02:00:00:ca:fe:01", sync_ms=10, ucd_ms=1000, map_ms=2,
@@ -34,7 +68,7 @@ class DownstreamMux:
         self.ts_start = ts_start
         self.pk = mac.TSPacketizer()
         self.p = 0                 # index of the next TS packet
-        self.queue = []            # packets of a multi-packet message in progress
+        self._q, self._qi = None, 0   # packets of the message in progress (array), next one to send
         self.us = dict(freq=us_freq, mult=us_symrate_mult, ms_ticks=minislot_ticks,
                        us_id=us_chan_id, ds_id=ds_chan_id, ccc=1)
         self.extra_us = []         # further upstream channels (add_upstream)
@@ -166,12 +200,13 @@ class DownstreamMux:
             self.stats["map"] += 1
         return frames
 
-    def next_packet(self):
+    def _item(self):
+        """What starts at packet self.p: a (k x 188) array (a message, a data batch), or None
+        for a null packet. Same priorities as ever: MAC management, then data (never when a
+        SYNC or a MAP is due), SYNC, MAP, MDD, UCD."""
         now = self.pkt_air_ts(self.p)
         self.now_ts = now
-        if self.queue:
-            pkt = self.queue.pop(0)
-        elif (self.ucast or self.data) and now < self.next_sync and not (
+        if (self.ucast or self.data) and now < self.next_sync and not (
                 self.next_map_ms is None or self.next_map_ms * self.ms_counts < now + self.map_lead) \
                 and (self.ucast or self._data_batch()):
             if self.ucast:                         # MAC management first
@@ -182,35 +217,49 @@ class DownstreamMux:
                     cb(now)
             else:
                 frames = self._batch
-            self.queue = self.pk.pack(frames)
-            pkt = self.queue.pop(0)
             if self.on_ucast:
                 for f in frames:
                     self.on_ucast(f, now)
-        elif now >= self.next_sync:
-            pkt = self._sync_packet()
+            return self.pk.pack_array(frames)
+        if now >= self.next_sync:
+            q = self._sync_packet()[None]
             self.next_sync = now + self.sync_iv
             self.stats["sync"] += 1
-        elif self._due_map(now):
-            self.queue = self.pk.pack(self._map_frames(now))
-            pkt = self.queue.pop(0)
-        elif self.mdd is not None and now >= self.next_mdd:
-            self.queue = self.pk.pack([self.mdd])
-            pkt = self.queue.pop(0)
+            return q
+        if self._due_map(now):
+            return self.pk.pack_array(self._map_frames(now))
+        if self.mdd is not None and now >= self.next_mdd:
             self.next_mdd = now + self.mdd_iv
             self.stats["mdd"] = self.stats.get("mdd", 0) + 1
-        elif now >= self.next_ucd:
-            self.queue = self.pk.pack([mac.ucd_msg(self.sa, u["us_id"], u["ccc"], u["ms_ticks"],
-                                                   u["ds_id"], u["freq"], u["mult"])
-                                       for u in [self.us] + self.extra_us])
-            pkt = self.queue.pop(0)
+            return self.pk.pack_array([self.mdd])
+        if now >= self.next_ucd:
             self.next_ucd = now + self.ucd_iv
             self.stats["ucd"] += 1
-        else:
-            pkt = self.pk.null
-            self.stats["null"] += 1
-        self.p += 1
-        return pkt
+            return self.pk.pack_array([mac.ucd_msg(self.sa, u["us_id"], u["ccc"], u["ms_ticks"],
+                                                   u["ds_id"], u["freq"], u["mult"])
+                                       for u in [self.us] + self.extra_us])
+        return None
+
+    def _null_run(self, maxr):
+        """Null packets from self.p (where _item() found nothing) up to the packet where a SYNC,
+        MAP, MDD or UCD falls due, at most maxr."""
+        t = min([self.next_sync, self.next_ucd]
+                + [self.next_mdd] * (self.mdd is not None)
+                + [m * self.ms_counts - self.map_lead + 1 for m in
+                   [self.next_map_ms] + [u["next_map_ms"] for u in self.extra_us] if m is not None])
+        for k in range(1, maxr):
+            if self.pkt_air_ts(self.p + k) >= t:
+                return k
+        return maxr
+
+    def next_packet(self):
+        return self.packets(1)[0]
+
+    def backlog(self):
+        """Frames waiting + TS packets of the message in progress not sent yet (load measure of
+        the bonding forwarder)."""
+        q = self._q
+        return len(self.data) + (0 if q is None else (q.shape[0] - self._qi) // 8)
 
     def send_data(self, frame):
         """Queue a downstream data PDU (thread-safe: deque append)."""
@@ -238,7 +287,7 @@ class DownstreamMux:
         return bool(batch)
 
     def packets(self, n):
-        return np.stack([self.next_packet() for _ in range(n)])
+        return _fill(self, n)
 
     def samples(self, n_packets=256):
         """n_packets (multiple of 8) of TS -> complex64 baseband at sps * 6.952 MS/s."""
@@ -260,7 +309,7 @@ class SecondaryMux:
         self.invert = invert
         self.sa = bytes.fromhex(cmts_mac.replace(":", ""))
         self.pk = mac.TSPacketizer()
-        self.queue = []
+        self._q, self._qi = None, 0
         self.data = collections.deque()
         self.data_max_ms = 100.0
         self.data_pack = 32                        # (as DownstreamMux.data_pack)
@@ -274,41 +323,43 @@ class SecondaryMux:
     def send_data(self, frame):
         self.data.append((time.perf_counter(), frame))
 
-    def next_packet(self):
-        if self.queue:
-            pkt = self.queue.pop(0)
-        elif self.mdd is not None and self.p >= self.next_mdd:
-            self.queue = self.pk.pack([self.mdd])
-            pkt = self.queue.pop(0)
+    def _item(self):
+        """As DownstreamMux._item: the MDD, else a data batch, else None (null)."""
+        if self.mdd is not None and self.p >= self.next_mdd:
             self.next_mdd = self.p + self.mdd_every
             self.stats["mdd"] += 1
-        else:
-            now, batch, size = time.perf_counter(), [], 0
-            while self.data:
-                t, f = self.data[0]
-                wait = (now - t) * 1e3
-                if wait > self.data_max_ms:
-                    self.data.popleft()
-                    self.stats["data_drop"] += 1
-                    continue
-                if batch and size + len(f) > self.data_pack * 183:
-                    break
+            return self.pk.pack_array([self.mdd])
+        now, batch, size = time.perf_counter(), [], 0
+        while self.data:
+            t, f = self.data[0]
+            wait = (now - t) * 1e3
+            if wait > self.data_max_ms:
                 self.data.popleft()
-                self.stats["data_max_ms"] = max(self.stats["data_max_ms"], wait)
-                batch.append(f)
-                size += len(f)
-            if batch:
-                self.stats["data"] += len(batch)
-                self.queue = self.pk.pack(batch)
-                pkt = self.queue.pop(0)
-                if self.on_ucast:
-                    for f in batch:
-                        self.on_ucast(f, None)
-            else:
-                pkt = self.pk.null
-                self.stats["null"] += 1
-        self.p += 1
-        return pkt
+                self.stats["data_drop"] += 1
+                continue
+            if batch and size + len(f) > self.data_pack * 183:
+                break
+            self.data.popleft()
+            self.stats["data_max_ms"] = max(self.stats["data_max_ms"], wait)
+            batch.append(f)
+            size += len(f)
+        if not batch:
+            return None
+        self.stats["data"] += len(batch)
+        if self.on_ucast:
+            for f in batch:
+                self.on_ucast(f, None)
+        return self.pk.pack_array(batch)
+
+    def _null_run(self, maxr):
+        if self.mdd is not None:
+            return max(1, min(maxr, self.next_mdd - self.p))
+        return maxr
+
+    def next_packet(self):
+        return self.packets(1)[0]
+
+    backlog = DownstreamMux.backlog
 
     def packets(self, n):
-        return np.stack([self.next_packet() for _ in range(n)])
+        return _fill(self, n)

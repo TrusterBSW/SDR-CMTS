@@ -134,7 +134,18 @@ class BondedForwarder:
             return 0
         n = len(self.channels)
         usable = [c - 1 for c in self.core.bonded_channels.get(cm, range(1, n + 1)) if 0 < c <= n] or [0]
-        k = min(usable, key=lambda i: len(self.channels[i].data))   # least loaded acquired channel
+        # The acquired channels in turn, the next one after the last used, skipping one more than
+        # 2 frames above the least loaded (frames waiting + TS packets not sent yet). With the
+        # queues mostly empty (TS packets built in C since 2026-10-11), consecutive frames leave
+        # at the same instant on several channels, and the Sagem lost 0.02-2.4 % of them (UDP
+        # 150-280 Mbit/s, TCP 155 instead of 277 Mbit/s) unless the channel order follows the
+        # sequence order: least loaded with ties to the first channel, or in random turn, did not
+        # (in strict turn: 0 % lost)
+        loads = {i: self.channels[i].backlog() for i in usable}
+        lo = min(loads.values())
+        last = getattr(self, "last", -1)
+        k = min(usable, key=lambda i: (loads[i] > lo + 2, (i - last - 1) % n))
+        self.last = k
         if self.force_ch is not None:
             k = self.force_ch
         s = self.seq.get(dsid, 0)

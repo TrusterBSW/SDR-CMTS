@@ -27,6 +27,9 @@ class Chan:
     def send_data(self, pdu):
         self.data.append(pdu)
 
+    def backlog(self):
+        return len(self.data)
+
 
 def dsid_of(pdu):
     """(DSID, sequence) of a Packet PDU with a DS-EHDR, or None."""
@@ -68,6 +71,22 @@ check("numéros de séquence propres à chaque DSID",
       [s for _, s in byd[0x1001]] == [0, 1, 2] and [s for _, s in byd[0x1002]] == [0, 1, 2], str(byd))
 check("diffusion et destination inconnue : primaire, sans DSID",
       sent[6][1] == 0 and sent[6][2] is None and sent[7][1] == 0 and sent[7][2] is None, str(sent[6:]))
+
+# queues emptied as fast as they fill (TS packets built in C): the channels in turn, in sequence
+# order, the Sagem lost frames otherwise (2026-10-11); a channel 3 frames above the least loaded
+# is skipped
+core6 = NS(by_sid={1: ma}, bonded={A: 0x1001}, bonded_channels={A: [1, 2, 3, 4, 5, 6]})
+ch6 = [Chan() for _ in range(6)]
+f6 = BondedForwarder(ch6, core6, mac)
+order = []
+for _ in range(12):
+    order.append(f6.send(eth(A)))
+    for c in ch6:
+        c.data.clear()
+check("files vides : canaux à tour de rôle", order == [0, 1, 2, 3, 4, 5] * 2, str(order))
+ch6[1].data.extend([b""] * 3)
+order = [f6.send(eth(A)) for _ in range(5)]
+check("canal chargé (3 trames de plus) sauté", 1 not in order[:5] and order[0] == 0, str(order))
 
 # one bonded modem: an address not learned yet still goes to it with its DSID (former behaviour)
 core1 = NS(by_sid={1: ma}, bonded={A: 0x1001}, bonded_channels={A: [1, 2]})

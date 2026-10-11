@@ -294,3 +294,39 @@ void add_into(float *dst, const float *src, int n)
 {
     for (int k = 0; k < 2 * n; k++) dst[k] += src[k];
 }
+
+/* ------------------------------------------------------------------ MPEG-TS packing
+ * MAC frames back to back -> TS packets of the DOCSIS PID, from a packet boundary: the same
+ * packets as docsis_mac.TSPacketizer.pack (pointer_field when a frame starts in the packet,
+ * a start on its last byte pushed to the next packet, the last packet stuffed with 0xFF).
+ * data: the frames (n bytes), starts: offset of each frame (ns, increasing), *cc: continuity
+ * counter (in/out), out: room for maxp packets. Returns the packets written, -1 if maxp is
+ * too small. (2026-10-11: built byte string by byte string in Python, the TS packets of 6
+ * channels took ~0.3-0.5 core of the MAC process.) */
+#define DOCSIS_PID 0x1FFE
+int ts_pack(const uint8_t *data, int n, const int *starts, int ns, int *cc, uint8_t *out, int maxp)
+{
+    int pos = 0, si = 0, np_ = 0, c = *cc;
+    while (pos < n) {
+        if (np_ >= maxp) return -1;
+        uint8_t *pk = out + (long)TS_LEN * np_++;
+        while (si < ns && starts[si] < pos) si++;
+        int nxt = si < ns ? starts[si] - pos : -1;
+        int pusi = nxt >= 0 && nxt < 183;
+        pk[0] = 0x47;
+        pk[1] = (pusi ? 0x40 : 0) | (DOCSIS_PID >> 8);
+        pk[2] = DOCSIS_PID & 0xFF;
+        pk[3] = 0x10 | c;
+        c = (c + 1) & 0xF;
+        int at, len;
+        if (pusi) { pk[4] = (uint8_t)nxt; at = 5; len = 183; }
+        else if (nxt == 183) { at = 4; len = 183; }       /* start on the last byte: stuffed */
+        else { at = 4; len = 184; }
+        int k = n - pos < len ? n - pos : len;
+        memcpy(pk + at, data + pos, k);
+        memset(pk + at + k, 0xFF, TS_LEN - at - k);
+        pos += len;
+    }
+    *cc = c;
+    return np_;
+}

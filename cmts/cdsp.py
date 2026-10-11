@@ -8,6 +8,7 @@ more than the 37.6 ms USB reserve of the TX path).
 """
 import ctypes
 import os
+import struct
 import subprocess
 
 import numpy as np
@@ -59,6 +60,8 @@ def _load():
     dll.rs_decode_many.restype = ctypes.c_int
     dll.rs_find_last.argtypes = [U8, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, U8, I32]
     dll.rs_find_last.restype = ctypes.c_int
+    dll.block_power.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    dll.block_power.restype = ctypes.c_float
     dll.ddc_decim.argtypes = [F, ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_double), F, ctypes.c_int,
                               ctypes.c_int, F, I32, F]
     dll.ddc_decim.restype = ctypes.c_int
@@ -85,6 +88,10 @@ def _load_ds():
     dll.scale_clip.restype = None
     dll.add_into.argtypes = [F, F, ctypes.c_int]
     dll.add_into.restype = None
+    # bytes and plain addresses: no ctypes cast per call (ts_pack runs ~20,000 times/s)
+    dll.ts_pack.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, I32, ctypes.c_void_p,
+                            ctypes.c_int]
+    dll.ts_pack.restype = ctypes.c_int
     return dll
 
 
@@ -111,6 +118,25 @@ def j83a_encode(pkts, rand_mask, m, constel, hist, rot):
     return out
 
 
+def ts_pack(frames, cc):
+    """MAC frames -> (k x 188 TS packets, new continuity counter), as TSPacketizer.pack (C);
+    None without the C library."""
+    if _DS is None:
+        return None
+    data = b"".join(frames)
+    starts, pos = [], 0
+    for f in frames:
+        starts.append(pos)
+        pos += len(f)
+    out = np.empty((len(data) // 183 + 2, 188), np.uint8)
+    c = ctypes.c_int(cc)
+    k = _DS.ts_pack(data, len(data), struct.pack(f"{len(starts)}i", *starts), len(frames), ctypes.byref(c),
+                    out.__array_interface__["data"][0], out.shape[0])
+    if k < 0:
+        raise ValueError("ts_pack")
+    return out[:k], c.value
+
+
 def mix_add(x, step, phase, acc):
     """acc += x * exp(j (phase[0] + k step)), phase[0] (float64 array) carried across calls:
     puts a channel at its frequency offset and sums it with the others (bonding)."""
@@ -127,6 +153,15 @@ def mix_add(x, step, phase, acc):
 
 def _f(a):
     return a.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+
+def block_power(x, blk, k):
+    """(mean power of each block of `blk` samples of complex64 x, k-th smallest of them) (C)."""
+    x = np.ascontiguousarray(x, dtype=np.complex64)
+    nb = x.size // blk
+    p = np.empty(nb, np.float32)
+    lo = _DLL.block_power(x.__array_interface__["data"][0], nb, blk, k, p.__array_interface__["data"][0])
+    return p, float(lo)
 
 
 def rs_decode(cw, nsym, fcr=0):

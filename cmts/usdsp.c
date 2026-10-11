@@ -695,3 +695,45 @@ int ddc_decim(const float *x, int n, double step, double *phase, const float *h,
     *phase = fmod(ph + n * step, 2 * M_PI);
     return nout;
 }
+
+/* ------------------------------------------------------------------ energy gate
+ * Mean power of each block of blk complex samples (p[nb]) and the k-th smallest of them (k < nb,
+ * quickselect on a copy): the energy gate of every MAP interval (UpstreamRx._handle) and the raw
+ * scan. In numpy (einsum, partition) plus the Python around it, ~0.1 core per upstream channel
+ * under a download (2026-10-11). */
+float block_power(const float *x, int nb, int blk, int k, float *p)
+{
+    if (nb <= 0) return 0.f;
+    float inv = 1.f / blk;
+    for (int b = 0; b < nb; b++) {
+        const float *v = x + 2L * b * blk;
+        float s0 = 0.f, s1 = 0.f, s2 = 0.f, s3 = 0.f;
+        int j = 0;
+        for (; j + 4 <= 2 * blk; j += 4) {
+            s0 += v[j] * v[j]; s1 += v[j + 1] * v[j + 1]; s2 += v[j + 2] * v[j + 2]; s3 += v[j + 3] * v[j + 3];
+        }
+        for (; j < 2 * blk; j++) s0 += v[j] * v[j];
+        p[b] = (s0 + s1 + s2 + s3) * inv;
+    }
+    if (k < 0) k = 0;
+    if (k >= nb) k = nb - 1;
+    float *a = (float *)malloc(sizeof(float) * nb);
+    if (!a) return p[k];
+    memcpy(a, p, sizeof(float) * nb);
+    int lo = 0, hi = nb - 1;
+    while (lo < hi) {                                   /* Hoare quickselect */
+        float piv = a[(lo + hi) / 2];
+        int i = lo, j = hi;
+        while (i <= j) {
+            while (a[i] < piv) i++;
+            while (a[j] > piv) j--;
+            if (i <= j) { float t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
+        }
+        if (k <= j) hi = j;
+        else if (k >= i) lo = i;
+        else break;
+    }
+    float r = a[k];
+    free(a);
+    return r;
+}

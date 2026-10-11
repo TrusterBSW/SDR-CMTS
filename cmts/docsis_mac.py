@@ -30,13 +30,26 @@ UCD29 = 29
 SID_BROADCAST = 0x3FFF
 
 
-def crc16_ccitt(data):
-    """HCS: CRC-CCITT (x^16+x^12+x^5+1) as in ITU-T X.25 (bit-reflected, init/xor 0xFFFF)."""
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
+def _crc16_table():
+    t = []
+    for b in range(256):
+        crc = b
         for _ in range(8):
             crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+        t.append(crc)
+    return t
+
+
+_CRC16 = _crc16_table()
+
+
+def crc16_ccitt(data):
+    """HCS: CRC-CCITT (x^16+x^12+x^5+1) as in ITU-T X.25 (bit-reflected, init/xor 0xFFFF).
+    One table lookup per byte (2026-10-11: bit by bit, it was ~8 % of a core on the TAP thread
+    of a 250 Mbit/s download, ~20,000 frames/s)."""
+    crc, t = 0xFFFF, _CRC16
+    for b in data:
+        crc = (crc >> 8) ^ t[(crc ^ b) & 0xFF]
     return crc ^ 0xFFFF
 
 
@@ -203,6 +216,16 @@ class TSPacketizer:
                    0x10 | self.cc])
         self.cc = (self.cc + 1) & 0xF
         return h
+
+    def pack_array(self, frames):
+        """pack() as one (k x 188) uint8 array, in C when available (cdsp.ts_pack)."""
+        from . import cdsp
+        r = cdsp.ts_pack(frames, self.cc) if frames else None
+        if r is None:
+            out = self.pack(frames)
+            return np.stack(out) if out else np.empty((0, 188), np.uint8)
+        out, self.cc = r
+        return out
 
     def pack(self, frames):
         """Pack MAC frames back to back starting at a packet boundary (pointer_field=0).

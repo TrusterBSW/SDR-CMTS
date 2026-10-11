@@ -856,9 +856,24 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     radio.start()
     stop = threading.Event()
 
+    # diagnostic: MINI_CMTS_TSDUMP=<file> writes the TS blocks of every channel (channels x block x
+    # 188 bytes per block) for MINI_CMTS_TSDUMP_S seconds once <file>.go exists
+    dump = os.environ.get("MINI_CMTS_TSDUMP")
+    dump_f, dump_end = None, None
+
     def encoder():
+        nonlocal dump_f, dump_end
         while not stop.is_set():
             pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
+            if dump and dump_f is None and dump_end is None and os.path.exists(dump + ".go"):
+                dump_f = open(dump, "wb")
+                dump_end = time.monotonic() + float(os.environ.get("MINI_CMTS_TSDUMP_S", "10"))
+            if dump_f is not None:
+                dump_f.write(np.stack(pks).tobytes())
+                if time.monotonic() > dump_end:
+                    dump_f.close()
+                    dump_f = None
+                    log(f"[TS] flux enregistré dans {dump}")
             if not radio.pk.put(pks, stop):
                 return
     threading.Thread(target=encoder, name="encoder", daemon=True).start()
