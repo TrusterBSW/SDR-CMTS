@@ -106,7 +106,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--mtc-owed` | oui | requêtes multi-canal cumulées (le modem ne demande que les octets nouveaux), accordées sur chaque canal à chaque MAP, grant pending tant qu'il reste dû ; `--no-mtc-owed` : chaque requête remplace la précédente |
 | `--ds-aqm` | 30 ms | CoDel sur les files descendantes : quelques trames jetées une à une au lieu de rafales à la limite `--ds-queue-ms` ; ping pendant un téléchargement 88 → 55 ms ; 0 = sans |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
-| `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) |
+| `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |
 
 `python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
 

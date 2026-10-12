@@ -100,7 +100,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--mtc-owed` | on | multi-channel requests added up (the modem only requests new bytes), granted on every channel each MAP, Data Grant Pending while bytes are owed; `--no-mtc-owed`: each request replaces the previous one |
 | `--ds-aqm` | 30 ms | CoDel on the downstream queues: a few frames dropped one at a time instead of bursts at the `--ds-queue-ms` limit; ping during a download 88 -> 55 ms; 0 = off |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
-| `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways) |
+| `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways); `--us-buffer` (default 128 KB) sets the modem's upstream buffer (TLV 24.35): ping during an upload 237 -> 93 ms |
 
 `python3 mini_cmts.py --help` lists everything; `--sim SECONDS` runs a simulated modem without
 hardware.
