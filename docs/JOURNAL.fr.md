@@ -657,3 +657,57 @@ contient que 3 canaux de 8 MHz. Voie possible : un second B210 sur la même réf
 - **3 DS + 4 US.** Avec 2 cœurs pour le montant, l'émission n'a plus qu'un cœur : 3 millions de paquets TX en retard.
   Avec `MINI_CMTS_US_CORES=1` (les 4 processus montants sur un cœur) : en ligne avec les 3 DS et les 4 US une fois ;
   montant à ~150 ms de retard, ping 40/40 à 258 ms. C'est la limite de ce portable.
+
+## Écoute d'un vrai CMTS, puis agrégation montante utile (12/10/2026)
+
+**Pourquoi.** L'agrégation montante marchait (modem en ligne, segments réassemblés) mais n'apportait aucun débit :
+22-24 Mbit/s avec 1 ou 2 canaux. Pour savoir ce que fait un CMTS du commerce, le Sagem a été branché sur une prise
+d'opérateur (ligne décommissionnée), et son enregistrement écouté en réception seule. Le CMTS du labo était arrêté et
+le port TX/RX du B210 débranché ; le B210 écoutait sur RX2, sur la 2e sortie d'un coupleur.
+
+**Capture.**
+- Le HackRF plafonnait à ~25 dB de MER sur le 256-QAM : le RS ne passait presque jamais. Le B210 atteint 36 dB
+  (282 MHz, 16 Méch/s, gain 40, sans atténuateur ; les rafales du modem arrivent à ~−21 dBm, loin de sa limite).
+- `sfr_listen.py` décode 182 s de capture en 11 min, découpées en segments de ~10 s sur les 6 cœurs du Proxmox.
+- Le décodage a rendu le DHCP, le fichier de configuration TFTP (complet, CM MIC correct) et le REG-RSP-MP.
+- Le CMTS est un ARRIS (OUI 00:01:5c), réglé aux valeurs d'usine du guide E6000 : MAP de 3,2 ms, backoff 2-7/2-8,
+  maintenance toutes les 24 s, préambules de 640 et 104 bits ; pré-égalisation activée.
+
+**Ce que fait ce CMTS (et pas le nôtre).**
+- La TCC porte la fenêtre de dynamique : action « change », UCID 0, valeur 6 (¼ dB). Elle n'est jamais envoyée dans
+  les RNG-RSP. La norme rend cette TCC obligatoire en mode multi-canal, alors que nous l'avions retirée à cause du 209.
+- Le TLV 47 est donné pour chaque flux montant, avec le même SID sur les 5 canaux et les critères 47.3 envoyés à 0.
+- Le TLV 52 vaut 60.
+- Le MAP part ~2,5 ms avant ses allocations, avec un ack time d'environ maintenant − 2,3 ms : la boucle
+  requête → grant dure 5-8 ms, contre ~45-55 ms chez nous.
+- Les modems agrégés voisins reçoivent des grants de 139 mini-slots au plus, deux par canal et par MAP, sur tous
+  leurs canaux à la fois.
+
+**Changements et mesures** (6 DS + 2 US, iperf3) :
+- `--mtc-std` (enregistrement de ce CMTS) : **le Sagem accepte la TCC de fenêtre de dynamique**. Débit inchangé.
+- `--mtc-owed` :
+  - en mode multi-canal, une requête ne porte que les octets nouveaux (MULPI, annexe III), alors que notre CMTS
+    remplaçait la requête précédente ;
+  - désormais les requêtes se cumulent, sont accordées sur chaque canal à chaque MAP, avec un grant pending tant
+    qu'il reste dû ;
+  - montant 22,6 → 27,7 Mbit/s (4 flux).
+- **Le « recul » du descendant venait de la mesure.** Avec 4 flux TCP et ~75 ms de latence, les canaux ne sont
+  remplis qu'à 70-80 % ; avec 8-16 flux, on retrouve 266-284 Mbit/s. On mesure désormais avec 4, 8 et 16 flux.
+- `--ds-aqm 30` (CoDel) : un effondrement à 165 Mbit/s avec 16 flux avait été vu une fois, quand la limite de
+  100 ms a jeté des centaines de trames d'un coup. Avec CoDel, le débit est inchangé et le ping pendant un
+  téléchargement passe de 88 à 55 ms.
+- **Récepteur montant.**
+  - Le profil montrait les processus montants à 64 % en C ; la colle Python faisait ~36 %, et le CPU total était
+    à 94 %.
+  - `usdsp.c seg_fast` décode une rafale de segment en un appel : filtre, préambule, symboles, égaliseur (recalculé
+    en C si besoin), débrouillage, RS.
+  - Il donne le même résultat que le Python (`tests/test_seg_fast.py`) et traite 70-78 % des rafales.
+  - Montant : **44-47 Mbit/s avec 8 flux**.
+
+**Défauts** depuis : `--mtc-std`, `--mtc-owed`, `--ds-aqm 30`.
+
+**Reste.**
+- Le CPU est encore à ~87 % en envoi.
+- Le suivi de phase de l'égaliseur prend 37 ns par symbole ; un suivi par blocs le réduirait.
+- Le RS pourrait passer en SIMD.
+- Il manque un essai long de stabilité.

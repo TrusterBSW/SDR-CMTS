@@ -279,6 +279,7 @@ from cmts.ranging import Modem  # noqa: E402
 core2.pending.clear()
 core2.active.clear()
 core2.grant_ahead_s = 0                          # requests only
+core2.mtc_owed = False                           # (the former rule: --no-mtc-owed)
 mm = Modem(b"\x24\x7f\x20\xa8\x38\xb8", 1)
 mm.mtc = True
 core2.by_sid[1] = mm
@@ -303,6 +304,7 @@ core2.mtc_sids = set()
 core2.pending.clear()
 core2.pending_more.clear()
 core2.active.clear()
+core2.owed.clear()
 core2.mtc_owed = True
 core2.mtc_sids = {1}
 core2._request_bytes(1, 30_000, B2())

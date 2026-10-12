@@ -13,23 +13,23 @@ apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 
 **État : outil de labo expérimental.** Validé avec un modem (Sagem F@st 3686, DOCSIS 3.0).
 
-## Résultats (Sagem F@st 3686, 10/10/2026)
+## Résultats (Sagem F@st 3686, 12/10/2026, hôte Proxmox 6 cœurs i5-9500)
 
-| | Configuration | Mesuré |
+| | Configuration | Mesuré (iperf3 à travers le modem) |
 |---|---|---|
-| Descendant | 2 canaux agrégés EuroDOCSIS 256-QAM (306 + 314 MHz) | **93 Mbit/s** (speedtest sur le PC du CMTS) |
-| Montant | 1 canal ATDMA 64-QAM, 5,12 Msym/s (60 MHz) | **22 Mbit/s** |
-| Latence | ping à travers le modem | ~92 ms (un ping par seconde), 44-71 ms avec du trafic (grants en avance actifs), 92-139 ms en charge |
+| Descendant | 6 canaux agrégés EuroDOCSIS 256-QAM (290-330 MHz, 306 principal au milieu) | **270-284 Mbit/s** (8-16 flux TCP ; ~225 avec 4 flux, limités par la latence) |
+| Montant | 2 canaux agrégés ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2 --us-target -20` | **44-47 Mbit/s** (8 flux) ; 22-24 avec un seul canal |
+| Latence | ping à travers le modem | ~75 ms au repos, ~55 ms pendant un téléchargement (CoDel) |
 
-Ce sont les limites physiques des canaux utilisés : 2 × 256-QAM ≈ 100 Mbit/s ; 1 × 64-QAM ATDMA
-≈ 25 Mbit/s, une fois retirés le RS et les en-têtes de rafale.
+Proches des limites physiques des canaux utilisés : 6 × 256-QAM ≈ 300 Mbit/s ; 2 × 64-QAM ATDMA
+≈ 50 Mbit/s, une fois retirés le RS et les en-têtes de rafale.
 
 Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 
 | | Configuration | État |
 |---|---|---|
 | Descendant | 3 canaux agrégés (306 + 314 + 322 MHz) | 142,8 Mbit/s mesurés une fois ; le modem laisse souvent un canal de côté (service partiel), voir plus bas |
-| Agrégation montante | 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem en ligne en mode multi-canal (MTC), ranging sur les deux canaux, trames reconstituées à partir de segments envoyés sur les deux ; débit pas encore mesuré |
+| Agrégation montante | 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem en ligne en mode multi-canal (MTC), ranging sur les deux canaux, trames reconstituées à partir de segments envoyés sur les deux ; débit mesuré depuis : 44-47 Mbit/s, dernière ligne |
 | Agrégation montante | 4 canaux ATDMA 64-QAM 2,56 Msym/s (60 / 56,4 / 52,8 / 49,2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | en ligne, ping 30/30, 2 640 segments des 4 canaux réassemblés, aucun perdu |
 | Ensemble | 3 canaux descendants + 2 montants | en ligne à chaque fois ; les 3 canaux descendants acquis 6 fois sur 19 (gain TX de 44 à 52 sans différence nette), sinon service partiel sur 2 |
 | Ensemble | 3 canaux descendants + 4 montants | en ligne une fois avec tous les canaux, à la limite du processeur du portable 4 cœurs (montant en retard de ~150 ms) |
@@ -39,7 +39,7 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 | Descendant, processus radio | `--radio-process --ds-channels 5` : horloge maître 55,616 MHz, synthèse AVX2, PC 6 cœurs | **215,6 Mbit/s** descendant, 20,2 montant, ping 91 ms ; 6 DS : 208-209 Mbit/s mais montant effondré (2,9 Mbit/s) et ping jusqu'à 1 s, à reprendre |
 | Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **257-279 Mbit/s** descendant (canaux remplis à 100 %), 21 montant, ping ~97 ms (170 ms pendant un envoi) ; **c'est le défaut** depuis le 2026-10-11 |
 | Ensemble, processus radio | 6 DS + `--us-channels 2` : processus montants sur tous les cœurs à priorité plus basse que l'émission, contre-réaction sur le retard, DDC dans son propre fil, une seule recherche de préambule par rafale | **269-277 Mbit/s descendant / 24 Mbit/s montant**, modem jamais oublié, 99,8 % des rafales décodées, ping 78 ms (~370 pendant un envoi) ; paquets TS fabriqués en C, trames réparties à tour de rôle sur les canaux |
-| Ensemble, agrégation montante | 6 DS + `--us-channels 2 --reg-sfr --mtc-owed` : enregistrement et requêtes multi-canal comme le CMTS de SFR (fenêtre de dynamique dans la TCC, requêtes cumulées, grant pending), segments montants décodés entièrement en C | **270-284 Mbit/s descendant / 44-47 Mbit/s montant** (iperf3, 8-16 flux), ping 75 ms ; l'agrégation montante apporte enfin du débit |
+| Ensemble, agrégation montante | 6 DS + `--us-channels 2` (défauts `--mtc-std --mtc-owed --ds-aqm 30`) : enregistrement et requêtes multi-canal conformes au MULPI, comme un vrai CMTS (fenêtre de dynamique dans la TCC, requêtes cumulées, grant pending), CoDel sur le descendant, segments montants décodés entièrement en C | **270-284 Mbit/s descendant / 44-47 Mbit/s montant** (iperf3, 8-16 flux), ping 75 ms ; l'agrégation montante apporte enfin du débit |
 
 ## ⚠ Sécurité et cadre légal
 
@@ -102,6 +102,9 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--recv-frame-size` | 16360 | trames USB de réception de 16 Ko : fil de réception de la radio 24 → 14 % d'un cœur à 27,8 MS/s |
 | `--us-cpus` | auto | `own` : un cœur par processus montant ; `shared` : tous les cœurs, priorité temps réel 10 en dessous de l'émission ; `auto` : `shared` seulement si des cœurs réservés laisseraient moins de 4 cœurs à l'émission de 5-6 DS (6 DS + 2 US) |
 | `--us-lag-limit` | 150 ms | contre-réaction : un canal montant dont le récepteur a ce retard ne reçoit plus de grant de données (la moitié : plus de grant en avance) jusqu'à ce qu'il ait rattrapé ; 0 = sans |
+| `--mtc-std` | oui | enregistrement multi-canal montant conforme au MULPI, comme un vrai CMTS (ARRIS) : fenêtre de dynamique dans la TCC (action 2, obligatoire en mode multi-canal) et non dans les RNG-RSP, critères 47.3 à 0, TLV 52 = 60 ; `--no-mtc-std` : l'ancien enregistrement, sans fenêtre de dynamique |
+| `--mtc-owed` | oui | requêtes multi-canal cumulées (le modem ne demande que les octets nouveaux), accordées sur chaque canal à chaque MAP, grant pending tant qu'il reste dû ; `--no-mtc-owed` : chaque requête remplace la précédente |
+| `--ds-aqm` | 30 ms | CoDel sur les files descendantes : quelques trames jetées une à une au lieu de rafales à la limite `--ds-queue-ms` ; ping pendant un téléchargement 88 → 55 ms ; 0 = sans |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) |
 
@@ -110,7 +113,8 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 ## Fonctionnement
 
 - **Voie descendante** (`cmts/downstream.py`, `cmts/j83a.py`, C : `cmts/dsdsp.c`) :
-  - multiplexeur MPEG-TS qui porte SYNC, UCD, MAP, MDD et données ;
+  - multiplexeur MPEG-TS qui porte SYNC, UCD, MAP, MDD et données, files de données gérées par
+    CoDel ;
   - codeur J.83 annexe A (RS, entrelaceur, randomiseur, 256-QAM), mise en forme RRC ;
   - canaux agrégés décalés et sommés en une passe C, envoyés au B210 à 4, 6 ou 8 échantillons
     par symbole ;
@@ -121,7 +125,10 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - porteuse et gain, égaliseur mémorisé par modem ;
   - compensation de l'écart d'horloge symbole, mesuré par modem ;
   - suivi décisionnel, désembrouillage, Reed-Solomon ;
-  - trames MAC et concaténations.
+  - trames MAC et concaténations ;
+  - une rafale de segment d'un modem dont l'égaliseur est connu (la grande majorité du trafic
+    multi-canal) est décodée d'un seul appel C, égaliseur recalculé en C si besoin (`seg_fast`) ;
+    le reste passe par le chemin Python (`MINI_CMTS_US_FAST=0` : tout en Python).
 - **MAC** (`cmts/ranging.py`, `cmts/registration.py`, `cmts/docsis_mac.py`) :
   - ranging (temps, puissance, fréquence) ;
   - demandes de bande passante et grants, y compris les grants en avance ;
@@ -132,11 +139,14 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - un processus par canal extrait le sien (DDC en C : décalage, filtre, décimation) et le
     démodule ;
   - un modem DOCSIS 3.0 reçoit dans son REG-RSP-MP le mode multi-canal (MTC), une configuration
-    des canaux d'émission (TCC, TLV 46 : garder le canal 1, ajouter le canal 2 avec ranging
-    unicast, son UCD) et un cluster de SID (TLV 47) ;
+    des canaux d'émission (TCC, TLV 46 : garder le canal 1, ajouter le canal 2 avec son UCD, la
+    fenêtre de dynamique), un cluster de SID (TLV 47, critères 47.3) et le TLV 52, comme le fait un
+    vrai CMTS (relevé sur un CMTS ARRIS en réception seule, `tools/sfr_maps.py`) ;
   - il envoie alors ses données en segments (en-tête de 8 octets, numéro de séquence) sur les
     deux canaux ; le CMTS les remet dans l'ordre et les recoupe en trames MAC (CCF) ;
-  - les requêtes sont en octets (requêtes « queue-depth »), accordées sur chaque canal rangé.
+  - les requêtes sont en octets (requêtes « queue-depth ») et ne portent que les octets nouveaux :
+    le CMTS les cumule, les accorde sur chaque canal rangé et signale par un grant pending ce qu'il
+    doit encore.
 - **Pont** (`cmts/bridge.py`) : trames Ethernet entre les modems et l'interface TAP.
 - **Provisionnement** (`provision.py`, `cmts/cmcfg.py`) : DHCP, TFTP, ToD, générateur de fichier
   de configuration.
@@ -158,9 +168,18 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 - **En TDMA 16-QAM, le préambule est lui aussi en 16-QAM** : il a fallu retrouver la
   correspondance étiquettes/points par recherche exhaustive.
 - **Agrégation montante avec le Sagem** : un canal montant au-delà de 65 MHz (haut de la bande
-  montante EuroDOCSIS), ou un TCC de fenêtre de dynamique (DRW) dans le REG-RSP-MP, valent tous
-  deux un REG-ACK 209 (reject-bad-tcc), sans autre détail. Le modem remplit chaque grant d'un
-  segment de bourrage : ces segments ne doivent pas relancer les grants en avance.
+  montante EuroDOCSIS) vaut un REG-ACK 209 (reject-bad-tcc), sans autre détail. La TCC de fenêtre
+  de dynamique, obligatoire en mode multi-canal, valait aussi un 209 tant qu'elle était envoyée en
+  « no action » après le TLV 14 des RNG-RSP. Elle est acceptée sous la forme d'un vrai CMTS : action
+  « change », UCID 0, et rien dans les RNG-RSP. Il a fallu l'écouter, en réception seule, pour le
+  voir. Le modem remplit chaque grant d'un segment de bourrage : ces segments ne doivent pas
+  relancer les grants en avance.
+- **Le deuxième canal montant n'apportait rien** (22-24 Mbit/s avec 1 ou 2 canaux) :
+  - chaque requête multi-canal ne porte que les octets nouveaux, et le CMTS les remplaçait au lieu
+    de les cumuler ;
+  - les récepteurs montants, à moitié en Python, saturaient le processeur.
+
+  Requêtes cumulées avec grant pending, puis rafales de segment décodées en C : 44-47 Mbit/s.
 - **UHD calibre la quadrature TX de l'AD9361 à l'ouverture des flux**, avec un ton de test
   rebouclé par le filtre analogique RX ; ce ton monte avec l'horloge maître. Avec le filtre RX à
   la largeur montante (12,4 MHz), la calibration ratait dès 41,712 MHz : l'image TX (miroir du
@@ -182,7 +201,8 @@ La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/
 
 ## Feuille de route
 
-- Agrégation montante : mesure du débit (il faut un client derrière le modem), plus de 2 canaux.
+- Agrégation montante : essai long de stabilité, réduire encore le processeur du récepteur
+  montant (suivi de phase par blocs, Reed-Solomon en SIMD), puis plus de 2 canaux.
 - 3 canaux descendants de façon fiable (le modem en laisse souvent un), puis 4 et plus : bloqué
   par la contrainte d'horloge à 27,808 MHz ci-dessus, donc un second B210 sur la même référence
   10 MHz / PPS.

@@ -13,23 +13,23 @@ exists to learn DOCSIS hands-on and to let others do the same.
 
 **Status: experimental lab tool.** Validated with one modem (Sagem F@st 3686, DOCSIS 3.0).
 
-## Results (Sagem F@st 3686, 2026-10-10)
+## Results (Sagem F@st 3686, 2026-10-12, 6-core i5-9500 Proxmox host)
 
-| | Configuration | Measured |
+| | Configuration | Measured (iperf3 through the modem) |
 |---|---|---|
-| Downstream | 2 bonded channels, EuroDOCSIS 256-QAM (306 + 314 MHz) | **93 Mbit/s** (speedtest on the CMTS host) |
-| Upstream | 1 ATDMA channel, 64-QAM, 5.12 Msym/s (60 MHz) | **22 Mbit/s** |
-| Latency | ping through the modem | ~92 ms (one ping a second), 44-71 ms with traffic (grants in advance active), 92-139 ms loaded |
+| Downstream | 6 bonded EuroDOCSIS 256-QAM channels (290-330 MHz, 306 primary in the middle) | **270-284 Mbit/s** (8-16 TCP flows; ~225 with 4 flows, latency-bound) |
+| Upstream | 2 bonded ATDMA 64-QAM 5.12 Msym/s channels (60 + 53 MHz), `--us-channels 2 --us-target -20` | **44-47 Mbit/s** (8 flows); 22-24 with one channel |
+| Latency | ping through the modem | ~75 ms idle, ~55 ms during a download (CoDel) |
 
-Both are the physical limits of the channels used (2 × 256-QAM ≈ 100 Mbit/s;
-1 × 64-QAM ATDMA ≈ 25 Mbit/s after FEC and burst overhead).
+Close to the physical limits of the channels used (6 × 256-QAM ≈ 300 Mbit/s; 2 × 64-QAM ATDMA
+≈ 50 Mbit/s after FEC and burst overhead).
 
 Also working (experimental, 2026-10-10, not the defaults):
 
 | | Configuration | Status |
 |---|---|---|
 | Downstream | 3 bonded channels (306 + 314 + 322 MHz) | 142.8 Mbit/s measured once; the modem often leaves one channel out (partial service), see below |
-| Upstream bonding | 2 channels ATDMA 64-QAM 5.12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem online in Multiple Transmit Channel mode, ranged on both channels, frames reassembled from segments sent on both; throughput not measured yet |
+| Upstream bonding | 2 channels ATDMA 64-QAM 5.12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem online in Multiple Transmit Channel mode, ranged on both channels, frames reassembled from segments sent on both; throughput measured since: 44-47 Mbit/s, last row |
 | Upstream bonding | 4 channels ATDMA 64-QAM 2.56 Msym/s (60 / 56.4 / 52.8 / 49.2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | online, ping 30/30, 2640 segments from the 4 channels reassembled, none lost |
 | Together | 3 downstream + 2 upstream channels | online every time; all 3 downstream channels acquired in 6 of 19 starts (TX gain 44-52 makes no clear difference), otherwise partial service on 2 |
 | Together | 3 downstream + 4 upstream channels | online once with every channel, at the CPU limit of the 4-core laptop (upstream ~150 ms behind) |
@@ -39,7 +39,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Downstream, radio process | `--radio-process --ds-channels 5`: master clock 55.616 MHz, AVX2 synthesis, 6-core PC | **215.6 Mbit/s** downstream, 20.2 upstream, ping 91 ms; 6 DS: 208-209 Mbit/s but the upstream collapses (2.9 Mbit/s) and ping up to 1 s, to be resumed |
 | Downstream, radio process | `--radio-process --ds-channels 6 --ds-layout around`: 290-330 MHz, 306 primary in the middle, 55.616 MHz, 16 KB USB frames | **257-279 Mbit/s** downstream (channels 100 % full), 21 upstream, ping ~97 ms (170 ms during an upload); **the default** since 2026-10-11 |
 | Together, radio process | 6 DS + `--us-channels 2`: upstream processes on every core at a lower priority than the transmit side, back-pressure on their delay, DDC in a thread of its own, one preamble search per burst | **269-277 Mbit/s downstream / 24 Mbit/s upstream**, modem never lost, 99.8 % of bursts decoded, ping 78 ms (~370 during an upload); TS packets built in C, frames spread over the channels in turn |
-| Together, upstream bonding | 6 DS + `--us-channels 2 --reg-sfr --mtc-owed`: multi-channel registration and requests as SFR's CMTS does them (Dynamic Range Window in the TCC, requests added up, grant pending), upstream segments decoded entirely in C | **270-284 Mbit/s downstream / 44-47 Mbit/s upstream** (iperf3, 8-16 flows), ping 75 ms; upstream bonding finally adds throughput |
+| Together, upstream bonding | 6 DS + `--us-channels 2` (defaults `--mtc-std --mtc-owed --ds-aqm 30`): multi-channel registration and requests per MULPI, as a real CMTS does them (Dynamic Range Window in the TCC, requests added up, grant pending), CoDel downstream, upstream segments decoded entirely in C | **270-284 Mbit/s downstream / 44-47 Mbit/s upstream** (iperf3, 8-16 flows), ping 75 ms; upstream bonding finally adds throughput |
 
 ## ⚠ Safety and legal
 
@@ -96,6 +96,9 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--recv-frame-size` | 16360 | 16 KB USB receive frames: the radio's RX thread 24 -> 14 % of a core at 27.8 MS/s |
 | `--us-cpus` | auto | `own`: a core per upstream process; `shared`: every core, real-time priority 10 below the transmit side; `auto`: `shared` only when cores of their own would leave the transmit side of 5-6 DS fewer than 4 (6 DS + 2 US) |
 | `--us-lag-limit` | 150 ms | back-pressure: an upstream channel whose receiver is this far behind gets no data grant (half of it: no grant in advance) until it catches up; 0 = off |
+| `--mtc-std` | on | multi-channel upstream registration per MULPI, as a real CMTS (ARRIS) does it: Dynamic Range Window in the TCC (action 2, mandatory in MTC mode) and not in the RNG-RSPs, 47.3 criteria at 0, TLV 52 = 60; `--no-mtc-std`: the former registration, without DRW |
+| `--mtc-owed` | on | multi-channel requests added up (the modem only requests new bytes), granted on every channel each MAP, Data Grant Pending while bytes are owed; `--no-mtc-owed`: each request replaces the previous one |
+| `--ds-aqm` | 30 ms | CoDel on the downstream queues: a few frames dropped one at a time instead of bursts at the `--ds-queue-ms` limit; ping during a download 88 -> 55 ms; 0 = off |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways) |
 
@@ -105,13 +108,16 @@ hardware.
 ## How it works
 
 - **Downstream** (`cmts/downstream.py`, `cmts/j83a.py`, C: `cmts/dsdsp.c`): MPEG-TS multiplexer
-  carrying SYNC, UCD, MAP, MDD and data, J.83 Annex A encoder (RS, interleaver, randomizer,
+  carrying SYNC, UCD, MAP, MDD and data (data queues under CoDel), J.83 Annex A encoder (RS, interleaver, randomizer,
   256-QAM), RRC shaping; bonded channels shifted and summed in one C pass, sent to the B210 at
   4/6/8 samples per symbol. Every block is time-stamped: the downstream is the time base.
 - **Upstream** (`cmts/upstream.py`, `cmts/us_phy.py`, C: `cmts/usdsp.c`, process: `cmts/usproc.py`):
   the RX stream is cut into the MAP intervals; per burst: preamble search, symbol interpolation,
   carrier, gain, equalizer cached per modem, symbol-clock offset compensation per modem,
-  decision-directed tracking, descrambling, Reed-Solomon, MAC frames and concatenations.
+  decision-directed tracking, descrambling, Reed-Solomon, MAC frames and concatenations. A segment
+  burst of a modem whose equalizer is known (most multi-channel traffic) is decoded in one C call,
+  equalizer refit in C when needed (`seg_fast`); the rest goes the Python way
+  (`MINI_CMTS_US_FAST=0`: everything in Python).
 - **MAC** (`cmts/ranging.py`, `cmts/registration.py`, `cmts/docsis_mac.py`): ranging
   (timing/power/frequency), bandwidth requests and grants (including grants in advance),
   REG-REQ(-MP)/REG-RSP(-MP)/REG-ACK with CMTS MIC, receive channel configuration and DSID for
@@ -120,10 +126,12 @@ hardware.
   between the upstream channels; one process per channel takes its channel out with a C DDC
   (shift, low-pass, decimation) and demodulates it. A DOCSIS 3.0 modem gets, in its REG-RSP-MP,
   Multiple Transmit Channel mode, a Transmit Channel Configuration (TLV 46: keep channel 1, add
-  channel 2 with unicast ranging, its UCD) and a SID cluster (TLV 47). It then sends its data as
+  channel 2 with its UCD, the Dynamic Range Window), a SID cluster (TLV 47, 47.3 criteria) and
+  TLV 52, as a real CMTS does (read off an ARRIS CMTS, receive only, `tools/sfr_maps.py`). It then sends its data as
   segments (8-byte segment header, sequence number) on both channels; the CMTS puts them back in
   order and cuts them into MAC frames again (Continuous Concatenation and Fragmentation). Requests
-  are in bytes (queue-depth based requests), granted on every ranged channel.
+  are in bytes (queue-depth based requests) and only carry new bytes: the CMTS adds them up, grants
+  them on every ranged channel and signals what it still owes with a Data Grant Pending.
 - **Bridge** (`cmts/bridge.py`): Ethernet frames between the modems and the TAP interface.
 - **Provisioning** (`provision.py`, `cmts/cmcfg.py`): DHCP, TFTP, ToD, config file generator.
 
@@ -138,9 +146,17 @@ hardware.
 - The modem's upstream symbol clock was 4.3 ppm off: harmless on short bursts, fatal on 3 ms ones.
 - 16-QAM TDMA preambles are 16-QAM too (the label/point map had to be found by brute force).
 - Upstream bonding with the Sagem: an upstream channel above 65 MHz (the top of the EuroDOCSIS
-  upstream band) or a Dynamic Range Window TCC in the REG-RSP-MP both get REG-ACK 209
-  (reject-bad-tcc), with no further detail. The modem pads every grant with a segment of stuff
-  bytes: those must not keep the grants in advance going.
+  upstream band) gets REG-ACK 209 (reject-bad-tcc), with no further detail. The Dynamic Range
+  Window TCC, mandatory in MTC mode, got 209 too as long as it was sent as "no action" after the
+  RNG-RSPs' TLV 14. It is accepted in the form a real CMTS uses (action "change", UCID 0, nothing
+  in the RNG-RSPs): listening to one, receive only, showed it. The modem pads every grant with a
+  segment of stuff bytes: those must not keep the grants in advance going.
+- The second upstream channel added nothing (22-24 Mbit/s with 1 or 2 channels):
+  - a multi-channel request only carries new bytes, and the CMTS replaced them instead of adding
+    them up;
+  - the upstream receivers, half Python, saturated the CPU.
+
+  Requests added up with grant pending, then segment bursts decoded in C: 44-47 Mbit/s.
 - UHD calibrates the AD9361 TX quadrature when the streams open, with a test tone looped back
   through the RX analog filter; the tone grows with the master clock. With the RX filter at the
   upstream width (12.4 MHz) the calibration failed from 41.712 MHz on: the TX image (mirror of
@@ -162,7 +178,8 @@ Most tests replay real bursts of the modem (`tests/data/sagem3686/`).
 
 ## Roadmap
 
-- Upstream bonding: throughput measurement (needs a client behind the modem), more than 2 channels.
+- Upstream bonding: long stability run, less CPU in the upstream receiver (block phase tracking,
+  SIMD Reed-Solomon), then more than 2 channels.
 - 3 downstream channels reliably (the modem often leaves one out), then 4+: blocked by the
   27.808 MHz master clock constraint above, i.e. a second B210 sharing the same 10 MHz / PPS.
 - Spreading the CMTS over several SDRs / PCs.

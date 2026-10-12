@@ -107,3 +107,6 @@ Les mesures sont maintenant faites avec 4, 8 et 16 flux. Avec 4 flux, TCP ne rem
   70-78 % des rafales passent par le C.
 - Reste à faire : suivi de phase par blocs (`eq_track`, 37 ns/symbole), RS en SIMD, colle Python de
   `_handle` ; CPU encore à ~87 % sur 5 cœurs en envoi.
+
+**Défauts depuis le 12/10 après-midi** (accord de l'utilisateur) : `--mtc-std` (ex-`--reg-sfr`, renommée),
+`--mtc-owed` et `--ds-aqm 30`. Pour revenir en arrière : `--no-mtc-std`, `--no-mtc-owed`, `--ds-aqm 0`.

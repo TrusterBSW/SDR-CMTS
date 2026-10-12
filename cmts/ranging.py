@@ -141,10 +141,11 @@ class CmtsCore:
         self._maps_ch = collections.Counter()
         self._prof = None
         self._tcc_try = 0
-        # Registration as SFR's CMTS (ARRIS) does it (capture of 2026-10-12, mini_cmts --reg-sfr):
+        # Multi-channel registration per MULPIv3.0, as a real CMTS (ARRIS) does it (receive-only
+        # capture of 2026-10-12, mini_cmts --mtc-std, the default):
         # 47.3 criteria all 0, Dynamic Range Window in the TCC (UCID 0, action 2 "change") and
         # never in the RNG-RSPs (TLV 14), TLV 52, TCC references from 0, initialization technique 3
-        self.reg_sfr = False
+        self.mtc_std = False
         # Multiple Transmit Channel mode, as MULPIv3.0 7.2.1.4 / Annex III have it (mini_cmts
         # --mtc-owed): a queue-depth request only carries the bytes the CM had not requested yet,
         # so the CMTS owes the SUM of the requests not yet granted (primary SID -> bytes); every
@@ -552,7 +553,7 @@ class CmtsCore:
         # the RNG-RSPs) the Sagem 3686 answered REG-ACK 209 reject-bad-tcc every time; without it,
         # it ranged on channel 2 and came online at once (2026-10-10). The RNG-RSPs carry the DRW.
         kw = dict(drw_action=None)
-        if self.reg_sfr:
+        if self.mtc_std:
             kw = dict(drw_action=2, technique=3, first_ref=0)
         var = os.environ.get("MINI_CMTS_TCC_VARIANTS")     # diagnostic: a TCC variant per REG-REQ-MP
         if var:
@@ -712,9 +713,9 @@ class CmtsCore:
         rsp_tlvs, flows = registration.build_response(tlvs, m.sid, new_sfid, new_sid,
                                                       version=3 if mp else getattr(self, "docsis_version", 1),
                                                       bonded=bonded, clusters=clusters,
-                                                      criteria=self.reg_sfr) if response == 0 else (b"", [])
+                                                      criteria=self.mtc_std) if response == 0 else (b"", [])
         rsp_tlvs += tcc
-        if clusters and self.reg_sfr:
+        if clusters and self.mtc_std:
             rsp_tlvs += registration.init_channel_timeout(60)
         if bonded and response == 0:
             rcc, rcp_id = registration.receive_channel_config(tlvs, self.bonding)
@@ -906,7 +907,7 @@ class CmtsCore:
             self.log(line + "  (écoute seule, pas de RNG-RSP)")
             return
         frame = mac.rng_rsp_msg(self.mux.sa, addr, m.sid, self.us_chan_id, ta, pq, fq, status,
-                                drw_qdb=None if self.reg_sfr else m.drw_qdb)
+                                drw_qdb=None if self.mtc_std else m.drw_qdb)
         sname = "success" if status == mac.RNG_SUCCESS else "continue"
 
         def sent(air_ts, m=m, ok=ok, rx_ts=rx_ts):

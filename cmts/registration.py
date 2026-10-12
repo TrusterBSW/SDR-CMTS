@@ -44,7 +44,7 @@ def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION,
     clusters: Multiple Transmit Channel mode, {UCID: SID} of the first upstream flow (its SID
     cluster 0, TLV 47; no SID in the flow itself); the CM's other upstream flows are not
     supported then (refused with no SID). criteria: the SID Cluster Switching Criteria (47.3),
-    all 0 = unlimited, as SFR's CMTS sends them."""
+    all 0 = unlimited, as a real CMTS (ARRIS) sends them."""
     out, flows, first_us = b"", [], True
     for t, v in tlvs:
         if t == 5:
@@ -124,7 +124,7 @@ def tcc_encodings(first, adds, drw_qdb, keep_first=True, drw_action=0, technique
     A TCC longer than 254 bytes is cut into successive TLV 46, the UCD (46.5) into fragments.
     keep_first: the "no action" TCC of `first`; drw_action: None = no DRW TCC; technique: 46.7
     (None: absent, broadcast initial ranging; 1: broadcast; 2, 3, 4 with ranging parameters);
-    first_ref: the first TCC reference (SFR's CMTS starts at 0)."""
+    first_ref: the first TCC reference (a real CMTS, ARRIS, starts at 0)."""
     out = b""
     ref = first_ref - 1
     tccs = []
@@ -182,7 +182,7 @@ def sid_cluster_assignment(sfid, sids, criteria=False):
 
 def init_channel_timeout(seconds=60):
     """Initializing Channel Timeout (TLV 52, MULPIv3.0 C.1.5.5), seconds: 60 is the default, sent
-    as such by SFR's CMTS."""
+    as such by a real CMTS (ARRIS)."""
     return _tlv(52, struct.pack(">H", seconds))
 
 
