@@ -298,5 +298,28 @@ check("MTC : la demande suivante remplace le reste", len(g) == 1 and g[0][2] < 2
       str(g))
 core2.mtc_sids = set()
 
+# ---- 8. --mtc-owed: requests add up (MULPIv3.0: only bytes not requested before), a Data Grant
+# Pending (zero length) in every MAP while bytes are owed, padding clears the debt
+core2.pending.clear()
+core2.pending_more.clear()
+core2.active.clear()
+core2.mtc_owed = True
+core2.mtc_sids = {1}
+core2._request_bytes(1, 30_000, B2())
+core2._request_bytes(1, 30_000, B2())            # 30 000 more, not the queue depth
+gs = [core2.schedule(14_000 + 10 * i, 300) for i in range(-(-60_000 // b255) + 1)]
+data = [x for g in gs for x in g if x[2]]
+pend = [x for g in gs for x in g if x[2] == 0]
+check("--mtc-owed : deux demandes de 30 000 octets = 60 000 accordés",
+      sum(core2._bytes_in(x[2]) for x in data) >= 60_000 and gs[-1] == [], f"{[x[2] for x in data]}")
+check("--mtc-owed : grant pending dans chaque MAP tant qu'il reste dû, après les grants",
+      len(pend) == len(data) - 1 and all(g[-1][2] == 0 for g in gs[:len(data) - 1]), str(gs[:3]))
+core2._request_bytes(1, 50_000, B2())
+core2.on_burst(type("E", (), dict(burst=None, iuc=mac.IUC_ADV_LONG, sid=1))())   # (empty grant: no change)
+check("--mtc-owed : la dette reste après un grant sans rafale", core2.owed.get(1, 0) == 50_000)
+core2.owed.clear()
+core2.mtc_owed = False
+core2.mtc_sids = set()
+
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

@@ -737,3 +737,283 @@ float block_power(const float *x, int nb, int blk, int k, float *p)
     free(a);
     return r;
 }
+
+/* ------------------------------------------------------------------ one segment burst, whole
+ * The common case of a Multiple Transmit Channel upstream, start to end in one call: a data
+ * grant of a modem whose equalizer is cached (us_phy.BurstDemod._seg_fast). Same steps, same
+ * order and same thresholds as us_phy._detect + _equalized + _rs_frame(seg=True); anything off
+ * that path (no preamble in this orientation, equalizer to refit, segment unreadable) returns
+ * a negative status and Python decodes the burst its usual way. Python's glue around the C
+ * kernels was ~36 % of an upstream process under upload (2026-10-12, 6 DS + 2 US, 8 flows).
+ *   res[0..9]: t (input samples), rho, power (dBFS), peak, fr (cycles/symbol), data symbols,
+ *              message bytes, RS corrections, equalizer (0 cached, 1 refitted: w_out + mse in
+ *              res[9], 2 none fitted)
+ *   returns 0, -1 no preamble, -3 segment unreadable, -4 buffer/alloc */
+static int burst_len_c(const float *d, int n)
+{
+    if (n < 16) return 0;
+    double acc = 0.0;
+    for (int k = 0; k < 16; k++) acc += (double)d[2 * k] * d[2 * k] + (double)d[2 * k + 1] * d[2 * k + 1];
+    int last = -1;
+    for (int i = 0; i + 16 <= n; i++) {
+        if (i > 0) {
+            int a = i - 1, b = i + 15;
+            acc += (double)d[2 * b] * d[2 * b] + (double)d[2 * b + 1] * d[2 * b + 1]
+                 - ((double)d[2 * a] * d[2 * a] + (double)d[2 * a + 1] * d[2 * a + 1]);
+        }
+        if (acc / 16 > 0.25) last = i;
+    }
+    return last >= 0 ? last + 8 + 1 : 0;
+}
+
+/* Least squares fit of an ntaps (<= 32) complex equalizer, us_phy.equalize_fit: rows of `d`
+ * (n symbols, sliding windows of ntaps) against the decisions ref = pts[idx[h .. n - h)], by
+ * the normal equations (A^H A) w = A^H ref solved with partial pivoting in double. Returns 0,
+ * or -1 if singular. */
+static int eq_fit_ls(const float *d, int n, const float *pts, const int *idx, int ntaps, float *w)
+{
+    double Ar[32][33], Ai[32][33];
+    int h = ntaps / 2, nr = n - ntaps + 1;
+    if (ntaps > 32 || nr <= ntaps) return -1;
+    for (int a = 0; a < ntaps; a++)
+        for (int b = 0; b <= ntaps; b++) Ar[a][b] = Ai[a][b] = 0.0;
+    for (int r = 0; r < nr; r++) {
+        const float *x = d + 2 * r;
+        int q = idx[r + h];
+        double yr = pts[2 * q], yi = pts[2 * q + 1];
+        for (int a = 0; a < ntaps; a++) {
+            double ar = x[2 * a], ai = -x[2 * a + 1];          /* conj(x_a) */
+            for (int b = a; b < ntaps; b++) {
+                double br = x[2 * b], bi = x[2 * b + 1];
+                Ar[a][b] += ar * br - ai * bi;
+                Ai[a][b] += ar * bi + ai * br;
+            }
+            Ar[a][ntaps] += ar * yr - ai * yi;
+            Ai[a][ntaps] += ar * yi + ai * yr;
+        }
+    }
+    for (int a = 0; a < ntaps; a++)                          /* Hermitian: lower = conj(upper) */
+        for (int b = 0; b < a; b++) { Ar[a][b] = Ar[b][a]; Ai[a][b] = -Ai[b][a]; }
+    for (int c = 0; c < ntaps; c++) {
+        int pv = c;
+        double best = Ar[c][c] * Ar[c][c] + Ai[c][c] * Ai[c][c];
+        for (int r = c + 1; r < ntaps; r++) {
+            double v = Ar[r][c] * Ar[r][c] + Ai[r][c] * Ai[r][c];
+            if (v > best) { best = v; pv = r; }
+        }
+        if (best < 1e-30) return -1;
+        if (pv != c)
+            for (int b = 0; b <= ntaps; b++) {
+                double t = Ar[c][b]; Ar[c][b] = Ar[pv][b]; Ar[pv][b] = t;
+                t = Ai[c][b]; Ai[c][b] = Ai[pv][b]; Ai[pv][b] = t;
+            }
+        double dr = Ar[c][c], di = Ai[c][c], dn = dr * dr + di * di;
+        double ir = dr / dn, ii = -di / dn;                  /* 1 / pivot */
+        for (int r = c + 1; r < ntaps; r++) {
+            double fr = Ar[r][c] * ir - Ai[r][c] * ii, fi = Ar[r][c] * ii + Ai[r][c] * ir;
+            for (int b = c; b <= ntaps; b++) {
+                Ar[r][b] -= fr * Ar[c][b] - fi * Ai[c][b];
+                Ai[r][b] -= fr * Ai[c][b] + fi * Ar[c][b];
+            }
+        }
+    }
+    double wr[32], wi[32];
+    for (int c = ntaps - 1; c >= 0; c--) {
+        double sr = Ar[c][ntaps], si = Ai[c][ntaps];
+        for (int b = c + 1; b < ntaps; b++) {
+            sr -= Ar[c][b] * wr[b] - Ai[c][b] * wi[b];
+            si -= Ar[c][b] * wi[b] + Ai[c][b] * wr[b];
+        }
+        double dr = Ar[c][c], di = Ai[c][c], dn = dr * dr + di * di;
+        wr[c] = (sr * dr + si * di) / dn;
+        wi[c] = (si * dr - sr * di) / dn;
+    }
+    for (int a = 0; a < ntaps; a++) { w[2 * a] = (float)wr[a]; w[2 * a + 1] = (float)wi[a]; }
+    return 0;
+}
+
+static double sym_mse(const float *o, const int *idx, const float *pts, int a, int b)
+{
+    double e = 0.0;
+    for (int k = a; k < b; k++) {
+        float er = o[2 * k] - pts[2 * idx[k]], ei = o[2 * k + 1] - pts[2 * idx[k] + 1];
+        e += er * er + ei * ei;
+    }
+    return b > a ? e / (b - a) : 0.0;
+}
+
+int seg_fast(const float *x, int nx, int conj, const float *mf, int nmf, int mf_delay,
+             double sps, double t_lo, double t_hi, float rho_min, int span,
+             const float *pre, int npre, const int *offs, const int *uoffs, int up,
+             int nsym_cap, double sps_d,
+             const float *w, int ntaps, float mse_max, int eq_train,
+             const float *pts, int M, int L, float off, float step, const int *lut, int bps,
+             const uint8_t *prbs, int nprbs,
+             const int *layout, int ncw, int nparity, int fec_k,
+             uint8_t *msg_out, int msg_cap, float *sym_out, int *idx_out, int sym_cap, double *res,
+             float *w_out)
+{
+    int status = -4;
+    int ny = nx + nmf - 1;
+    float *y = 0, *yu = 0, *wk = 0, *r = 0, *d = 0, *tmp = 0;
+    uint8_t *raw = 0;
+    y = malloc(sizeof(float) * 2 * (size_t)ny);
+    if (!y) goto done;
+    fir_cr(x, nx, mf, nmf, y);
+    if (conj)
+        for (int i = 0; i < ny; i++) y[2 * i + 1] = -y[2 * i + 1];
+    /* ---- coarse search */
+    int lo = (int)t_lo + mf_delay - 1;
+    if (lo < 0) lo = 0;
+    int hi = (int)ceil(t_hi) + mf_delay + 1;
+    if (hi > ny - offs[npre - 1] - 1) hi = ny - offs[npre - 1] - 1;
+    status = -1;
+    if (hi <= lo) goto done;
+    int npos = hi - lo;
+    int nfine = 4 * up + 1;
+    int nw = npos > nfine ? npos : nfine;
+    wk = malloc(sizeof(float) * 11 * (size_t)nw);
+    if (!wk) { status = -4; goto done; }
+    float *m = wk + 5 * nw, *rho = wk + 6 * nw, *c1 = wk + 7 * nw, *c2 = wk + 9 * nw;
+    pre_metric(y, lo, npos, offs, pre, npre, wk, m, rho, c1, c2);
+    int i = 0;
+    for (int k = 1; k < npos; k++) if (m[k] > m[i]) i = k;
+    if (rho[i] < rho_min * 0.7f) goto done;
+    int p0 = lo + i;
+    /* ---- fine search on the oversampled matched filter output */
+    double nmax = (double)(ny - p0) / sps - 2 * span;
+    int nsym_max = (int)(nmax < nsym_cap ? nmax : nsym_cap);
+    int a = p0 - 4 > 0 ? p0 - 4 : 0;
+    int b = p0 + (int)ceil(npre * sps) + 24 + 2 * span;
+    if (b > ny) b = ny;
+    int nyu = (b - a) * up;
+    yu = malloc(sizeof(float) * 2 * (size_t)(nyu > 0 ? nyu : 1));
+    if (!yu) { status = -4; goto done; }
+    interp_symbols(y, ny, (double)a, 1.0 / up, nyu, yu);
+    int base = (p0 - a) * up;
+    int f0 = base - 2 * up > 1 ? base - 2 * up : 1;
+    int f1 = base + 2 * up + 1;
+    if (f1 > nyu - uoffs[npre - 1] - 1) f1 = nyu - uoffs[npre - 1] - 1;
+    if (f1 <= f0) goto done;
+    int nf = f1 - f0;
+    pre_metric(yu, f0, nf, uoffs, pre, npre, wk, m, rho, c1, c2);
+    int j = 0;
+    for (int k = 1; k < nf; k++) if (m[k] > m[j]) j = k;
+    if (rho[j] < rho_min) goto done;
+    float frac = 0.f;
+    if (j > 0 && j < nf - 1) {
+        float dd = m[j - 1] - 2 * m[j] + m[j + 1];
+        frac = dd < 0 ? 0.5f * (m[j - 1] - m[j + 1]) / dd : 0.f;
+    }
+    int i0 = f0 + j;
+    double t = a + (i0 + frac) / (double)up - mf_delay;
+    int h = npre / 2;
+    float zr = c2[2 * j] * c1[2 * j] + c2[2 * j + 1] * c1[2 * j + 1];      /* c2 conj(c1) */
+    float zi = c2[2 * j + 1] * c1[2 * j] - c2[2 * j] * c1[2 * j + 1];
+    double fr = atan2(zi, zr) / (2 * 3.14159265358979323846 * h);
+    double ty0 = a + (i0 + frac) / (double)up;
+    double nlim = (ny - 9 - ty0) / sps;
+    int nsym = (int)(nsym_max < nlim ? nsym_max : nlim);
+    if (nsym <= npre) goto done;
+    int nd = nsym - npre;
+    status = -4;
+    if (nd > sym_cap) goto done;
+    r = malloc(sizeof(float) * 2 * (size_t)nsym);
+    d = malloc(sizeof(float) * 2 * (size_t)nd);
+    tmp = malloc(sizeof(float) * 2 * (size_t)nd);
+    raw = malloc((size_t)nd * bps / 8 + 1);
+    if (!r || !d || !tmp || !raw) goto done;
+    status = -1;
+    if (burst_prep(y, ny, ty0, sps_d, nsym, fr, pre, npre, 1, r, d) < 0) goto done;
+    /* ---- power and peak over the preamble, raw input */
+    int s0 = (int)lround(t) > 0 ? (int)lround(t) : 0;
+    int s1 = s0 + (int)(npre * sps);
+    if (s1 > nx) s1 = nx;
+    double pw = 0.0;
+    float peak = 0.f;
+    for (int k = s0; k < s1; k++) {
+        float p2 = x[2 * k] * x[2 * k] + x[2 * k + 1] * x[2 * k + 1];
+        pw += p2;
+        if (p2 > peak) peak = p2;
+    }
+    double power = 10 * log10((s1 > s0 ? pw / (s1 - s0) : 0.0) + 1e-20);
+    /* ---- cached equalizer, then the same check as _equalized */
+    eq_track(d, nd, w, ntaps, pts, M, L, off, step, lut, 0.08f, 0.004f, tmp, sym_out, idx_out);
+    int n = burst_len_c(sym_out, nd);
+    if (n > eq_train) n = eq_train;
+    int hh = ntaps / 2;
+    res[8] = 0;                                     /* cached taps used */
+    if (n < 4 * ntaps || n - 2 * hh <= 0 || sym_mse(sym_out, idx_out, pts, hh, n - hh) > mse_max) {
+        /* _equalized: the cached taps no longer fit -> plain tracking, then a fresh fit,
+         * kept (res[8] = 1, taps in w_out, mse in res[9]) only if it does better */
+        float *d0 = malloc(sizeof(float) * 2 * (size_t)nd);
+        int *i0 = malloc(sizeof(int) * (size_t)nd);
+        status = -4;
+        if (!d0 || !i0) { free(d0); free(i0); goto done; }
+        if (L > 0) dd_track_grid(d, nd, pts, L, off, step, lut, 0.08f, 0.004f, d0, i0);
+        else dd_track(d, nd, pts, M, 0.08f, 0.004f, d0, i0);
+        int n0 = burst_len_c(d0, nd);
+        if (n0 > eq_train) n0 = eq_train;
+        res[8] = 2;                                 /* no equalizer for this burst */
+        int used = 0;
+        if (n0 >= 4 * ntaps && eq_fit_ls(d0, n0, pts, i0, ntaps, w_out) == 0) {
+            eq_track(d0, nd, w_out, ntaps, pts, M, L, off, step, lut, 0.08f, 0.004f, tmp, sym_out, idx_out);
+            double before = sym_mse(d0, i0, pts, hh, n0 - hh);
+            double after = sym_mse(sym_out, idx_out, pts, hh, n0 - hh);
+            if (after < before) { res[8] = 1; res[9] = after; used = 1; }
+        }
+        if (!used) {
+            memcpy(sym_out, d0, sizeof(float) * 2 * (size_t)nd);
+            memcpy(idx_out, i0, sizeof(int) * (size_t)nd);
+        }
+        free(d0); free(i0);
+    }
+    /* ---- bytes, then the segment's codewords */
+    int nraw = symbols_to_bytes(idx_out, nd, bps, prbs, nprbs, raw);
+    int fixed = 0, fx = 0, o = 0, pos = 0, start;
+    status = -4;
+    {
+        int need = 0;
+        for (int k = 0; k < ncw; k++) need += layout[k];
+        if (need > msg_cap) goto done;
+    }
+    int bad = rs_decode_many(raw, nraw, layout, ncw, nparity, 0, msg_out, &fx);
+    start = bad < 0 ? ncw : bad;
+    if (start) {
+        for (int k = 0; k < start; k++) o += layout[k];
+        fixed = fx;
+        pos = o + start * nparity;
+    }
+    status = -3;
+    for (int k = start; k < ncw; k++) {
+        int ninfo = layout[k], got = -1;
+        if (pos + ninfo + nparity <= nraw && rs_decode_many(raw + pos, nraw - pos, &ninfo, 1, nparity, 0,
+                                                            msg_out + o, &fx) < 0)
+            got = ninfo;
+        if (got < 0) {
+            int lmax = (ninfo < fec_k ? ninfo : fec_k) - 1;
+            got = rs_find_last(raw + pos, nraw - pos, lmax, 16, nparity, 0, msg_out + o, &fx);
+        }
+        if (got < 0) {
+            if (o == 0) goto done;                          /* uncorrectable (bloc 0) */
+            int a_ = pos * 8 / bps, b_ = (pos + ninfo + nparity) * 8 / bps;
+            if (b_ <= nd) {                                 /* the burst's end, or an error in it? */
+                double pp = 0.0;
+                for (int q = a_; q < b_; q++)
+                    pp += sym_out[2 * q] * sym_out[2 * q] + sym_out[2 * q + 1] * sym_out[2 * q + 1];
+                if (b_ > a_ && pp / (b_ - a_) > 0.25) goto done;
+            }
+            break;
+        }
+        fixed += fx;
+        o += got;
+        pos += got + nparity;
+        if (got < ninfo) break;
+    }
+    res[0] = t; res[1] = rho[j]; res[2] = power; res[3] = sqrt(peak); res[4] = fr;
+    res[5] = nd; res[6] = o; res[7] = fixed;
+    status = 0;
+done:
+    free(y); free(yu); free(wk); free(r); free(d); free(tmp); free(raw);
+    return status;
+}

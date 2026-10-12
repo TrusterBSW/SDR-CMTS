@@ -38,11 +38,13 @@ def capabilities_response(value, version=DOCSIS_VERSION, bonded=False, mtc=False
     return cmcfg.tlv(5, out)
 
 
-def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION, bonded=False, clusters=None):
+def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION, bonded=False, clusters=None,
+                   criteria=False):
     """REG-REQ TLVs -> (REG-RSP TLV bytes, [(direction, reference, SFID, SID)]).
     clusters: Multiple Transmit Channel mode, {UCID: SID} of the first upstream flow (its SID
     cluster 0, TLV 47; no SID in the flow itself); the CM's other upstream flows are not
-    supported then (refused with no SID)."""
+    supported then (refused with no SID). criteria: the SID Cluster Switching Criteria (47.3),
+    all 0 = unlimited, as SFR's CMTS sends them."""
     out, flows, first_us = b"", [], True
     for t, v in tlvs:
         if t == 5:
@@ -56,7 +58,7 @@ def build_response(tlvs, primary_sid, new_sfid, new_sid, version=DOCSIS_VERSION,
         if t == 24:
             sid = primary_sid if first_us else (None if clusters else new_sid())
             if clusters and first_us:
-                out += sid_cluster_assignment(sfid, clusters)
+                out += sid_cluster_assignment(sfid, clusters, criteria)
             first_us = False
         body = (cmcfg.tlv(1, ref) if ref else b"") + cmcfg.tlv(2, struct.pack(">I", sfid))
         if sid is not None and not clusters:
@@ -114,16 +116,17 @@ def _tlv(t, v):
     return bytes([t, len(v)]) + v
 
 
-def tcc_encodings(first, adds, drw_qdb, keep_first=True, drw_action=0, technique=2):
+def tcc_encodings(first, adds, drw_qdb, keep_first=True, drw_action=0, technique=2, first_ref=1):
     """Transmit Channel Configuration (TLV 46, MULPIv3.0 C.1.5.1) of a REG-RSP-MP: the channel
     the CM ranged on (`first`, UCID) kept as it is, the channels of `adds` added with unicast
     ranging (technique 2, ranging parameters: those of `first`), and the Dynamic Range Window
     (Pload_min_set, 1/4 dB below Phi). adds: [(UCID, UCD contents (docsis_mac.ucd_body), ranging SID)].
     A TCC longer than 254 bytes is cut into successive TLV 46, the UCD (46.5) into fragments.
     keep_first: the "no action" TCC of `first`; drw_action: None = no DRW TCC; technique: 46.7
-    (None: absent, broadcast initial ranging; 1: broadcast; 2, 3, 4 with ranging parameters)."""
+    (None: absent, broadcast initial ranging; 1: broadcast; 2, 3, 4 with ranging parameters);
+    first_ref: the first TCC reference (SFR's CMTS starts at 0)."""
     out = b""
-    ref = 0
+    ref = first_ref - 1
     tccs = []
     if keep_first:
         ref += 1
@@ -164,13 +167,23 @@ def tcc_encodings(first, adds, drw_qdb, keep_first=True, drw_action=0, technique
     return out
 
 
-def sid_cluster_assignment(sfid, sids):
+def sid_cluster_assignment(sfid, sids, criteria=False):
     """Service Flow SID Cluster Assignment (TLV 47, MULPIv3.0 C.1.5.2): one cluster (id 0) of the
-    flow `sfid`, sids = {UCID: SID}."""
+    flow `sfid`, sids = {UCID: SID}; criteria: the SID Cluster Switching Criteria (47.3: maximum
+    requests, outstanding bytes, total bytes, time per cluster) all 0, i.e. unlimited."""
     enc = _tlv(1, b"\x00")
     for ucid, sid in sorted(sids.items()):
         enc += _tlv(2, _tlv(1, bytes([ucid])) + _tlv(2, struct.pack(">H", sid)) + _tlv(3, b"\x01"))
-    return _tlv(47, _tlv(1, struct.pack(">I", sfid)) + _tlv(2, enc))
+    body = _tlv(1, struct.pack(">I", sfid)) + _tlv(2, enc)
+    if criteria:
+        body += _tlv(3, _tlv(1, b"\x00") + _tlv(2, bytes(4)) + _tlv(3, bytes(4)) + _tlv(4, bytes(2)))
+    return _tlv(47, body)
+
+
+def init_channel_timeout(seconds=60):
+    """Initializing Channel Timeout (TLV 52, MULPIv3.0 C.1.5.5), seconds: 60 is the default, sent
+    as such by SFR's CMTS."""
+    return _tlv(52, struct.pack(">H", seconds))
 
 
 def parse_tcc_errors(tlvs):

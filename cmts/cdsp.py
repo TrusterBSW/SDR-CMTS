@@ -348,6 +348,47 @@ def rs_decode_many(raw, info_lens, nsym, fcr=0):
     return out, fixed.value, bad
 
 
+_D = ctypes.c_double
+
+
+def seg_fast(x, conj, mf, mf_delay, sps, t_lo, t_hi, rho_min, span, pre, offs, uoffs, up, nsym_cap, sps_d,
+             w, mse_max, eq_train, pts, bps, prbs, layout, nparity, fec_k):
+    """One Multiple Transmit Channel segment burst decoded whole in C (usdsp.c seg_fast).
+    Returns (status, res[10], message bytes, equalized data symbols, decisions, refitted taps)."""
+    if not hasattr(_DLL, "_seg_fast_set"):
+        _DLL.seg_fast.restype = ctypes.c_int
+        _DLL.seg_fast.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+                                  ctypes.c_int, _D, _D, _D, ctypes.c_float, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                  ctypes.c_int, _D, ctypes.c_void_p, ctypes.c_int, ctypes.c_float, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                  ctypes.c_void_p, ctypes.c_void_p]
+        _DLL._seg_fast_set = True
+    ad = lambda a: a.__array_interface__["data"][0]
+    x = np.ascontiguousarray(x, dtype=np.complex64)
+    g = _grid(pts)
+    L, off, step, lut = g if g is not None else (0, 0.0, 0.0, np.zeros(1, np.int32))
+    cap = int(nsym_cap) + 16
+    sym = np.empty(cap, np.complex64)
+    idx = np.empty(cap, np.int32)
+    msg = np.empty(max(1, int(sum(layout))), np.uint8)
+    res = np.zeros(10)
+    w2 = np.empty_like(w)
+    st = _DLL.seg_fast(ad(x), x.size, int(bool(conj)), ad(mf), mf.size, int(mf_delay), float(sps), float(t_lo),
+                       float(t_hi), float(rho_min), int(span), ad(pre), pre.size, ad(offs), ad(uoffs), int(up),
+                       int(nsym_cap), float(sps_d), ad(w), w.size, float(mse_max), int(eq_train),
+                       ad(pts), pts.size, int(L), float(off), float(step), ad(lut), int(bps),
+                       ad(prbs), prbs.size, ad(layout), layout.size, int(nparity), int(fec_k),
+                       ad(msg), msg.size, ad(sym), ad(idx), cap, ad(res), ad(w2))
+    if st < 0:
+        return st, None, None, None, None, None
+    nd, no = int(res[5]), int(res[6])
+    return st, res, msg[:no].tobytes(), sym[:nd], idx[:nd], w2
+
+
 def rs_find_last(raw, lmax, lmin, nsym, fcr=0):
     """Shortened last codeword of unknown length at raw[0:] (usdsp.c rs_find_last) ->
     (message bytes, corrected count) or None."""

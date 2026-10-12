@@ -125,7 +125,7 @@ class CmtsCore:
         self.n_held = collections.Counter()     # MAPs without grants in advance / data grants, per channel
         self._maps = 0
         self.active = {}      # SID -> (DOCSIS time the advance grants stop, mini-slots)
-        self.n = dict(req=0, ahead=0, empty=0, concat=0)   # grants asked, given in advance, unused
+        self.n = dict(req=0, ahead=0, empty=0, concat=0, pending=0)   # grants asked, given in advance, unused
         self.bonding = None   # [(DCID, frequency)] when several downstream channels are bonded
         self.next_dsid = 0x1001
         self.bonded = {}      # modem MAC -> DSID of its bonded unicast traffic, once online
@@ -141,6 +141,19 @@ class CmtsCore:
         self._maps_ch = collections.Counter()
         self._prof = None
         self._tcc_try = 0
+        # Registration as SFR's CMTS (ARRIS) does it (capture of 2026-10-12, mini_cmts --reg-sfr):
+        # 47.3 criteria all 0, Dynamic Range Window in the TCC (UCID 0, action 2 "change") and
+        # never in the RNG-RSPs (TLV 14), TLV 52, TCC references from 0, initialization technique 3
+        self.reg_sfr = False
+        # Multiple Transmit Channel mode, as MULPIv3.0 7.2.1.4 / Annex III have it (mini_cmts
+        # --mtc-owed): a queue-depth request only carries the bytes the CM had not requested yet,
+        # so the CMTS owes the SUM of the requests not yet granted (primary SID -> bytes); every
+        # grant to the modem (requested or in advance) pays some of it back, each MAP of each of
+        # its channels takes up to a full grant, and while bytes are still owed every MAP carries
+        # a Data Grant Pending (the CM then neither re-requests them nor times out).
+        self.mtc_owed = False
+        self.owed = {}
+        self._bytes_n = {}
         self._seg_logged = 0
 
     # ------------------------------------------------------------ MAP hook (downstream thread)
@@ -210,6 +223,27 @@ class CmtsCore:
                 granted.add(sid)
                 self.grants += 1
                 self.n["req"] += 1
+            if self.mtc_owed:
+                for msid, owe in list(self.owed.items()):
+                    m = self.by_sid.get(msid)
+                    sid = self._sid_on(m, ch) if m else None
+                    if m is None:
+                        del self.owed[msid]
+                        continue
+                    if sid is None:
+                        continue
+                    if owe > 0 and not hold_data and free_ms - used >= 8:
+                        n = min(self._minislots(owe), free_ms - used)
+                        out.append((sid, iuc_s if n <= short else iuc_l, n))
+                        used += n
+                        granted.add(sid)
+                        self.owed[msid] = max(0, owe - self._bytes_in(n))
+                        self.mtc_stat[ch]["req_grants"] += 1
+                        self.mtc_stat[ch]["req_ms"] += n
+                        self.n["req"] += 1
+                    if self.owed.get(msid, 0) > 0:
+                        out.append((sid, iuc_l, 0))     # Data Grant Pending
+                        self.n["pending"] += 1
             self._maps_ch[ch] += 1
             give = self._maps_ch[ch] % self.grant_ahead_every == 0
             # an MTC flow's grants in advance go to its channels in turn (one per `every` MAPs),
@@ -229,6 +263,10 @@ class CmtsCore:
                     # flagged for the upstream receiver (stripped from the MAP): only such a grant
                     # can come back as padding, so only it gets the padding look first
                     out.append((sid, (iuc_s if n <= short else iuc_l) | mac.IUC_AHEAD, n))
+                    if self.mtc_owed and sid in self.mtc_sids:
+                        msid = self.by_sid[sid].sid
+                        if msid in self.owed:
+                            self.owed[msid] = max(0, self.owed[msid] - self._bytes_in(n))
                     self.mtc_stat[ch]["ahead_grants"] += 1
                     self.mtc_stat[ch]["ahead_ms"] += n
                     used += n
@@ -266,6 +304,11 @@ class CmtsCore:
             self._extend_ahead(ev.sid)
         if padding:
             self.n["empty"] += 1
+            if self.mtc_owed:
+                m = self.by_sid.get(ev.sid)
+                if m is not None:
+                    with self.lock:
+                        self.owed.pop(m.sid, None)
         if info.get("kind") == "SEG":                   # Multiple Transmit Channel mode
             self._segment(ev, b, info, where)
             return
@@ -374,6 +417,29 @@ class CmtsCore:
         syms = p.burst_symbols(nbytes + SEG_HDR) + p.guard
         return max(1, min(255, -(-syms // self.ms_syms)))
 
+    def _bytes_in(self, n):
+        """Most bytes an n mini-slot segment grant carries (long data profile)."""
+        if n not in self._bytes_n:
+            self._minislots(1)                          # loads the burst profiles
+            p = self._prof[mac.data_iucs()[1]]
+            lo, hi = 0, 1 << 16
+            while lo < hi:                              # largest nbytes still within n mini-slots
+                mid = (lo + hi + 1) // 2
+                if -(-(p.burst_symbols(mid + SEG_HDR) + p.guard) // self.ms_syms) <= n:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            self._bytes_n[n] = lo
+        return self._bytes_n[n]
+
+    def _sid_on(self, m, ch):
+        """The modem's SID on upstream channel `ch` (its primary SID on the first channel), or
+        None while that channel is not ranged."""
+        if not self.us_chans or ch == self.us_chans[0][0]:
+            return m.sid
+        k = m.links.get(ch)
+        return k.sid if k is not None and k.state == "ranged" else None
+
     def _bytes_255(self):
         """Most bytes a 255 mini-slot segment grant carries (long data profile)."""
         if getattr(self, "_b255", None) is None:
@@ -404,6 +470,13 @@ class CmtsCore:
             self.mtc_stat[0]["req_bytes"] += nbytes
             self.mtc_stat[0]["req_max"] = max(self.mtc_stat[0]["req_max"], nbytes)
             sids = [m.sid] + [k.sid for k in m.links.values() if k.state == "ranged"]
+            if self.mtc_owed:
+                self.owed[m.sid] = min(self.owed.get(m.sid, 0) + nbytes, 4 << 20)
+                if self.grant_ahead_s:
+                    n = self._minislots(nbytes)
+                    for s_ in sids:
+                        self.active[s_] = (self.mux.now_ts + int(self.grant_ahead_s * TS_RATE), n)
+                return
             # a small request (TCP ACKs...) on ONE channel, in turn: split, it made two bursts
             # where one does, and each burst costs the upstream processes about the same whatever
             # its size (2026-10-10: ~350 bursts/s against ~230 with one channel, processing
@@ -479,6 +552,8 @@ class CmtsCore:
         # the RNG-RSPs) the Sagem 3686 answered REG-ACK 209 reject-bad-tcc every time; without it,
         # it ranged on channel 2 and came online at once (2026-10-10). The RNG-RSPs carry the DRW.
         kw = dict(drw_action=None)
+        if self.reg_sfr:
+            kw = dict(drw_action=2, technique=3, first_ref=0)
         var = os.environ.get("MINI_CMTS_TCC_VARIANTS")     # diagnostic: a TCC variant per REG-REQ-MP
         if var:
             vs = var.split(",")
@@ -636,8 +711,11 @@ class CmtsCore:
         clusters, tcc = self._mtc_setup(m, tlvs, new_sid) if (mp and response == 0) else (None, b"")
         rsp_tlvs, flows = registration.build_response(tlvs, m.sid, new_sfid, new_sid,
                                                       version=3 if mp else getattr(self, "docsis_version", 1),
-                                                      bonded=bonded, clusters=clusters) if response == 0 else (b"", [])
+                                                      bonded=bonded, clusters=clusters,
+                                                      criteria=self.reg_sfr) if response == 0 else (b"", [])
         rsp_tlvs += tcc
+        if clusters and self.reg_sfr:
+            rsp_tlvs += registration.init_channel_timeout(60)
         if bonded and response == 0:
             rcc, rcp_id = registration.receive_channel_config(tlvs, self.bonding)
             rsp_tlvs += rcc
@@ -827,7 +905,8 @@ class CmtsCore:
         if not self.respond:
             self.log(line + "  (écoute seule, pas de RNG-RSP)")
             return
-        frame = mac.rng_rsp_msg(self.mux.sa, addr, m.sid, self.us_chan_id, ta, pq, fq, status, drw_qdb=m.drw_qdb)
+        frame = mac.rng_rsp_msg(self.mux.sa, addr, m.sid, self.us_chan_id, ta, pq, fq, status,
+                                drw_qdb=None if self.reg_sfr else m.drw_qdb)
         sname = "success" if status == mac.RNG_SUCCESS else "continue"
 
         def sent(air_ts, m=m, ok=ok, rx_ts=rx_ts):

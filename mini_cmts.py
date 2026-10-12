@@ -43,7 +43,7 @@ import numpy as np
 from cmts import docsis_mac as mac
 from cmts import cdsp, netpkt
 from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
-from cmts.downstream import DownstreamMux, SecondaryMux, SYMRATE
+from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
 from cmts.radio import TX_CAL_RX_BW
@@ -153,7 +153,11 @@ def build(a, log=print):
     rx_by_ch = dict(zip([u for u, _ in us_channels(a)], getattr(rx, "all_channels", None) or [rx]))
     core.rx_lag_ms = lambda ch: getattr(rx_by_ch.get(ch), "lag_now_ms", 0.0)
     core.lag_ahead_ms, core.lag_data_ms = a.us_lag_limit / 2, a.us_lag_limit
+    core.reg_sfr = a.reg_sfr
+    core.mtc_owed = a.mtc_owed
     mux.data_max_ms = a.ds_queue_ms
+    if a.ds_aqm:
+        mux.aqm = CoDel(a.ds_aqm)
     mux.secondary = []
     if a.docsis30:                             # MAC Domain Descriptor: the modem runs in DOCSIS 3.0 mode
         chans = ds_channels(a)
@@ -171,6 +175,8 @@ def build(a, log=print):
             m2 = SecondaryMux(qam=a.qam, cmts_mac=a.mac, invert=not a.no_invert)
             m2.mdd = mac.mdd_msg(mux.sa, 1, cid, plan, ucids, **mdd_kw)
             m2.data_max_ms = a.ds_queue_ms
+            if a.ds_aqm:
+                m2.aqm = CoDel(a.ds_aqm)
             mux.secondary.append(m2)
         if len(chans) > 1:
             core.bonding = chans
@@ -390,10 +396,11 @@ def status_line(mux, core, rx, extra=""):
     return (f"[{time.strftime('%H:%M:%S')}] {extra}US: bruit {'?' if fl is None else f'{fl:.1f}'} dBFS, "
             f"retard max {lag:.0f} ms" + (f" (file {st['windows_queued']}, abandonnées {st['late']})"
                                           if 'windows_queued' in st else "")
-            + f", rafales {st['bursts']} (décodées {st['decoded']}, énergie brute {st['raw']}"
+            + f", rafales {st['bursts']} (décodées {st['decoded']}, en C {st.get('fast', 0)}, énergie brute {st['raw']}"
             + (f", profil inversé {st['iuc_swap']}" if st.get('iuc_swap') else "") + "), "
             + "".join(f" | US{k + 2} : bruit {'?' if r.noise_dbfs() is None else f'{r.noise_dbfs():.1f}'} dBFS, "
-                      f"retard max {_take_lag(r):.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']}"
+                      f"retard max {_take_lag(r):.0f} ms, rafales {r.stats['bursts']} (décodées {r.stats['decoded']}, "
+                      f"en C {r.stats.get('fast', 0)}"
                       + (f", profil inversé {r.stats['iuc_swap']}" if r.stats.get('iuc_swap') else "") + ")"
                       for k, r in enumerate(getattr(rx, "all_channels", [rx])[1:]))
             + f", RNG-RSP {core.n_rsp} | grants {core.n['req']} demandés + {core.n['ahead']} en avance "
@@ -1346,6 +1353,14 @@ def parser():
                         "them on every core at a lower real-time priority than the transmit side; 'auto': "
                         "own cores unless that leaves the transmit side of 5-6 DS fewer than 4 (6 DS + 2 US "
                         "on 6 cores)")
+    g.add_argument("--reg-sfr", action="store_true",
+                   help="register multi-channel upstream modems as SFR's CMTS (ARRIS) does: 47.3 criteria at 0, "
+                        "Dynamic Range Window in the TCC (action 2) instead of the RNG-RSPs, TLV 52 = 60, TCC "
+                        "references from 0, initialization technique 3 (capture of 2026-10-12)")
+    g.add_argument("--mtc-owed", action="store_true",
+                   help="multi-channel upstream: queue-depth requests add up (MULPIv3.0: a request only carries "
+                        "bytes not requested before), granted on every channel each MAP, Data Grant Pending "
+                        "while bytes are still owed")
     g.add_argument("--us-lag-limit", type=float, default=150.0,
                    help="ms: an upstream channel whose receiver is this far behind its RX stream gets no data "
                         "grant until it catches up (half of it: no grant in advance); 0 = off")
@@ -1371,6 +1386,9 @@ def parser():
     g.add_argument("--prov-args", default="", help="extra arguments for provision.py, e.g. \"--config my.cfg\"")
     g.add_argument("--shared-secret", default="docsis-lab", help="CMTS MIC shared secret (same as in the config file)")
     g.add_argument("--strict-mic", action="store_true", help="refuse a REG-REQ whose CMTS MIC is wrong")
+    g.add_argument("--ds-aqm", type=float, default=0.0, metavar="MS",
+                   help="CoDel on every downstream data queue, target MS (e.g. 15), interval 100 ms: drops one "
+                        "frame now and then instead of bursts at the --ds-queue-ms limit; 0 = off")
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=6,

@@ -16,6 +16,7 @@ The demodulator still checks the HCS on both bit orders and reports which one ma
 """
 from dataclasses import dataclass
 import functools
+import os
 
 import numpy as np
 
@@ -340,6 +341,7 @@ class Burst:
     error: str = ""
     peak: float = 0.0     # max |sample| over the preamble (1.0 = ADC full scale)
     head: str = ""        # first bytes of the first RS codeword when its MAC header fails (debug)
+    fast: bool = False    # decoded whole in C (BurstDemod._seg_fast)
 
 
 class BurstDemod:
@@ -351,6 +353,11 @@ class BurstDemod:
         self.mf_delay = (self.mf.size - 1) // 2
         self.prof = profiles()
         self.invert_first = False
+        # segment bursts of a modem with a cached equalizer: decoded whole in C (_seg_fast);
+        # MINI_CMTS_US_FAST=0 keeps the Python path for every burst. n_fast: outcomes by status
+        self.fast = cdsp.AVAILABLE and os.environ.get("MINI_CMTS_US_FAST", "1") != "0"
+        self.n_fast = {}
+        self._fast_tabs = {}
         # Equalizer per modem (detect(eq_key=SID)): the coax channel is static, so the taps
         # fitted on one burst serve the next ones (~2.5 ms saved per long 64-QAM burst),
         # refitted every EQ_REFIT bursts, when the error doubles, or after a decoding failure.
@@ -404,6 +411,10 @@ class BurstDemod:
         SID too (2026-10-10). retry=False: no re-estimation at all (a partial look at a burst)."""
         self._last = None
         self._seg = seg
+        if seg and self.fast and grant_syms and eq_key is not None:
+            res = self._seg_fast(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
+            if res is not None:
+                return res
         res = self._detect_any(x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key)
         if res is not None and res.frame is None and alt_iuc in self.prof:
             last = self._last
@@ -436,6 +447,69 @@ class BurstDemod:
             else:
                 self.drift[eq_key] = old
         return res
+
+    def _seg_fast(self, x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key):
+        """A segment burst of a modem whose equalizer is cached, decoded whole in C (usdsp.c
+        seg_fast: the same steps as _detect + _equalized + _rs_frame(seg=True)); None whenever
+        it leaves that path (no preamble in this orientation, equalizer to refit, segment
+        unreadable, header check failed): detect() then decodes the burst the usual way."""
+        prof = self.prof.get(iuc)
+        c = self.eq.get(eq_key)
+        if prof is None or not prof.fec_t or prof.bps <= 2 or c is None or c["uses"] >= EQ_REFIT:
+            return None
+        t, k = prof.fec_t, prof.fec_k
+        fill = int(round(grant_syms - prof.guard - prof.preamble.size)) * prof.bps // 8
+        n2 = 2 * t
+        n = -(-fill // (k + n2))
+        last = fill - (n - 1) * (k + n2) - n2
+        if last >= 16:
+            layout = [k] * (n - 1) + [min(last, k)]
+        elif n > 1:
+            layout = [k] * (n - 1)
+        else:
+            return None
+        fx = self._fast_tabs.get(iuc)
+        if fx is None:
+            pre = np.ascontiguousarray(prof.preamble, np.complex64)
+            pts, bps = constellation(prof)
+            fx = self._fast_tabs[iuc] = dict(
+                pre=pre, pts=np.ascontiguousarray(pts, np.complex64),
+                offs=np.round(np.arange(pre.size) * self.sps).astype(np.int32),
+                uoffs=np.round(np.arange(pre.size) * self.sps * UP).astype(np.int32),
+                prbs=np.ascontiguousarray(_prbs(prof.seed, 1 << 18) if prof.scrambler else np.zeros(1, np.uint8),
+                                          np.uint8))
+        inv = self.invert_first
+        st, res, msg, data, idx, w2 = cdsp.seg_fast(
+            x, inv, self.mf, self.mf_delay, self.sps, t_lo, x.size if t_hi is None else t_hi, rho_min, SPAN,
+            fx["pre"], fx["offs"], fx["uoffs"], UP, prof.burst_symbols(max_frame),
+            self.sps * (1 + self.drift.get(eq_key, 0.0)), np.ascontiguousarray(c["w"], np.complex64),
+            2 * c["mse"], EQ_TRAIN, fx["pts"], prof.bps, fx["prbs"], np.asarray(layout, np.int32), n2, k)
+        self.n_fast[st] = self.n_fast.get(st, 0) + 1
+        if st < 0:
+            return None
+        for rev in (True, False):
+            data_b = bytes(_BITREV[np.frombuffer(msg, np.uint8)]) if rev else msg
+            hdr = mac.parse_seg_header(data_b)
+            if hdr is not None:
+                break
+        else:
+            self.n_fast["hdr"] = self.n_fast.get("hdr", 0) + 1
+            return None
+        if res[8] == 1:                                 # refitted in C: the new taps are kept
+            self.eq[eq_key] = dict(w=w2, mse=float(res[9]), uses=0)
+            self.n_fast["refit"] = self.n_fast.get("refit", 0) + 1
+        elif res[8] == 0:                               # (2: no taps fitted, cache untouched)
+            c["uses"] += 1
+        out = Burst(iuc=iuc, t=float(res[0]), rho=float(res[1]), power_db=float(res[2]),
+                    freq=float(res[4]) * self.symrate, mer=0.0, peak=float(res[3]))
+        out.inverted, out.fast = inv, True
+        out.frame, out.info = data_b, dict(kind="SEG", total=len(data_b), **hdr)
+        out.rs_fixed, out.bitrev = int(res[7]), rev
+        nmer = min(prof.burst_symbols(len(data_b)) - prof.preamble.size, 2000)
+        if nmer > 0:
+            e = np.abs(data[:nmer] - fx["pts"][idx[:nmer]]) ** 2
+            out.mer = float(-10 * np.log10(np.mean(e) + 1e-12))
+        return out
 
     def _detect_any(self, x, iuc, t_lo, t_hi, rho_min, max_frame, grant_syms, eq_key):
         """Find and decode the strongest burst of profile `iuc` whose first symbol lies in

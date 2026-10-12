@@ -193,11 +193,13 @@ def map_ie(sid, iuc, offset):
 
 
 def map_msg(sa, us_chan_id, ucd_count, alloc_start, ack_time, ies, length,
-            rng_bo=(3, 6), data_bo=(2, 8)):
+            rng_bo=(3, 6), data_bo=(2, 8), pending=()):
     """ies: list of (sid, iuc, offset) in mini-slots relative to alloc_start;
-    a Null IE at `length` closes the map."""
+    a Null IE at `length` closes the map. pending: [(sid, iuc)] Data Grant Pendings (zero length
+    grants, MULPIv3.0 8.3.1.1: after the Null IE, at its offset)."""
     elems = b"".join(map_ie(*ie) for ie in ies) + map_ie(0, IUC_NULL, length)
-    body = struct.pack(">BBBBIIBBBB", us_chan_id, ucd_count, len(ies) + 1, 0,
+    elems += b"".join(map_ie(sid, iuc, length) for sid, iuc in pending)
+    body = struct.pack(">BBBBIIBBBB", us_chan_id, ucd_count, len(ies) + 1 + len(pending), 0,
                        alloc_start & 0xFFFFFFFF, ack_time & 0xFFFFFFFF,
                        rng_bo[0], rng_bo[1], data_bo[0], data_bo[1])
     return mgmt_frame(MAP, body + elems, sa)

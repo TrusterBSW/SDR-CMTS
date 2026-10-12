@@ -385,6 +385,8 @@ class UpstreamRx:
             self.recent.append(t_abs)
             self.stats["bursts"] += 1
             self.stats["decoded" if bu.frame is not None else "undecoded"] += 1
+            if bu.fast:
+                self.stats["fast"] += 1
             if bu.frame is not None and unicast and iuc in DATA_IUCS:   # level of real bursts (linear)
                 lvl = 10 ** (bu.power_db / 10)
                 self.burst_level = lvl if not self.burst_level else 0.95 * self.burst_level + 0.05 * lvl

@@ -39,6 +39,7 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 | Descendant, processus radio | `--radio-process --ds-channels 5` : horloge maître 55,616 MHz, synthèse AVX2, PC 6 cœurs | **215,6 Mbit/s** descendant, 20,2 montant, ping 91 ms ; 6 DS : 208-209 Mbit/s mais montant effondré (2,9 Mbit/s) et ping jusqu'à 1 s, à reprendre |
 | Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **257-279 Mbit/s** descendant (canaux remplis à 100 %), 21 montant, ping ~97 ms (170 ms pendant un envoi) ; **c'est le défaut** depuis le 2026-10-11 |
 | Ensemble, processus radio | 6 DS + `--us-channels 2` : processus montants sur tous les cœurs à priorité plus basse que l'émission, contre-réaction sur le retard, DDC dans son propre fil, une seule recherche de préambule par rafale | **269-277 Mbit/s descendant / 24 Mbit/s montant**, modem jamais oublié, 99,8 % des rafales décodées, ping 78 ms (~370 pendant un envoi) ; paquets TS fabriqués en C, trames réparties à tour de rôle sur les canaux |
+| Ensemble, agrégation montante | 6 DS + `--us-channels 2 --reg-sfr --mtc-owed` : enregistrement et requêtes multi-canal comme le CMTS de SFR (fenêtre de dynamique dans la TCC, requêtes cumulées, grant pending), segments montants décodés entièrement en C | **270-284 Mbit/s descendant / 44-47 Mbit/s montant** (iperf3, 8-16 flux), ping 75 ms ; l'agrégation montante apporte enfin du débit |
 
 ## ⚠ Sécurité et cadre légal
 

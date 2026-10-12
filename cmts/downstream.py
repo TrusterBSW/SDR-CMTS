@@ -53,6 +53,50 @@ def _fill(mux, n):
     return out
 
 
+
+class CoDel:
+    """CoDel (RFC 8289) at the head of a downstream data queue (mini_cmts --ds-aqm): while frames
+    have waited more than `target` for at least `interval`, drop one now and then, more and more
+    often (interval / sqrt(count)), instead of every frame past a hard limit at once. With 16 TCP
+    flows the hard 100 ms limit dropped hundreds of frames in a row: all the flows backed off
+    together and the channels fell to 20-50 % (2026-10-12)."""
+
+    def __init__(self, target_ms=15.0, interval_ms=100.0):
+        self.target, self.interval = target_ms / 1e3, interval_ms / 1e3
+        self.first_above = 0.0
+        self.dropping = False
+        self.count = self.last_count = 0
+        self.drop_next = 0.0
+        self.drops = 0
+
+    def drop(self, sojourn, now, backlog):
+        """The frame at the head waited `sojourn` s (`backlog` frames queued): True to drop it."""
+        ok = False
+        if sojourn < self.target or backlog <= 1:
+            self.first_above = 0.0
+        elif not self.first_above:
+            self.first_above = now + self.interval
+        elif now >= self.first_above:
+            ok = True
+        if self.dropping:
+            if not ok:
+                self.dropping = False
+            elif now >= self.drop_next:
+                self.count += 1
+                self.drop_next += self.interval / self.count ** 0.5
+                self.drops += 1
+                return True
+            return False
+        if ok:
+            self.dropping = True
+            delta = self.count - self.last_count
+            self.count = delta if delta > 1 and now - self.drop_next < 16 * self.interval else 1
+            self.last_count = self.count
+            self.drop_next = now + self.interval / self.count ** 0.5
+            self.drops += 1
+            return True
+        return False
+
 class DownstreamMux:
     def __init__(self, qam=64, sps=2, us_freq=40e6, us_symrate_mult=8, minislot_ticks=4,
                  cmts_mac="02:00:00:ca:fe:01", sync_ms=10, ucd_ms=1000, map_ms=2,
@@ -105,6 +149,7 @@ class DownstreamMux:
         # piling up seconds of delay). Several data frames are packed into the same TS packets.
         self.data = collections.deque()            # (enqueue time, frame)
         self.data_max_ms = 100.0
+        self.aqm = None                            # CoDel, or None: only the data_max_ms limit
         # TS packets per batch of data frames. Each batch starts on a packet boundary and its last
         # packet is stuffed: with 8 (1464 bytes) every full-size frame (~1530 bytes with its
         # DOCSIS headers) went alone in 9 packets, ~10 % of the channel stuffing. 32: 3 frames,
@@ -176,7 +221,11 @@ class DownstreamMux:
             im = u["im"] and u["map_count"] % every == 0
             free = self.max_map_len - (self.im_len if im else 0) - self.min_contention
             sched = u["scheduler"]
+            pend = []
             for sid, iuc, n in (sched(start, free) if sched else []):
+                if n == 0:                              # Data Grant Pending: after the Null IE
+                    pend.append((sid, iuc & mac.IUC_MASK))
+                    continue
                 if off + n > free:
                     break
                 ies.append((sid, iuc, off, n))
@@ -194,7 +243,7 @@ class DownstreamMux:
             ies = [(sid, iuc & mac.IUC_MASK, o) for sid, iuc, o, _ in ies]   # (receiver flags off)
             ack = u["ack_ms"]() if u["ack_ms"] else start - self.map_len
             frames.append(mac.map_msg(self.sa, u["us_id"], u["ccc"], start,
-                                      min(ack, start), ies, length))
+                                      min(ack, start), ies, length, pending=pend))
             u["next_map_ms"] += length
             u["map_count"] += 1
             self.stats["map"] += 1
@@ -272,7 +321,7 @@ class DownstreamMux:
         while self.data:
             t, f = self.data[0]
             wait = (now - t) * 1e3
-            if wait > self.data_max_ms:
+            if wait > self.data_max_ms or (self.aqm is not None and self.aqm.drop(now - t, now, len(self.data))):
                 self.data.popleft()
                 self.stats["data_drop"] += 1
                 continue
@@ -312,6 +361,7 @@ class SecondaryMux:
         self._q, self._qi = None, 0
         self.data = collections.deque()
         self.data_max_ms = 100.0
+        self.aqm = None                            # (as DownstreamMux.aqm)
         self.data_pack = 32                        # (as DownstreamMux.data_pack)
         self.mdd = None
         self.mdd_every = int(SYMRATE * self.m / (RS_LEN * 8))   # TS packets per second
@@ -333,7 +383,7 @@ class SecondaryMux:
         while self.data:
             t, f = self.data[0]
             wait = (now - t) * 1e3
-            if wait > self.data_max_ms:
+            if wait > self.data_max_ms or (self.aqm is not None and self.aqm.drop(now - t, now, len(self.data))):
                 self.data.popleft()
                 self.stats["data_drop"] += 1
                 continue

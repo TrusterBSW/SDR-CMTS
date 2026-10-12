@@ -39,6 +39,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 | Downstream, radio process | `--radio-process --ds-channels 5`: master clock 55.616 MHz, AVX2 synthesis, 6-core PC | **215.6 Mbit/s** downstream, 20.2 upstream, ping 91 ms; 6 DS: 208-209 Mbit/s but the upstream collapses (2.9 Mbit/s) and ping up to 1 s, to be resumed |
 | Downstream, radio process | `--radio-process --ds-channels 6 --ds-layout around`: 290-330 MHz, 306 primary in the middle, 55.616 MHz, 16 KB USB frames | **257-279 Mbit/s** downstream (channels 100 % full), 21 upstream, ping ~97 ms (170 ms during an upload); **the default** since 2026-10-11 |
 | Together, radio process | 6 DS + `--us-channels 2`: upstream processes on every core at a lower priority than the transmit side, back-pressure on their delay, DDC in a thread of its own, one preamble search per burst | **269-277 Mbit/s downstream / 24 Mbit/s upstream**, modem never lost, 99.8 % of bursts decoded, ping 78 ms (~370 during an upload); TS packets built in C, frames spread over the channels in turn |
+| Together, upstream bonding | 6 DS + `--us-channels 2 --reg-sfr --mtc-owed`: multi-channel registration and requests as SFR's CMTS does them (Dynamic Range Window in the TCC, requests added up, grant pending), upstream segments decoded entirely in C | **270-284 Mbit/s downstream / 44-47 Mbit/s upstream** (iperf3, 8-16 flows), ping 75 ms; upstream bonding finally adds throughput |
 
 ## ⚠ Safety and legal
 
