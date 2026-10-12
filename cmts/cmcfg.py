@@ -50,6 +50,10 @@ CAP_NAMES = {
     17: "L2VPN", 18: "eSAFE", 19: "DUT", 20: "plage montante", 21: "débits symbole", 22: "SAC 2",
     23: "code hopping 2", 24: "canaux montants multiples", 25: "canaux montants 2.0",
     26: "canaux montants 1.x", 27: "SID clusters", 28: "SID par flux", 29: "canaux descendants multiples",
+    30: "DSID total", 31: "DSID remise en ordre", 32: "DSID multicast", 33: "multicast par DSID",
+    34: "trames d'isolation", 35: "DPV", 36: "flux UGS en plus", 37: "MAP/UCD hors primaire",
+    38: "classifieurs de rejet", 39: "IPv6", 40: "puissance montante étendue", 44: "gestion d'énergie",
+    46: "acquittement CM-STATUS",
 }
 
 
