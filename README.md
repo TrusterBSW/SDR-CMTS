@@ -17,8 +17,8 @@ exists to learn DOCSIS hands-on and to let others do the same.
 
 | | Configuration | Measured (iperf3 through the modem) |
 |---|---|---|
-| Downstream | 6 bonded EuroDOCSIS 256-QAM channels (290-330 MHz, 306 primary in the middle) | **270-284 Mbit/s** (8-16 TCP flows; ~225 with 4 flows, latency-bound) |
-| Upstream | 2 bonded ATDMA 64-QAM 5.12 Msym/s channels (60 + 53 MHz), `--us-channels 2 --us-target -20` | **44-47 Mbit/s** (8 flows); 22-24 with one channel |
+| Downstream | 6 bonded EuroDOCSIS 256-QAM channels (290-330 MHz, 306 primary in the middle) | **276-284 Mbit/s** (8-16 TCP flows; ~235 with 4 flows, 120-175 with 1 flow, latency-bound) |
+| Upstream | 2 bonded ATDMA 64-QAM 5.12 Msym/s channels (60 + 53 MHz), `--us-channels 2 --us-target -20` | **51-52 Mbit/s** (8 flows, 45 min run); 22-24 with one channel |
 | Latency | ping through the modem | ~75 ms idle, ~55 ms during a download (CoDel) |
 
 Close to the physical limits of the channels used (6 × 256-QAM ≈ 300 Mbit/s; 2 × 64-QAM ATDMA

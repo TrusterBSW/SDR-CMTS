@@ -197,7 +197,8 @@ def config_bytes(a):
             return f.read()
     extra = [cmcfg.snmp_community(a.snmp_community)] if a.snmp_community else []
     return cmcfg.build(a.secret, ds_rate=a.ds_rate, us_rate=a.us_rate, max_cpe=a.max_cpe,
-                       network_access=not a.no_network_access, extra=extra, us_burst=a.us_burst)
+                       network_access=not a.no_network_access, extra=extra, us_burst=a.us_burst,
+                       us_buffer=a.us_buffer)
 
 
 def show(buf, secret):
@@ -224,6 +225,9 @@ def parser():
     # 1 Gbit/s: 6 bonded downstream channels carried 258 Mbit/s (2026-10-11), past the former 200
     ap.add_argument("--ds-rate", type=int, default=1_000_000_000, help="generated config: downstream max rate (bit/s)")
     ap.add_argument("--us-rate", type=int, default=1_000_000_000, help="generated config: upstream max rate (bit/s)")
+    ap.add_argument("--us-buffer", type=int, default=None, metavar="BYTES",
+                    help="upstream flow buffer in the modem (TLV 24.35 target = maximum): its queue, so the "
+                         "delay a TCP upload sees; default: the modem's own (~430 ms on the Sagem 3686)")
     ap.add_argument("--us-burst", type=int, default=64_000,
                     help="generated config: upstream Maximum Traffic Burst (bytes, TLV 24.9; DOCSIS default 3044). "
                          "The modem never requests more than this at once: with a ~60 ms request-to-grant cycle, "

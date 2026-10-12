@@ -17,8 +17,8 @@ apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 
 | | Configuration | Mesuré (iperf3 à travers le modem) |
 |---|---|---|
-| Descendant | 6 canaux agrégés EuroDOCSIS 256-QAM (290-330 MHz, 306 principal au milieu) | **270-284 Mbit/s** (8-16 flux TCP ; ~225 avec 4 flux, limités par la latence) |
-| Montant | 2 canaux agrégés ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2 --us-target -20` | **44-47 Mbit/s** (8 flux) ; 22-24 avec un seul canal |
+| Descendant | 6 canaux agrégés EuroDOCSIS 256-QAM (290-330 MHz, 306 principal au milieu) | **276-284 Mbit/s** (8-16 flux TCP ; ~235 avec 4 flux, 120-175 avec 1 flux, limités par la latence) |
+| Montant | 2 canaux agrégés ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2 --us-target -20` | **51-52 Mbit/s** (8 flux, essai de 45 min) ; 22-24 avec un seul canal |
 | Latence | ping à travers le modem | ~75 ms au repos, ~55 ms pendant un téléchargement (CoDel) |
 
 Proches des limites physiques des canaux utilisés : 6 × 256-QAM ≈ 300 Mbit/s ; 2 × 64-QAM ATDMA

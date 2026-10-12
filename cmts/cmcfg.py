@@ -84,13 +84,17 @@ def cmts_mic(tlvs, secret):
     return hmac.new(secret.encode(), data, hashlib.md5).digest()
 
 
-def service_flow(ref, max_rate, upstream, max_burst=3044, prio=0, sched=2):
+def service_flow(ref, max_rate, upstream, max_burst=3044, prio=0, sched=2, buffer=None):
+    """buffer: Service Flow Buffer Control (TLV [24/25].35, MULPIv3.0 C.2.2.5.11), the flow's
+    queue in the modem: target = maximum = `buffer` bytes; None = the modem's own size."""
     sub = tlv(1, struct.pack(">H", ref)) + tlv(6, bytes([7]))       # provisioned+admitted+active
     sub += tlv(7, bytes([prio])) + tlv(8, struct.pack(">I", max_rate)) + tlv(9, struct.pack(">I", max_burst))
     if upstream:
         sub += tlv(14, struct.pack(">H", 0))                           # max concatenated burst: no
         #                                                                limit (1.1 default: 1522 B)
         sub += tlv(15, bytes([sched]))                                 # 2 = best effort
+    if buffer:
+        sub += tlv(35, tlv(2, struct.pack(">I", buffer)) + tlv(3, struct.pack(">I", buffer)))
     return tlv(24 if upstream else 25, sub)
 
 
@@ -103,11 +107,11 @@ def snmp_community(name, net="10.10.0.0", mask="255.255.255.0"):
 
 
 def build(secret, ds_rate=50_000_000, us_rate=5_000_000, max_cpe=4, network_access=True, extra=(),
-          us_burst=3044):
+          us_burst=3044, us_buffer=None):
     """A minimal DOCSIS 1.1+ config: network access, CPE limit, one best-effort service flow each
     way, no BPI. Returns the file bytes (MICs, end marker and padding included)."""
     body = [(3, bytes([1 if network_access else 0])), (18, bytes([max_cpe])), (29, bytes([0]))]
-    body += [(t, v) for t, v in parse(service_flow(1, us_rate, True, max_burst=us_burst)
+    body += [(t, v) for t, v in parse(service_flow(1, us_rate, True, max_burst=us_burst, buffer=us_buffer)
                                       + service_flow(2, ds_rate, False))]
     body += list(extra)
     raw = b"".join(tlv(t, v) for t, v in body)

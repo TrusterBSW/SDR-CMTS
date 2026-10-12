@@ -94,17 +94,25 @@ int rs_decode(uint8_t *cw, int n, int nsym, int fcr)
     if (nsym <= 0 || nsym > 64 || n <= nsym || n > 255) return -5;
     uint8_t S[64];
     int any = 0;
-    for (int i = 0; i < nsym; i++) {                 /* Horner, cw[0] = highest degree */
-        uint8_t y = 0;
-        if (fcr + i >= 0 && fcr + i < 64) {          /* table: one lookup per byte */
-            const uint8_t *M = RMUL[fcr + i];
-            for (int j = 0; j < n; j++) y = M[y] ^ cw[j];
-        } else {
-            uint8_t r = gpow(fcr + i);
-            for (int j = 0; j < n; j++) y = gmul(y, r) ^ cw[j];
+    if (fcr >= 0 && fcr + nsym <= 64) {
+        /* Horner (cw[0] = highest degree), one table lookup per byte and syndrome; the nsym
+         * syndromes in the same pass over the bytes: independent chains the CPU overlaps
+         * (one syndrome after the other was a single dependent chain each, ~6.4 us per
+         * 240-byte codeword, 9 % of an upstream process, 2026-10-12) */
+        uint8_t y[64];
+        memset(y, 0, (size_t)nsym);
+        for (int j = 0; j < n; j++) {
+            uint8_t b = cw[j];
+            for (int i = 0; i < nsym; i++) y[i] = RMUL[fcr + i][y[i]] ^ b;
         }
-        S[i] = y;
-        any |= y;
+        for (int i = 0; i < nsym; i++) { S[i] = y[i]; any |= y[i]; }
+    } else {
+        for (int i = 0; i < nsym; i++) {
+            uint8_t r = gpow(fcr + i), y = 0;
+            for (int j = 0; j < n; j++) y = gmul(y, r) ^ cw[j];
+            S[i] = y;
+            any |= y;
+        }
     }
     if (!any) return 0;
     /* Berlekamp-Massey: C = error locator, lowest degree first */
@@ -258,45 +266,53 @@ float dd_track_grid(const float *in, int n, const float *pts, int L, float off, 
                     const int *lut, float ka, float kb, float *out, int *idx)
 {
     /* the derotation e^{-j ph} is kept as a phasor (c, s) rotated by the small step of each
-     * symbol (2nd-order Taylor, renormalized), recomputed exactly every 256 symbols; the phase
-     * error uses the small-angle form Im(z d*) / |d|^2: no sin / cos / atan2 per symbol */
+     * symbol (2nd-order Taylor, renormalized every 8 symbols), recomputed exactly every 256
+     * symbols; the phase error uses the small-angle form Im(z d*) / |d|^2: no sin / cos / atan2
+     * per symbol. The decided point comes from the grid levels and 1 / |d|^2 from a table by grid
+     * position, lut (label) off the critical path: 26 -> 19 ns per symbol, same decisions
+     * (2026-10-12). pts is only used for the labels' order (through lut). */
+    (void)pts;
     float ph = 0.f, fr = 0.f;
     double err = 0.0;
+    float eacc = 0.f;
     float c = 1.f, s = 0.f;
-    /* no division in the per-symbol chain (2026-10-10): 1 / step, and 1 / |d|^2 per point */
     float istep = 1.f / step;
-    float inv2[L * L];
-    for (int q = 0; q < L * L; q++) {
-        int p = lut[q];
-        inv2[p] = 1.f / (pts[2 * p] * pts[2 * p] + pts[2 * p + 1] * pts[2 * p + 1] + 1e-12f);
-    }
+    float inv2[L * L], lev[L];
+    for (int i = 0; i < L; i++) lev[i] = off + i * step;
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++) inv2[i * L + j] = 1.f / (lev[i] * lev[i] + lev[j] * lev[j] + 1e-12f);
     for (int k = 0; k < n; k++) {
-        if ((k & 255) == 0) { c = cosf(ph); s = sinf(ph); }
+        if ((k & 255) == 0) {
+            if (ph > 3.14159265f || ph < -3.14159265f) ph = remainderf(ph, 6.2831853f);
+            c = cosf(ph); s = sinf(ph);
+            err += eacc; eacc = 0.f;
+        }
         float xr = in[2 * k], xi = in[2 * k + 1];
         float zr = xr * c + xi * s, zi = xi * c - xr * s;
         int i = (int)lrintf((zr - off) * istep), j = (int)lrintf((zi - off) * istep);
         i = i < 0 ? 0 : (i >= L ? L - 1 : i);
         j = j < 0 ? 0 : (j >= L ? L - 1 : j);
-        int best = lut[i * L + j];
-        float pr = pts[2 * best], pi = pts[2 * best + 1];
+        int q = i * L + j;
+        float pr = lev[i], pi = lev[j];
         float dr = zr - pr, di = zi - pi;
-        float e = (zi * pr - zr * pi) * inv2[best];
-        if (e > 0.5f) e = 0.5f;
-        if (e < -0.5f) e = -0.5f;
+        float e = (zi * pr - zr * pi) * inv2[q];
+        e = e > 0.5f ? 0.5f : (e < -0.5f ? -0.5f : e);
         fr += kb * e;
         float dph = fr + ka * e;
         ph += dph;
-        if (ph > 3.14159265f) ph -= 6.2831853f;
-        if (ph < -3.14159265f) ph += 6.2831853f;
         float cd = 1.f - 0.5f * dph * dph, sd = dph;          /* e^{j dph}, |dph| << 1 */
         float nc = c * cd - s * sd, ns = s * cd + c * sd;
-        float g = 1.5f - 0.5f * (nc * nc + ns * ns);          /* keep |phasor| = 1 */
-        c = nc * g; s = ns * g;
+        if ((k & 7) == 7) {                                   /* keep |phasor| = 1 */
+            float g = 1.5f - 0.5f * (nc * nc + ns * ns);
+            nc *= g; ns *= g;
+        }
+        c = nc; s = ns;
         out[2 * k] = zr;
         out[2 * k + 1] = zi;
-        idx[k] = best;
-        err += dr * dr + di * di;
+        idx[k] = lut[q];
+        eacc += dr * dr + di * di;
     }
+    err += eacc;
     return n ? (float)(err / n) : 0.f;
 }
 
@@ -491,17 +507,20 @@ int rs_find_last(const uint8_t *buf, int nbuf, int lmax, int lmin, int nsym, int
     uint8_t cw[255];
     *fixed = 0;
     if (nsym <= 0 || nsym > 64 || fcr < 0 || fcr + nsym > 64) return -1;
-    for (int L = lmax; L >= lmin; L--) {
-        int n = L + nsym;
-        if (n > 255 || n > nbuf) continue;
-        int any = 0;
-        for (int i = 0; i < nsym && !any; i++) {
-            const uint8_t *M = RMUL[fcr + i];
-            uint8_t y = 0;
-            for (int j = 0; j < n; j++) y = M[y] ^ buf[j];
-            any |= y;
+    {
+        /* one pass: after j bytes, y[i] is syndrome i of buf[0 .. j) taken as a codeword, so
+         * every length is checked on the way (one pass per length tried before, up to ~200) */
+        uint8_t y[64];
+        memset(y, 0, (size_t)nsym);
+        int best = -1, nmax = lmax + nsym;
+        if (nmax > nbuf) nmax = nbuf;
+        if (nmax > 255) nmax = 255;
+        for (int j = 0; j < nmax; j++) {
+            uint8_t b = buf[j], any = 0;
+            for (int i = 0; i < nsym; i++) { y[i] = RMUL[fcr + i][y[i]] ^ b; any |= y[i]; }
+            if (!any && j + 1 - nsym >= lmin) best = j + 1 - nsym;
         }
-        if (!any) { memcpy(msg_out, buf, L); return L; }
+        if (best >= 0) { memcpy(msg_out, buf, best); return best; }
     }
     for (int L = lmax; L >= lmin; L--) {
         int n = L + nsym;
