@@ -78,7 +78,10 @@ def ds_channels(a):
     if getattr(a, "ds_layout", "up") == "around":
         # --freq (the primary: where the Sagem looks first) in the middle, the others on both
         # sides. 6 channels 306-346 MHz: the modem left 25-47 % of its upstream grants empty
-        # under upload; 290-330 MHz with 306 primary: 0 %, 20.9 Mbit/s up, 247 down (2026-10-11)
+        # under upload; 290-330 MHz with 306 primary: 0 %, 20.9 Mbit/s up, 247 down (2026-10-11).
+        # Likely the same cause as the upstream noise found on 2026-10-12: the RX LO harmonics
+        # (5 x 56.5 = 282.5, 6 x 56.5 = 339 MHz with 2 upstream channels) fold the downstream
+        # channels within ~6.7 MHz of them into the upstream channels; 306-346 sat on the 6th
         k = (a.ds_channels - 1) // 2
     freqs = [a.freq + (j - k) * a.ds_spacing for j in range(a.ds_channels)]
     if os.environ.get("MINI_CMTS_PRIMARY_IDX"):     # diagnostic: the k-th frequency is the primary
@@ -1277,7 +1280,13 @@ def run_usrp(a):
 def parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_argument_group("downstream (comme ds_tx.py)")
-    g.add_argument("--freq", type=float, default=306e6, help="downstream center frequency (Hz); 306 MHz = Sagem bench")
+    g.add_argument("--freq", type=float, default=306e6,
+                   help="primary downstream channel (Hz), on the 8 MHz European raster (114 + 8 n: the Sagem "
+                        "scans it, 310 MHz is never found). With 2 upstream channels the RX LO sits at 56.5 MHz "
+                        "and its 5th harmonic (282.5 MHz) folds the lowest channel of 306 'around' (286-294 MHz) "
+                        "into upstream channel 1: noise -47.6 instead of -60.5 dBFS. 314 (298-338 MHz) avoids it "
+                        "and halves the lost bursts, but gave ~2 Mbit/s less upstream with 8 flows (50 vs 52, "
+                        "2026-10-12): 306 kept. The real cure: a low-pass (diplex) filter before RX2")
     g.add_argument("--gain", type=float, default=None,
                    help="B210 TX gain dB; default 45 (~12 dBmV at the Sagem through one 1:2 splitter; 49 gave "
                         "16.4) plus 10*log10(channels) when bonding, so each channel keeps its level")
