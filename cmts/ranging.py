@@ -719,6 +719,9 @@ class CmtsCore:
             rsp_tlvs += registration.init_channel_timeout(60)
         if bonded and response == 0:
             rcc, rcp_id = registration.receive_channel_config(tlvs, self.bonding)
+            if len(self.bonding) > 8 or not rcp_id:      # what the modem can receive, to choose a profile
+                for line in registration.describe_rcps(tlvs):
+                    self.log(f"[REG] RCP {line}")
             rsp_tlvs += rcc
             if rcp_id:
                 m.dsid = getattr(m, "dsid", None) or self.next_dsid

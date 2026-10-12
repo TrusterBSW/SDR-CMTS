@@ -17,6 +17,15 @@ Split:
     a queue.
 The DOCSIS time base is the same: TX sample 0 goes out at tick t_start * master clock, the radio
 process starts both streams exactly as the single-process loop did.
+
+Several B210s (mini_cmts.py --ds-radios 2): one radio process per device, each with its own ring
+of TS blocks (its share of the bonded channels, adjacent in frequency). The first one (primary)
+also receives the upstream and publishes `origin`, the host time of its device time 0; the others
+(p["follow"]) transmit only, set their device time on that origin and send block k with the same
+timestamp as the primary's block k (the blocks they get before knowing it are dropped, but
+counted). With a common 10 MHz reference (p["clock_source"] = "external") the devices then never
+drift; the residual offset is the host's set_time_now jitter (~0.1-1 ms), within the modem's
+resequencing window (DSID wait time 10 ms).
 """
 import multiprocessing as mp
 import os
@@ -49,26 +58,37 @@ class PacketRing:
         if attach is None:
             ctx = ctx or mp.get_context("spawn")
             self.shm = shared_memory.SharedMemory(create=True, size=size)
+            self.seq_shm = shared_memory.SharedMemory(create=True, size=8 * slots)
             self.free, self.full = ctx.Semaphore(slots), ctx.Semaphore(0)
             self._own = True
         else:
-            name, self.free, self.full = attach
+            name, seq_name, self.free, self.full = attach
             self.shm = shared_memory.SharedMemory(name=name, track=False)
+            self.seq_shm = shared_memory.SharedMemory(name=seq_name, track=False)
             self._own = False
         self.buf = np.ndarray((slots,) + self.shape, np.uint8, self.shm.buf)
+        # each slot's block number (since the MAC's first block): a follower radio times block k
+        # from k itself, so blocks it never got (not started yet, ring full) cannot shift it
+        self.seqs = np.ndarray((slots,), np.int64, self.seq_shm.buf)
         self.w = self.r = 0                    # local indices (one writer, one reader)
+        self.last_seq = -1
 
     def handle(self):
-        return self.shm.name, self.free, self.full
+        return self.shm.name, self.seq_shm.name, self.free, self.full
 
-    def put(self, pks, stop):
-        """pks: one (block, 188) array per channel. False if `stop` was set while waiting."""
-        while not self.free.acquire(timeout=0.2):
+    def put(self, pks, stop, seq=0, wait=True):
+        """pks: one (block, 188) array per channel, seq: the block's number. False if `stop` was
+        set while waiting; wait=False: None (block not queued) when the ring is full."""
+        while not self.free.acquire(timeout=0.2 if wait else 0):
+            if not wait:
+                return None
             if stop.is_set():
                 return False
-        slot = self.buf[self.w % self.slots]
+        i = self.w % self.slots
+        slot = self.buf[i]
         for k, p in enumerate(pks):
             slot[k] = p
+        self.seqs[i] = seq
         self.w += 1
         self.full.release()
         return True
@@ -76,26 +96,32 @@ class PacketRing:
     def get(self, timeout=0.2):
         if not self.full.acquire(timeout=timeout):
             return None
-        out = self.buf[self.r % self.slots].copy()
+        i = self.r % self.slots
+        out = self.buf[i].copy()
+        self.last_seq = int(self.seqs[i])
         self.r += 1
         self.free.release()
         return out
 
     def close(self):
         del self.buf
-        try:
-            self.shm.close()
-            if self._own:
-                self.shm.unlink()
-        except (FileNotFoundError, BufferError):
-            pass
+        del self.seqs
+        for shm in (self.shm, self.seq_shm):
+            try:
+                shm.close()
+                if self._own:
+                    shm.unlink()
+            except (FileNotFoundError, BufferError):
+                pass
 
 
 class RadioProcess:
     """Main-process side: starts the radio process, relays its messages."""
 
-    def __init__(self, params, sample_ring, nch, block, slots, log):
+    def __init__(self, params, sample_ring, nch, block, slots, log, origin=None, name="radio"):
         self._ctx = mp.get_context("spawn")      # no fork of a process holding the GIL's threads
+        self.name = name
+        self._origin = origin                  # shared Value: host time of the primary's device time 0
         self.pk = PacketRing(nch, block, slots, ctx=self._ctx)
         self.params = params
         self.log = log
@@ -107,13 +133,13 @@ class RadioProcess:
         self._agg = {}                         # TX/RX counters since the last status line
         self._lock = threading.Lock()
         sr = sample_ring
-        self._ring = (sr.shm.name, sr.ctl_shm.name, sr.buf.size, sr.fs, sr.decim)
+        self._ring = (sr.shm.name, sr.ctl_shm.name, sr.buf.size, sr.fs, sr.decim) if sr is not None else None
         self._proc = None
 
     def start(self):
-        self._proc = self._ctx.Process(target=radio_main, name="radio",
-                                       args=(self.params, self.pk.handle(), self._ring, self._q, self._stop),
-                                       daemon=True)
+        self._proc = self._ctx.Process(target=radio_main, name=self.name,
+                                       args=(self.params, self.pk.handle(), self._ring, self._q, self._stop,
+                                             self._origin), daemon=True)
         self._proc.start()
         threading.Thread(target=self._events, name="radio-events", daemon=True).start()
 
@@ -235,8 +261,9 @@ class TxChain:
         return self._cdsp.scale_clip(x, self.scale)
 
 
-def radio_main(p, pk_handle, ring_handle, q, stop_ev):
-    """The radio process: see the module docstring. p: dict built by mini_cmts.py."""
+def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None):
+    """The radio process: see the module docstring. p: dict built by mini_cmts.py. origin: shared
+    Value (host time of the primary device's time 0), set by the primary, read by a follower."""
     import faulthandler
     import signal
 
@@ -250,43 +277,61 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
     from cmts.usproc import SampleRing
 
     pk = PacketRing(*p["pk_shape"], attach=pk_handle)
-    shm_name, ctl_name, n, rfs, rdecim = ring_handle
-    ring = SampleRing(rfs, rdecim, attach=(shm_name, ctl_name, n))
+    has_rx = ring_handle is not None and p.get("rx", True)
+    follow = bool(p.get("follow"))
+    tag = p.get("tag", "RADIO")
+    ring = None
+    if has_rx:
+        shm_name, ctl_name, n, rfs, rdecim = ring_handle
+        ring = SampleRing(rfs, rdecim, attach=(shm_name, ctl_name, n))
     mcr, fs_tx = p["mcr"], p["fs_tx"]
     try:
         usrp = uhd.usrp.MultiUSRP(p["args"])
+        if p.get("clock_source", "internal") != "internal":
+            # a common 10 MHz for every B210 (--clock-source external): their master clocks, hence
+            # their symbol clocks, then never drift apart
+            usrp.set_clock_source(p["clock_source"])
+            t_lock = time.time() + 5
+            while not usrp.get_mboard_sensor("ref_locked").to_bool():
+                if time.time() > t_lock:
+                    raise RuntimeError("référence 10 MHz externe non verrouillée (ref_locked) après 5 s")
+                time.sleep(0.1)
         usrp.set_tx_rate(fs_tx)
         usrp.set_tx_freq(uhd.types.TuneRequest(p["tx_center"]))
         usrp.set_tx_bandwidth(p["tx_bw"])
         usrp.set_tx_gain(p["gain"])
         usrp.set_tx_antenna("TX/RX")
-        usrp.set_rx_rate(mcr / p["decim"])
-        if p["rx_lo_off"]:
-            usrp.set_rx_freq(uhd.types.TuneRequest(p["rx_target"], p["rx_lo_off"]))
-        else:
-            usrp.set_rx_freq(uhd.types.TuneRequest(p["rx_target"]))
-        usrp.set_rx_bandwidth(p["rx_bw"])
-        usrp.set_rx_gain(p["rx_gain"])
-        usrp.set_rx_antenna("RX2")
+        if has_rx:
+            usrp.set_rx_rate(mcr / p["decim"])
+            if p["rx_lo_off"]:
+                usrp.set_rx_freq(uhd.types.TuneRequest(p["rx_target"], p["rx_lo_off"]))
+            else:
+                usrp.set_rx_freq(uhd.types.TuneRequest(p["rx_target"]))
+            usrp.set_rx_bandwidth(p["rx_bw"])
+            usrp.set_rx_gain(p["rx_gain"])
+            usrp.set_rx_antenna("RX2")
     except Exception as e:                     # noqa: BLE001 - reported to the main process
         q.put(("fatal", f"B210 : {e}"))
         return
-    rx_err = usrp.get_rx_freq() - p["rx_target"]
-    log(f"[RADIO] master clock {usrp.get_master_clock_rate() / 1e6:.6f} MHz | TX {usrp.get_tx_rate() / 1e6:.6f} MS/s "
+    rx_err = usrp.get_rx_freq() - p["rx_target"] if has_rx else 0.0
+    log(f"[{tag}] master clock {usrp.get_master_clock_rate() / 1e6:.6f} MHz | TX {usrp.get_tx_rate() / 1e6:.6f} MS/s "
         f"@ {usrp.get_tx_freq() / 1e6:.3f} MHz gain {usrp.get_tx_gain()} dB BW {usrp.get_tx_bandwidth() / 1e6:.0f} MHz"
-        f" | RX {usrp.get_rx_rate() / 1e6:.6f} MS/s @ {usrp.get_rx_freq() / 1e6:.4f} MHz "
-        f"(LO {(p['rx_target'] + p['rx_lo_off']) / 1e6:.1f} MHz) gain {usrp.get_rx_gain()} dB")
+        + (f" | RX {usrp.get_rx_rate() / 1e6:.6f} MS/s @ {usrp.get_rx_freq() / 1e6:.4f} MHz "
+           f"(LO {(p['rx_target'] + p['rx_lo_off']) / 1e6:.1f} MHz) gain {usrp.get_rx_gain()} dB" if has_rx else
+           " | émission seule")
+        + f" | horloge {p.get('clock_source', 'internal')}")
     if abs(rx_err) > 1e3:
         log(f"!! fréquence RX obtenue {usrp.get_rx_freq() / 1e6:.4f} MHz au lieu de {p['rx_target'] / 1e6:.4f}")
-    if abs(usrp.get_tx_rate() - fs_tx) / fs_tx > 1e-6 or abs(usrp.get_rx_rate() * p["decim"] - mcr) > 1:
+    if abs(usrp.get_tx_rate() - fs_tx) / fs_tx > 1e-6 or (has_rx and abs(usrp.get_rx_rate() * p["decim"] - mcr) > 1):
         q.put(("fatal", "débits inexacts: la base de temps commune TX/RX serait fausse"))
         return
     tx_args = uhd.usrp.StreamArgs("fc32", "sc16")
     tx_args.args = "underflow_policy=next_packet"
     usrp.set_rx_bandwidth(TX_CAL_RX_BW)        # UHD calibrates the TX quadrature as the streams open
     tx_stream = usrp.get_tx_stream(tx_args)
-    rx_stream = usrp.get_rx_stream(uhd.usrp.StreamArgs("fc32", "sc16"))
-    usrp.set_rx_bandwidth(p["rx_bw"])          # back to the upstream width (TX_CAL_RX_BW)
+    rx_stream = usrp.get_rx_stream(uhd.usrp.StreamArgs("fc32", "sc16")) if has_rx else None
+    if has_rx:
+        usrp.set_rx_bandwidth(p["rx_bw"])      # back to the upstream width (TX_CAL_RX_BW)
 
     stop = threading.Event()
     q_tx = queue.Queue(maxsize=p["tx_queue"])
@@ -304,10 +349,11 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
             blk = pk.get()
             if blk is None:
                 continue
+            seq = pk.last_seq
             x = chain(blk)
             while not stop.is_set():
                 try:
-                    q_tx.put(x, timeout=0.2)
+                    q_tx.put((seq, x), timeout=0.2)
                     break
                 except queue.Full:
                     pass
@@ -352,18 +398,39 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
     wd = StallWatch(log, counters, air_s, l_ms=l_ms)
     for f in (encoder, async_loop, watch_stop):
         threading.Thread(target=f, daemon=True).start()
-    while q_tx.qsize() < p["tx_queue"]:
-        if stop.is_set():
-            return
-        time.sleep(0.005)
     t_start = p["t_start"]
-    usrp.set_time_now(uhd.types.TimeSpec(0.0))
-    wall0 = time.time() + t_start
-    cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
-    cmd.stream_now = False
-    cmd.time_spec = uhd.types.TimeSpec(t_start)
-    rx_stream.issue_stream_cmd(cmd)
-    threading.Thread(target=rx_loop, daemon=True).start()
+    if follow:
+        # a follower: the blocks it gets before the primary's origin is known are dropped but
+        # counted (n_sent), so that its block k keeps the timestamp of the primary's block k
+        while origin is None or origin.value <= 0:
+            if stop.is_set():
+                return
+            try:
+                q_tx.get(timeout=0.05)          # (dropped: the block numbers keep the timing)
+            except queue.Empty:
+                pass
+        h0 = time.time()
+        usrp.set_time_now(uhd.types.TimeSpec(h0 - origin.value))
+        h1 = time.time()
+        wall0 = origin.value + t_start
+        log(f"[{tag}] horloge alignée sur la radio principale (appel {1e3 * (h1 - h0):.2f} ms)")
+    else:
+        while q_tx.qsize() < p["tx_queue"]:
+            if stop.is_set():
+                return
+            time.sleep(0.005)
+        h0 = time.time()
+        usrp.set_time_now(uhd.types.TimeSpec(0.0))
+        h1 = time.time()
+        if origin is not None:
+            origin.value = (h0 + h1) / 2           # host time of device time 0, for the followers
+        wall0 = time.time() + t_start
+        cmd = uhd.types.StreamCMD(uhd.types.StreamMode.start_cont)
+        cmd.stream_now = False
+        cmd.time_spec = uhd.types.TimeSpec(t_start)
+        if rx_stream is not None:
+            rx_stream.issue_stream_cmd(cmd)
+            threading.Thread(target=rx_loop, daemon=True).start()
     q.put(("started", wall0))
     md = uhd.types.TXMetadata()
     md.start_of_burst = True
@@ -373,12 +440,15 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
     tick0 = round(t_start * mcr)
     ticks_per_sample = round(mcr / fs_tx)
     usb_ms = p["tx_frames"] * spp / fs_tx * 1e3
-    log(f"[RADIO] émission (processus séparé, pid {os.getpid()}) ; latence downstream "
+    log(f"[{tag}] émission (processus séparé, pid {os.getpid()}) ; latence downstream "
         f"~{(p['tx_queue'] + 3) * p['blk_ms'] + usb_ms:.0f} ms (T3 du modem: 200 ms), réserve USB {usb_ms:.0f} ms")
     t_last = time.time()
     wd.last = time.perf_counter()
     wd.armed_at = wd.last + t_start + 0.5
     sync = (-1e9, 0.0)
+    if follow:                                 # on the primary's timeline already: catch up at once
+        p0 = time.perf_counter()
+        sync = (p0, usrp.get_time_now().get_real_secs())
     t_skip_log = 0.0
     catching_up = False
     m_min = float("inf")
@@ -386,9 +456,11 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
     try:
         while not stop.is_set():
             try:
-                x = q_tx.get(timeout=0.2)
+                seq, x = q_tx.get(timeout=0.2)
             except queue.Empty:
                 continue
+            if follow:                         # block seq of the primary's timeline
+                n_sent[0] = seq * x.size
             # local catch-up with hysteresis, as in the single-process loop (mini_cmts.py)
             if sync[0] > 0 and not p["tx_untimed"]:
                 ahead = t_start + n_sent[0] / fs_tx - (sync[1] + time.perf_counter() - sync[0])
@@ -433,11 +505,13 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev):
         pass
     finally:
         stop.set()
-        rx_stream.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
+        if rx_stream is not None:
+            rx_stream.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
         md.end_of_burst = True
         tx_stream.send(np.zeros(1000, dtype=np.complex64), md)
         if counters["U"] or counters["L"]:
             log(f"!! TX: {counters['U']} underflows, {counters['L']} paquets en retard jetés "
                 f"(~{l_ms(counters['L']):.0f} ms de downstream)")
         pk.close()
-        ring.detach()
+        if ring is not None:
+            ring.detach()

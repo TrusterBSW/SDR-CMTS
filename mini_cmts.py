@@ -30,6 +30,7 @@ import atexit
 import collections
 import cProfile
 import glob
+import multiprocessing as mp
 import os
 import subprocess
 import queue
@@ -90,14 +91,32 @@ def ds_channels(a):
     return [(j + 1, f) for j, f in enumerate(freqs)]
 
 
+def radio_channels(a):
+    """Downstream channels per B210: the largest share of --ds-channels over --ds-radios."""
+    return -(-a.ds_channels // max(1, int(getattr(a, "ds_radios", 1) or 1)))
+
+
+def radio_groups(chans, nradios):
+    """Bonded channels -> one list of indices into `chans` per B210: blocks of adjacent frequencies
+    (each device synthesizes a band of at most 6 x 8 MHz around its own TX centre)."""
+    order = sorted(range(len(chans)), key=lambda i: chans[i][1])
+    n = -(-len(chans) // nradios)
+    return [order[r * n:(r + 1) * n] for r in range(nradios) if order[r * n:(r + 1) * n]]
+
+
 def build(a, log=print):
     if a.gain is None:                         # same level per channel whatever their number
         # 45 for one channel (~12 dBmV at the Sagem); bonded: +10 log10(N) to keep each channel's
         # level, +2 dB (the 2-channel bench ran at 50 for its best results, 2026-10-10)
-        a.gain = 45 + round(10 * np.log10(max(1, a.ds_channels))) + (2 if a.ds_channels > 1 else 0)
+        a.gain = 45 + round(10 * np.log10(max(1, radio_channels(a)))) + (2 if a.ds_channels > 1 else 0)
+    a.ds_radios = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    if a.ds_channels > 6 * a.ds_radios:
+        sys.exit(f"--ds-channels : 1 à 6 par B210 ({6 * a.ds_radios} avec --ds-radios {a.ds_radios}) ; "
+                 f"au-delà, la bande du B210 et l'USB ne suivent plus")
+    if a.ds_radios > 1 and not a.radio_process:
+        sys.exit("--ds-radios > 1 : avec --radio-process uniquement")
+    nr = radio_channels(a)                     # channels per B210 (the largest share)
     if a.ds_channels > 1:
-        if a.ds_channels > 6:
-            sys.exit("--ds-channels : 1 à 6 (au-delà, la bande du B210 et le processeur ne suivent plus)")
         # N 8 MHz channels side by side, each shaped at `sps` samples per symbol = master clock and
         # shifted around the TX centre.
         # 1-3 channels: 27.808 MS/s (3 channels at -8/0/+8 MHz fill +-12 of the +-13.9 MHz band).
@@ -107,13 +126,13 @@ def build(a, log=print):
         # RX filter at the upstream width and failed from 41.712 MHz on (radio.TX_CAL_RX_BW).
         # Since that fix it locks at 41.712 and 55.616 MHz; 5-6 channels at 55.616 MS/s run on the
         # Proxmox host with the AVX2 synthesis and 16 KB USB frames (2026-10-11).
-        a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
-        if a.ds_channels >= 4:
+        a.sps = 4 if nr <= 3 else (5 if nr <= 4 else 8)
+        if nr >= 4:
             # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
             # channels, AVX2: ~0.17 core per channel at 55.6 MS/s). One per channel (6 at 55.6 MS/s)
             # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
             # behind, ping 86-388 ms (2026-10-10)
-            a.synth_threads = max(a.synth_threads, (a.ds_channels + 1) // 2)
+            a.synth_threads = max(a.synth_threads, (nr + 1) // 2)
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
@@ -493,7 +512,9 @@ def raise_priority(prio):
 def tx_cores(a):
     """Cores the transmit side (radio, MAC layer, bridge) needs to itself: 6 DS + 2 US with 3
     was late on the Proxmox host; 4 DS + 2 US with 3 and 6 DS + 1 US with 4 ran (2026-10-11)."""
-    return 4 if a.ds_channels >= 5 else (3 if a.ds_channels == 4 else 2)
+    nr = radio_channels(a)
+    per = 4 if nr >= 5 else (3 if nr == 4 else 2)
+    return per + 3 * (max(1, int(getattr(a, "ds_radios", 1) or 1)) - 1)   # (a further radio: ~2.2 cores + its share of MAC)
 
 
 def _all_tasks(pid):
@@ -854,17 +875,38 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
         rx_bw = min(56e6, 2 * (abs(lo_off) + 2e6))
     t_start = 0.5
     blk_ms = a.block * 204 * 8 / (SYMRATE * mux.m) * 1e3
-    params = dict(args=args, mcr=mcr, fs_tx=fs_tx, tx_center=tx_center, tx_bw=min(56e6, max(20e6, 1.5 * span)),
-                  gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
-                  rx_gain=a.us_gain, steps=[2 * np.pi * (f - tx_center) / fs_tx for _, f in chans],
-                  qams=[a.qam] * len(chans), sps=a.sps, invert=mux.invert, scale=a.scale,
-                  synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
-                  tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
-                  pk_shape=(len(chans), a.block, 2))
-    # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
-    radio = RadioProcess(params, rx.ring, len(chans), a.block, 2, log)
-    radio.start()
-    stop = threading.Event()
+    nradios = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    groups = radio_groups(chans, nradios)
+    serials = [s.strip() for s in getattr(a, "radio_serials", "").split(",") if s.strip()]
+    if nradios > 1 and len(serials) < len(groups):
+        log("!! --ds-radios > 1 sans --radio-serials pour chaque B210 : UHD choisira lui-même l'appareil de "
+            "chaque radio (uhd_find_devices donne les numéros de série)")
+    ctx = mp.get_context("spawn")
+    origin = ctx.Value("d", 0.0) if len(groups) > 1 else None
+    radios = []
+    for r, g in enumerate(groups):
+        fr = [chans[i][1] for i in g]
+        center = (min(fr) + max(fr)) / 2 if len(groups) > 1 else tx_center
+        span_r = (max(fr) - min(fr)) + 8e6
+        args_r = args + (f",serial={serials[r]}" if r < len(serials) else "")
+        params = dict(args=args_r, mcr=mcr, fs_tx=fs_tx, tx_center=center, tx_bw=min(56e6, max(20e6, 1.5 * span_r)),
+                      gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
+                      rx_gain=a.us_gain, steps=[2 * np.pi * (f - center) / fs_tx for f in fr],
+                      qams=[a.qam] * len(g), sps=a.sps, invert=mux.invert, scale=a.scale,
+                      synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
+                      tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
+                      pk_shape=(len(g), a.block, 2), rx=(r == 0), follow=(r > 0),
+                      clock_source=getattr(a, "clock_source", "internal"),
+                      tag="RADIO" if r == 0 else f"RADIO{r + 1}")
+        # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
+        radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, 2, log,
+                                   origin=origin, name="radio" if r == 0 else f"radio{r + 1}"))
+        if len(groups) > 1:
+            log(f"[RADIO{r + 1}] {len(g)} canaux " + ", ".join(f"{f / 1e6:.0f}" for f in fr)
+                + f" MHz, centre {center / 1e6:.0f} MHz" + (f", B210 {serials[r]}" if r < len(serials) else ""))
+    radio = radios[0]
+    radio.start()                                 # the followers once it is on the air (below):
+    stop = threading.Event()                      # two processes opening "a B210" could swap them
 
     # diagnostic: MINI_CMTS_TSDUMP=<file> writes the TS blocks of every channel (channels x block x
     # 188 bytes per block) for MINI_CMTS_TSDUMP_S seconds once <file>.go exists
@@ -873,6 +915,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
 
     def encoder():
         nonlocal dump_f, dump_end
+        seq = 0
         while not stop.is_set():
             pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
             if dump and dump_f is None and dump_end is None and os.path.exists(dump + ".go"):
@@ -884,15 +927,27 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                     dump_f.close()
                     dump_f = None
                     log(f"[TS] flux enregistré dans {dump}")
-            if not radio.pk.put(pks, stop):
+            if not radio.pk.put([pks[i] for i in groups[0]], stop, seq):
                 return
+            for rp, g in zip(radios[1:], groups[1:]):
+                # a follower never holds the MAC back: not started, dead or late, its block is dropped
+                # (it times every block from its number, so a gap cannot shift it)
+                if rp.alive() and not rp.failed:
+                    rp.pk.put([pks[i] for i in g], stop, seq, wait=False)
+            seq += 1
     threading.Thread(target=encoder, name="encoder", daemon=True).start()
     radio.started.wait()
     if radio.failed:
         stop.set()
-        radio.stop()
+        for rp in radios:
+            rp.stop()
         log(f"!! {radio.failed}")
         return 1
+    for rp in radios[1:]:
+        rp.start()
+    for rp in radios[1:]:                         # a follower: on air within a few blocks, or missing
+        if not rp.started.wait(15) or rp.failed:
+            log(f"!! {rp.name} : {rp.failed or 'pas démarrée en 10 s'} ; ses canaux descendants manquent")
     wall0[0] = radio.wall0
     tb.origin += round(t_start * mcr)             # TX sample 0 goes out at tick t_start * mcr
     br = start_bridge(a, mux, core, stop)
@@ -900,10 +955,11 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     for r in rxs:
         r.start()                                 # the time base is final from here on
     log("réception montante dans un processus séparé (cmts/usproc.py)"
-        + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "") + f" ; radio : pid {radio.pid}")
+        + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "")
+        + f" ; radio : pid {', '.join(str(rp.pid) for rp in radios)}")
     if a.cpus == "auto":
-        log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid], tx_need=tx_cores(a), mode=a.us_cpus,
-                       prio=a.rt_prio))
+        log(split_cpus([r.pid for r in rxs], shared_pids=[rp.pid for rp in radios], tx_need=tx_cores(a),
+                       mode=a.us_cpus, prio=a.rt_prio))
     fill_prev = {}
     try:
         while True:
@@ -911,17 +967,23 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             if not radio.alive():
                 log("!! processus radio arrêté")
                 break
+            for rp in radios[1:]:
+                if not rp.alive() and not getattr(rp, "_dead_logged", False):
+                    rp._dead_logged = True
+                    log(f"!! {rp.name} arrêtée : ses canaux descendants manquent, le reste continue")
             st = mux.stats
             split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
             pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{ds_fill(mux, fill_prev)}file DS "
                     f"{len(mux.data)}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
             st["data_max_ms"] = 0.0
-            log("\n" + status_line(mux, core, rx, radio.status() + pont))
+            tx = radio.status() + "".join(f"{rp.name} : {rp.status()}" for rp in radios[1:])
+            log("\n" + status_line(mux, core, rx, tx + pont))
     except KeyboardInterrupt:
         pass
     finally:
         stop.set()
-        radio.stop()
+        for rp in radios:
+            rp.stop()
         for r in rxs:
             r.stop()
         if not rx._own_ring:
@@ -1402,9 +1464,18 @@ def parser():
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=6,
-                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1-6 (5-6: master clock "
-                        "55.616 MHz; 6 with --ds-layout around: 234-258 / 21 Mbit/s on the Proxmox host, "
-                        "2026-10-11)")
+                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1-6 per B210 (5-6: master "
+                        "clock 55.616 MHz; 6 with --ds-layout around: 234-258 / 21 Mbit/s on the Proxmox host, "
+                        "2026-10-11); up to 6 x --ds-radios")
+    g.add_argument("--ds-radios", type=int, default=1,
+                   help="B210s sharing the downstream channels (2: up to 12 channels, 6 per device, each "
+                        "device a block of adjacent channels; the first one also receives the upstream). "
+                        "Use --radio-serials and, for no drift between them, --clock-source external")
+    g.add_argument("--radio-serials", default="",
+                   help="serial numbers of the B210s, comma separated, in --ds-radios order (uhd_find_devices)")
+    g.add_argument("--clock-source", default="internal", choices=("internal", "external", "gpsdo"),
+                   help="reference of every B210: external = their 10 MHz inputs (one common source, e.g. a "
+                        "HackRF CLKOUT through a splitter: no drift between the devices)")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=True,

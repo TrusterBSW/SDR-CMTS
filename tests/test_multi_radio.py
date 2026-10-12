@@ -1,0 +1,83 @@
+"""Several B210s (mini_cmts --ds-radios 2): the bonded channels split into blocks of adjacent
+frequencies, one per device; the RCC of 12 channels over the receive modules of a 16-channel
+profile (MULPIv3.0 C.1.5.3); 6 channels keep the former single-module RCC."""
+import os
+import struct
+import sys
+import types
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import mini_cmts  # noqa: E402
+from cmts import cmcfg, registration  # noqa: E402
+
+ok_all = True
+
+
+def check(name, ok, detail=""):
+    global ok_all
+    ok_all &= bool(ok)
+    print(f"{'OK ' if ok else 'KO '} {name}" + (f" : {detail}" if detail else ""))
+
+
+T = cmcfg.tlv
+
+
+def rcp(rcp_id, nmods, nadj, nrc, per_module=8, primary_rcs=(1,)):
+    """A Receive Channel Profile: nmods modules of nadj adjacent channels, nrc receive channels,
+    channel i connected to module (i - 1) // per_module + 1."""
+    body = T(1, rcp_id) + T(2, b"TEST") + T(3, b"\x02")
+    for m in range(1, nmods + 1):
+        rng = T(1, struct.pack(">I", 112_000_000)) + T(2, struct.pack(">I", 858_000_000))
+        body += T(4, T(1, bytes([m])) + T(2, bytes([nadj])) + T(3, rng))
+    for i in range(1, nrc + 1):
+        m = (i - 1) // per_module + 1
+        sub = T(1, bytes([i])) + T(2, registration._bits(m, 1))
+        if i in primary_rcs:
+            sub += T(5, b"\x01")
+        body += T(5, sub)
+    return 48, body
+
+
+# ---- channel split between the devices
+a = types.SimpleNamespace(ds_channels=12, ds_radios=2, freq=306e6, ds_spacing=8e6, ds_layout="around")
+chans = mini_cmts.ds_channels(a)
+groups = mini_cmts.radio_groups(chans, 2)
+f = [[chans[i][1] / 1e6 for i in g] for g in groups]
+check("12 canaux 'around' : primaire à 306 MHz", chans[0] == (1, 306e6), str(chans[:2]))
+check("2 B210 : deux blocs de 6 canaux adjacents", [len(x) for x in f] == [6, 6]
+      and max(f[0]) < min(f[1]) and max(f[0]) - min(f[0]) == 40 and max(f[1]) - min(f[1]) == 40, str(f))
+check("6 canaux par B210 au plus", mini_cmts.radio_channels(a) == 6)
+a1 = types.SimpleNamespace(ds_channels=6, ds_radios=1)
+check("1 B210 : inchangé", mini_cmts.radio_groups(mini_cmts.ds_channels(types.SimpleNamespace(
+    ds_channels=6, freq=306e6, ds_spacing=8e6, ds_layout="around")), 1) == [[5, 1, 2, 0, 3, 4]]
+    or len(mini_cmts.radio_groups(mini_cmts.ds_channels(types.SimpleNamespace(
+        ds_channels=6, freq=306e6, ds_spacing=8e6, ds_layout="around")), 1)[0]) == 6)
+
+# ---- RCC
+tlvs = [rcp(b"\x00\x10\x00\x10\x08", 1, 8, 8), rcp(b"\x00\x10\x00\x10\x16", 2, 8, 16)]
+rcc, rid = registration.receive_channel_config(tlvs, chans)
+check("12 canaux : profil 16 canaux choisi", rid == b"\x00\x10\x00\x10\x16", rid and rid.hex())
+body = cmcfg.parse(cmcfg.parse(rcc)[0][1]) if rcc else []
+mods = [dict(cmcfg.parse(v)) for k, v in body if k == 4]
+rcs = [dict(cmcfg.parse(v)) for k, v in body if k == 5]
+firsts = sorted(struct.unpack(">I", m[4])[0] / 1e6 for m in mods)
+check("deux modules, chacun sur un bloc de 8 canaux au plus", len(mods) == 2 and firsts == [266.0, 330.0], str(firsts))
+check("12 canaux de réception, chacun relié à un seul module", len(rcs) == 12
+      and all(len(registration._bits_set(r[2])) == 1 for r in rcs))
+by_mod = {}
+for r in rcs:
+    m = min(registration._bits_set(r[2]))
+    by_mod.setdefault(m, []).append(struct.unpack(">I", r[4])[0])
+spans = {m: (max(v) - min(v)) / 8e6 + 1 for m, v in by_mod.items()}
+check("chaque module tient ses canaux dans 8 positions", all(s <= 8 for s in spans.values()), str(spans))
+prim = [r for r in rcs if 5 in r]
+check("le primaire (306 MHz) sur le canal de réception capable d'être primaire",
+      len(prim) == 1 and struct.unpack(">I", prim[0][4])[0] == 306_000_000 and prim[0][1] == b"\x01",
+      str([(p[1].hex(), struct.unpack('>I', p[4])[0]) for p in prim]))
+rcc6, rid6 = registration.receive_channel_config(tlvs, chans[:6])
+check("6 canaux : le RCC d'avant (un module, profil 8 canaux)", rid6 == b"\x00\x10\x00\x10\x08"
+      and len([1 for k, v in cmcfg.parse(cmcfg.parse(rcc6)[0][1]) if k == 4]) == 1)
+check("profil trop petit : pas de RCC", registration.receive_channel_config([tlvs[0]], chans) == (b"", None))
+print("\n".join("   " + l for l in registration.describe_rcps(tlvs)))
+print("PASS" if ok_all else "FAIL")
+sys.exit(0 if ok_all else 1)
