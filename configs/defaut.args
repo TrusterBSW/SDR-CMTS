@@ -1,0 +1,6 @@
+# Banc Proxmox, configuration de référence (12/10/2026) : 6 DS + 2 US
+#   /root/cmts-tools/run.sh <nom> @configs/defaut.args [options en plus]
+# Les autres réglages (6 DS « around » autour de 306 MHz, --mtc-std, --mtc-owed, --ds-aqm 30,
+# tampon montant du modem 128 Ko) sont déjà les défauts.
+--us-channels 2
+--us-target -20

@@ -165,6 +165,38 @@ def describe(tlvs, indent="   "):
             lines.append(f"{indent}{t:3d} {name}: {subs}")
         elif t in (6, 7):
             lines.append(f"{indent}{t:3d} {name}: {v.hex()}")
+        elif t == 48:
+            lines.append(f"{indent}{t:3d} profil de réception (RCP) {describe_rcp(v)}")
         else:
             lines.append(f"{indent}{t:3d} {name}: {_val(v)}")
     return lines
+
+
+def _bits_index(value):
+    """Indexes set in a DOCSIS BITS value (bit 0 = MSB of the first byte)."""
+    return [8 * i + j for i, b in enumerate(value) for j in range(8) if b & (0x80 >> j)]
+
+
+def describe_rcp(v):
+    """A Receive Channel Profile (REG-REQ-MP TLV 48, MULPIv3.0 C.1.5.3) in one line: its ID and
+    name, its receive modules (index: adjacent channels @ frequency range in MHz) and receive
+    channels (index > module(s), P = primary-capable)."""
+    try:
+        sub = parse(v)
+    except ValueError:
+        return v.hex()
+    d = dict(sub)
+    mods = []
+    for s, x in sub:
+        if s == 4:
+            m = dict(parse(x))
+            rng = ""
+            if 3 in m:
+                r = dict(parse(m[3]))
+                rng = "@" + "-".join(f"{struct.unpack('>I', r[k])[0] / 1e6:.0f}" for k in (1, 2) if k in r)
+            mods.append(f"M{m.get(1, b'?')[0]}:{m[2][0] if 2 in m else '-'}{rng}")
+    rcs = [dict(parse(x)) for s, x in sub if s == 5]
+    conn = ",".join(f"{r.get(1, b'?')[0]}>{'+'.join(map(str, _bits_index(r.get(2, b''))))}"
+                    + ("P" if 5 in r else "") for r in rcs)
+    return (f"{d.get(1, b'').hex()} « {d.get(2, b'').decode(errors='replace')} » : "
+            f"modules {' '.join(mods) or '-'} ; {len(rcs)} canaux ({conn})")

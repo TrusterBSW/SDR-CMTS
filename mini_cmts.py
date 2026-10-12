@@ -1339,8 +1339,17 @@ def run_usrp(a):
                   "reste calé sur la base de temps, mais chaque trou peut faire décrocher le modem un instant")
 
 
+class _ArgsFileParser(argparse.ArgumentParser):
+    """`mini_cmts.py @configs/lab.args [more options]`: the options of a file, several per line
+    if wanted, `#` comments; options given after the file override it (the last one wins)."""
+
+    def convert_arg_line_to_args(self, line):
+        return shlex.split(line, comments=True)
+
+
 def parser():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = _ArgsFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                         fromfile_prefix_chars="@")
     g = ap.add_argument_group("downstream (comme ds_tx.py)")
     g.add_argument("--freq", type=float, default=306e6,
                    help="primary downstream channel (Hz), on the 8 MHz European raster (114 + 8 n: the Sagem "
