@@ -120,7 +120,9 @@ def build(secret, ds_rate=50_000_000, us_rate=5_000_000, max_cpe=4, network_acce
 def check(buf, secret=None):
     """Config file bytes -> (tlvs, problems): CM MIC and (if a secret is given) CMTS MIC."""
     tlvs, problems = parse(buf), []
-    i = buf.find(bytes([CM_MIC, 16]))
+    i = 0                                 # offset of the CM MIC TLV: walk the TLVs, since the
+    while i < len(buf) and buf[i] not in (CM_MIC, END):     # bytes 06 10 may occur in a value
+        i += 1 if buf[i] == PAD else 2 + buf[i + 1]
     mic = dict(tlvs).get(CM_MIC)
     if mic is None:
         problems.append("pas de CM MIC")
