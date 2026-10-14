@@ -4,3 +4,6 @@
 # tampon montant du modem 128 Ko) sont déjà les défauts.
 --us-channels 2
 --us-target -20
+# Appareils derrière les modems : DNS public (il faut aussi le NAT de 10.10.0.0/24 sur le Proxmox,
+# voir PASSATION.fr.md) ; jusqu'à 16 appareils par modem (défaut de provision.py)
+"--prov-args=--dns 1.1.1.1"
