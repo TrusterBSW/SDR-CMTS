@@ -74,6 +74,8 @@ class Dhcp:
         if docsis:
             fname = self.a.config_name.encode()
             opts += [(66, str(self.server).encode()), (67, fname), (7, self.server.packed)]
+        elif self.a.dns:                       # a device behind a modem: name servers (--dns)
+            opts.append((6, b"".join(ipaddress.IPv4Address(d).packed for d in self.a.dns.split(","))))
         p = struct.pack(">BBBBIHH", 2, 1, 6, 0, req["xid"], 0, req["flags"])
         p += bytes(4) + (yiaddr.packed if yiaddr else bytes(4)) + self.server.packed
         p += ipaddress.IPv4Address(req["giaddr"]).packed + req["chaddr"].ljust(16, b"\0")
@@ -233,7 +235,12 @@ def parser():
                     help="generated config: upstream Maximum Traffic Burst (bytes, TLV 24.9; DOCSIS default 3044). "
                          "The modem never requests more than this at once: with a ~60 ms request-to-grant cycle, "
                          "3044 B held the Sagem's upload to ~3.5 Mbit/s (2026-10-09)")
-    ap.add_argument("--max-cpe", type=int, default=4, help="generated config: CPE devices allowed")
+    ap.add_argument("--max-cpe", type=int, default=16,
+                    help="generated config: CPE devices allowed behind a modem (a Sagemcom set-top box alone "
+                         "uses 5 MAC addresses, 2026-10-14)")
+    ap.add_argument("--dns", default="",
+                    help="name servers given by DHCP to the devices behind the modems, comma separated (e.g. "
+                         "1.1.1.1; with NAT of the cable network on the host for Internet access); default none")
     ap.add_argument("--no-network-access", action="store_true", help="generated config: network access off")
     ap.add_argument("--snmp-community", metavar="NAME",
                     help="generated config: let the modem answer SNMP (read-only) with this community from "
