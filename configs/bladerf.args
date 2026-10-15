@@ -4,11 +4,16 @@
 --sdr bladerf
 # "" = le premier bladeRF trouvé ; sinon "*:serial=<numéro>"
 "--sdr-args="
---us-channels 2
+--us-channels 1
+# bladeRF 2.0 micro : réception à partir de 70 MHz → un seul canal montant, sous son oscillateur
+--us-freq 61.8e6
 --us-target -20
+# gain RX : son échelle diffère du B210 ; à 20 dB le Sagem arrivait à −17 dBFS déjà à sa puissance minimale
+# (ranging jamais « success »)
+--us-gain 14
 "--prov-args=--dns 1.1.1.1"
 --ds-channels 3
 # gain TX à l'échelle libbladeRF (pas celle du B210) : à régler avec la page d'état du modem,
-# 5 à 10 dBmV par canal descendant
---gain 30
+# 5 à 10 dBmV par canal descendant (50 : canaux à −20 dBFS vus par un B210 témoin, le modem range)
+--gain 50
 --cpus 2-7,18-23

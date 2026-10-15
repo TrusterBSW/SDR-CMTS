@@ -54,6 +54,7 @@ Also working (experimental, 2026-10-10, not the defaults):
 
 - USRP B210 on a **dedicated USB 3 controller**, Linux PC (tested: Arch Linux, UHD 4.9,
   Python 3.14, 4 cores / 8 threads laptop).
+- Or a **bladeRF 2.0 micro** (`--sdr bladerf`, 3 DS + 1 US): see `docs/BLADERF.md`.
 - One 1:2 splitter (coupler A), one 8 dB attenuator, a second 1:2 splitter for monitoring.
 
 ```
@@ -100,7 +101,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--mtc-owed` | on | multi-channel requests added up (the modem only requests new bytes), granted on every channel each MAP, Data Grant Pending while bytes are owed; `--no-mtc-owed`: each request replaces the previous one |
 | `--ds-aqm` | 30 ms | CoDel on the downstream queues: a few frames dropped one at a time instead of bursts at the `--ds-queue-ms` limit; ping during a download 88 -> 55 ms; 0 = off |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
-| `--sdr`, `--sdr-args` | b210, — | `bladerf`: a bladeRF 2.0 micro (libbladeRF called directly, `cmts/sdrdev.py`) instead of the B210, TX1 to the modem, RX1 for the upstream; TX and RX at the same sample rate, hence 3 DS at most; `--sdr-args "*:serial=…"` picks the board. Check first: `tools/bladerf_check.py --loop` |
+| `--sdr`, `--sdr-args` | b210, — | `bladerf`: a **bladeRF 2.0 micro** instead of the B210 (libbladeRF called directly, `cmts/sdrdev.py`), TX1 to the modem, RX1 for the upstream. Validated with **3 DS + 1 US** (138 / 24.5 Mbit/s): TX and RX at one sample rate (27.8 MS/s at most in 16 bits), RX from 70 MHz (one upstream channel, at 61.8 MHz). `--sdr-args "*:serial=…"` picks the board. Choices, pitfalls and limits: `docs/BLADERF.md`; check: `tools/bladerf_check.py --loop` |
 | `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | several radios (branch `multi-b210`): the downstream channels split into adjacent blocks, one radio per block; the first one also receives the upstream. Without a common 10 MHz (`internal`), the follower realigns on the primary by groups of 8 MPEG packets (drift measured between two B210s: 2.5 ppm, 8.9 ms/h); 2 B210s with 2 + 2 DS: 189 / 50 Mbit/s |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways); `--us-buffer` (default 128 KB) sets the modem's upstream buffer (TLV 24.35): ping during an upload 237 -> 93 ms |
 

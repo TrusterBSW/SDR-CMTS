@@ -47,7 +47,7 @@ from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
-from cmts.sdrdev import TX_CAL_RX_BW
+from cmts.sdrdev import BLADERF2_RX_MIN_HZ, TX_CAL_RX_BW
 from cmts.usproc import RemoteUpstream, SampleRing
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
@@ -168,7 +168,9 @@ def build(a, log=print):
         rx = UpstreamRx(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, log=log, **rx_kw)
     core.ms_syms = int(round(a.minislot * 6.25e-6 * symrate))
     core.us_bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
-    if a.us_channels > 1:
+    if a.us_channels > 1 or getattr(a, "sdr", "b210") == "bladerf":
+        # (the bladeRF also with one channel: no FPGA tuning there, the DDC of the upstream process
+        # takes the channel out of the wideband stream, away from an LO that cannot go below 70 MHz)
         rx, decim = build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log)
         mux.on_grants = lambda g: rx.add_grants(core.mark_grants(g))     # segment grants flagged
     else:
@@ -223,16 +225,25 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     a.us_center = (chans[0][1] + chans[-1][1]) / 2
     width = symrate * 1.25
     span = abs(chans[-1][1] - chans[0][1]) + width
+    if getattr(a, "sdr", "b210") == "bladerf" and a.us_center < BLADERF2_RX_MIN_HZ:
+        # its RX LO stops at 70 MHz: the channels below it, the DDC shifts them back
+        a.us_center = BLADERF2_RX_MIN_HZ
+        reach = max(abs(f - a.us_center) for _, f in chans) + width / 2
+        if reach > 0.42 * mcr:
+            sys.exit(f"bladeRF : réception à partir de 70 MHz seulement ; le canal montant le plus éloigné en est "
+                     f"à {reach / 1e6:.1f} MHz (bord compris), plus que les {0.42 * mcr / 1e6:.1f} MHz utiles à "
+                     f"{mcr / 1e6:.3f} MS/s : un seul canal montant, entre ~59 et 65 MHz (--us-freq 61.8e6)")
+        span = 2 * reach
     if max(f for _, f in chans) + width / 2 > 65e6:
         log(f"!! canal montant au-delà de 65 MHz : hors de la bande montante EuroDOCSIS, le modem refuse "
             f"le TCC (REG-ACK 209, reject-bad-tcc, vu le 2026-10-10 avec 67 MHz)")
-    if span > 0.8 * mcr:
+    if span > 0.8 * mcr and getattr(a, "sdr", "b210") != "bladerf":
         sys.exit(f"--us-channels/--us-spacing : {span / 1e6:.1f} MHz à "
                  f"recevoir, plus que les {0.8 * mcr / 1e6:.1f} MHz utiles à {mcr / 1e6:.3f} MS/s")
     # powers of 2 only: the B210's FPGA decimates by 2 with half-band filters; an odd factor goes
     # through its CIC alone, and 5 DS + 2 US at 55.616 MHz / 3 left the upstream at MER 14 dB
     # instead of 26 (2026-10-10). At /2 the same pair took 333 MB/s of USB: TX late, RX overflows.
-    decim = max(d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d)
+    decim = max((d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d), default=1)
     if getattr(a, "sdr", "b210") == "bladerf":
         decim = 1                               # (no FPGA decimation: the upstream processes decimate)
         if mcr > 30.72e6:
@@ -907,9 +918,12 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     if a.tx_dc_cal:
         log("!! --tx-dc-cal ignoré avec --radio-process")
     span = (max(f for _, f in chans) - min(f for _, f in chans)) + 8e6
-    if a.us_channels > 1:
+    if a.us_channels > 1 or a.sdr == "bladerf":
         rx_target, lo_off = a.us_center, 0.0
         rx_bw = min(56e6, abs(a.us_spacing) * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6)
+        if a.sdr == "bladerf":                  # the channels may sit well off its LO (70 MHz minimum)
+            reach = max(abs(f - a.us_center) for _, f in us_channels(a)) + a.us_rate * US_SYM_UNIT * 1.25 / 2
+            rx_bw = min(56e6, max(rx_bw, 2 * reach + 2e6))
     else:
         rx_target, lo_off = a.us_freq, rx_lo_offset(a)
         rx_bw = min(56e6, 2 * (abs(lo_off) + 2e6))

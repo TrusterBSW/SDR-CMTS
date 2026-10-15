@@ -15,11 +15,12 @@ Interface (times in seconds of the device clock, ticks at p["mcr"]):
   tx_spp                     samples per TX packet (USB reserve computations)
   set_time(t), time_now()    device clock
   start_rx(t)                RX stream from device time t
-  recv(buf) -> (n, tick, overflow)
+  recv(buf) -> (n, tick, overflow)  (samples may come with an overflow flag: placed by their tick)
   send(x, tick, first)       timed when tick is not None, the burst opened when first
   end_burst()
   tx_event(timeout) -> 'U' (underflow), 'L' (late), None
   stop_rx()
+  close()                    (bladeRF: the device again free for another open in this process)
 """
 import time
 
@@ -180,9 +181,13 @@ RX_X1, TX_X1 = 0, 1                       # bladerf_channel_layout
 DIR_RX, DIR_TX = 0, 1                     # bladerf_direction
 GAIN_MGC = 1                              # bladerf_gain_mode: BLADERF_GAIN_DEFAULT, BLADERF_GAIN_MGC
 META_TX_BURST_START, META_TX_BURST_END, META_TX_UPDATE_TIMESTAMP = 1 << 0, 1 << 1, 1 << 3
+META_TX_NOW = 1 << 2
 META_RX_NOW = 1 << 31
 META_STATUS_OVERRUN, META_STATUS_UNDERRUN = 1 << 0, 1 << 1
+BLADERF_ERR_TIME_PAST = -14
+BLADERF_ERR_NODEV = -7
 Q11 = 2048.0                              # SC16 Q11: +-2048 full scale
+BLADERF2_RX_MIN_HZ = 70e6                 # bladeRF 2.0 micro: RX from 70 MHz (TX from 47 MHz)
 
 
 def _lib():
@@ -228,13 +233,14 @@ def _lib():
         "bladerf_sync_rx": (c.c_int, [P, c.c_void_p, c.c_uint, c.POINTER(Meta), c.c_uint]),
         "bladerf_strerror": (c.c_char_p, [c.c_int]),
         "bladerf_version": (None, [c.POINTER(Version)]),
+        "bladerf_fpga_version": (c.c_int, [P, c.POINTER(Version)]),
     }
     for fn, (res, args) in protos.items():
         f = getattr(lib, fn)
         f.restype, f.argtypes = res, args
     v = Version()
     lib.bladerf_version(c.byref(v))
-    lib.Meta, lib.Range = Meta, Range
+    lib.Meta, lib.Range, lib.Version = Meta, Range, Version
     _BRF = (lib, (v.major, v.minor, v.patch))
     return _BRF
 
@@ -246,6 +252,19 @@ def bladerf_meta_format(version):
     if os.environ.get("MINI_CMTS_BLADERF_META_FORMAT"):      # diagnostic override
         return int(os.environ["MINI_CMTS_BLADERF_META_FORMAT"])
     return 2 if tuple(version[:2]) >= (2, 6) else 1
+
+
+def fpga_mismatch(lib_version, fpga_version):
+    """An FPGA newer than the library knows: libbladeRF 2.4.1 (Debian 12) with the FPGA 0.16.0 of
+    the flash (bladeRF 2025.10) read RX buffers of 508 samples whose timestamps moved by 2044,
+    every read flagged as an overrun, the RX at 7 MS/s of 27.8 (2026-10-15). With the FPGA 0.14 of
+    the same Debian release loaded: whole buffers, contiguous timestamps."""
+    if fpga_version is None or tuple(lib_version[:2]) >= (2, 6) or tuple(fpga_version[:2]) < (0, 16):
+        return None
+    return (f"bladeRF : FPGA {'.'.join(map(str, fpga_version))} trop récent pour libbladeRF "
+            f"{'.'.join(map(str, lib_version))} (métadonnées des flux mal lues : réception fausse). "
+            f"Charger le FPGA de cette version de la bibliothèque (jusqu'à la coupure de courant) : "
+            f"bladeRF-cli -l /usr/share/Nuand/bladeRF/hostedxA4.rbf ; ou installer libbladeRF >= 2.6")
 
 
 class BladeRFRadio:
@@ -262,9 +281,18 @@ class BladeRFRadio:
         self.fmt = bladerf_meta_format(self.version)
         self.dev = ctypes.c_void_p()
         ident = p.get("args", "") or ""
-        self._ok(self.lib.bladerf_open(ctypes.byref(self.dev), ident.encode() if ident else None),
-                 f"ouverture « {ident or 'premier bladeRF'} »")
+        for attempt in range(10):          # (closed a moment ago, the device is reset: NODEV for ~1 s)
+            ret = self.lib.bladerf_open(ctypes.byref(self.dev), ident.encode() if ident else None)
+            if ret != BLADERF_ERR_NODEV:
+                break
+            time.sleep(0.5)
+        self._ok(ret, f"ouverture « {ident or 'premier bladeRF'} »")
         self.board = (self.lib.bladerf_get_board_name(self.dev) or b"?").decode()
+        fv = self.lib.Version()
+        self.fpga = (fv.major, fv.minor, fv.patch) if self.lib.bladerf_fpga_version(self.dev, ctypes.byref(fv)) == 0 else None
+        err = fpga_mismatch(self.version, self.fpga)
+        if err:
+            raise RuntimeError(err)
         sn = ctypes.create_string_buffer(64)
         self.serial = sn.value.decode() if self.lib.bladerf_get_serial(self.dev, sn) == 0 else "?"
         self.name = f"{self.board} {self.serial[:12]}"
@@ -297,6 +325,8 @@ class BladeRFRadio:
         self._md = L.Meta()
         self._rmd = L.Meta()
         self._ibuf = None
+        self._rx_next = None              # RX counter value the next read asks for
+        self._rx_start = 0                # device tick of the first sample to hand out (start_rx)
 
     def _ok(self, ret, what):
         if ret < 0:
@@ -311,7 +341,8 @@ class BladeRFRadio:
     def describe(self):
         L, c = self.lib, self.c
         ver = ".".join(map(str, self.version))
-        s = (f"{self.name} (libbladeRF {ver}) | TX {self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint) / 1e6:.6f} MS/s "
+        fpga = ".".join(map(str, self.fpga)) if self.fpga else "?"
+        s = (f"{self.name} (libbladeRF {ver}, FPGA {fpga}) | TX {self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint) / 1e6:.6f} MS/s "
              f"@ {self._get(L.bladerf_get_frequency, CH_TX0, c.c_uint64) / 1e6:.3f} MHz "
              f"gain {self._get(L.bladerf_get_gain, CH_TX0, c.c_int)} dB")
         if self.has_rx:
@@ -328,10 +359,13 @@ class BladeRFRadio:
         return None
 
     def check(self):
+        """Rates within 1 ppm (27,808,000 Hz asked, 27,807,999 obtained: 0.04 ppm, far below the
+        oscillator itself), the same both ways."""
         L, c = self.lib, self.c
-        if self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint) != self.fs:
-            return f"bladeRF : débit TX obtenu {self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint)} au lieu de {self.fs}"
-        if self.has_rx and self._get(L.bladerf_get_sample_rate, CH_RX0, c.c_uint) != self.fs:
+        tx = self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint)
+        if abs(tx - self.fs) > 1e-6 * self.fs:
+            return f"bladeRF : débit TX obtenu {tx} au lieu de {self.fs}"
+        if self.has_rx and self._get(L.bladerf_get_sample_rate, CH_RX0, c.c_uint) != tx:
             return "bladeRF : débits TX et RX différents, la base de temps commune serait fausse"
         return None
 
@@ -340,22 +374,33 @@ class BladeRFRadio:
         nbuf, blen, nxfer = 64, 16384, 32       # deep USB buffering, as the B210's 48 x 16 KB frames
         self._ok(L.bladerf_sync_config(self.dev, TX_X1, self.fmt, nbuf, blen, nxfer, 1000), "flux TX")
         self._ok(L.bladerf_enable_module(self.dev, CH_TX0, True), "activation TX")
+        # (libbladeRF 2.4.1, bladeRF 2.0: a gain set before its module is enabled is answered with
+        # success and ignored, the RX stayed at its 60 dB; set again once the modules run)
+        self._ok(L.bladerf_set_gain(self.dev, CH_TX0, int(round(self.p["gain"]))), "gain TX")
         self.tx_spp = blen
         if self.has_rx:
             self._ok(L.bladerf_sync_config(self.dev, RX_X1, self.fmt, nbuf, blen, nxfer, 1000), "flux RX")
             self._ok(L.bladerf_enable_module(self.dev, CH_RX0, True), "activation RX")
+            self._ok(L.bladerf_set_gain_mode(self.dev, CH_RX0, GAIN_MGC), "gain RX manuel")
+            self._ok(L.bladerf_set_gain(self.dev, CH_RX0, int(round(self.p["rx_gain"]))), "gain RX")
             self.rx_spp = blen
-            # the two counters, read back to back (the shortest of 8 round trips): a constant
-            # error here is a constant timing offset, which the ranging takes up
+            # TX - RX counter: the RX read between two TX reads (shortest of 8). Read back to back,
+            # TX then RX, the USB round trip itself (~165 us) came out as an offset: -4581 samples,
+            # where the loop test found the counters equal to ~3 us (2026-10-15)
             best = None
             for _ in range(8):
                 t0 = time.perf_counter()
-                tx = self._counter(DIR_TX)
+                tx1 = self._counter(DIR_TX)
                 rx = self._counter(DIR_RX)
+                tx2 = self._counter(DIR_TX)
                 d = time.perf_counter() - t0
                 if best is None or d < best[0]:
-                    best = (d, tx - rx)
+                    best = (d, (tx1 + tx2) // 2 - rx)
             self.rx_to_tx = best[1]
+        c = self.c
+        self.note = (f"gains en place : TX {self._get(L.bladerf_get_gain, CH_TX0, c.c_int)} dB"
+                     + (f", RX {self._get(L.bladerf_get_gain, CH_RX0, c.c_int)} dB ; compteurs TX - RX "
+                        f"{self.rx_to_tx} éch." if self.has_rx else ""))
 
     def _counter(self, direction):
         v = self.c.c_uint64()
@@ -369,28 +414,48 @@ class BladeRFRadio:
         return (self._counter(DIR_TX) + self.base) / self.fs
 
     def start_rx(self, t):
-        pass                                    # (read with RX_NOW: every block carries its timestamp)
+        """Samples before device time t are dropped (the B210 starts its RX stream at t; here the
+        RX runs from open_streams, and its first buffers predate set_time: negative ticks, the
+        upstream processes waited for a time 0 that never came, 2026-10-15)."""
+        self._rx_start = int(round(t * self.fs))
 
     def stop_rx(self):
         if self.has_rx:
             self.lib.bladerf_enable_module(self.dev, CH_RX0, False)
 
     def recv(self, buf):
+        """Whole buffers, back to back: each read asks for the timestamp that follows the last
+        one, and libbladeRF waits until all of it is there. RX_NOW only to start and after a loss
+        (that timestamp already gone): read with RX_NOW every time, each call returned the ~50
+        samples already in and the RX fell to 7 MS/s of 27.8, every read flagged as a gap."""
         n = buf.shape[1]
         if self._ibuf is None or self._ibuf.size != 2 * n:
             self._ibuf = np.empty(2 * n, np.int16)
         md = self._rmd
-        md.flags, md.status, md.actual_count = META_RX_NOW, 0, 0
+        md.status, md.actual_count = 0, 0
+        if self._rx_next is None:
+            md.flags, md.timestamp = META_RX_NOW, 0
+        else:
+            md.flags, md.timestamp = 0, self._rx_next
         ret = self.lib.bladerf_sync_rx(self.dev, self._ibuf.ctypes.data, n, self.c.byref(md), 500)
-        if ret < 0:
-            return 0, None, False
-        if md.status & META_STATUS_OVERRUN:
+        if ret == BLADERF_ERR_TIME_PAST:
+            self._rx_next = None                # samples lost: start again from now
             return 0, None, True
-        k = md.actual_count
-        if not k:
+        if ret < 0:
+            self._rx_next = None
             return 0, None, False
-        buf[0, :k] = (self._ibuf[:2 * k].astype(np.float32) * (1.0 / Q11)).view(np.complex64)
-        return k, md.timestamp + self.rx_to_tx + self.base, False
+        k = md.actual_count or (n if self._rx_next is not None else 0)
+        overrun = bool(md.status & META_STATUS_OVERRUN)
+        if not k:
+            return 0, None, overrun
+        self._rx_next = md.timestamp + k
+        tick = md.timestamp + self.rx_to_tx + self.base
+        skip = max(0, min(k, self._rx_start - tick))
+        if skip == k:
+            return 0, None, False
+        k -= skip
+        buf[0, :k] = (self._ibuf[2 * skip:2 * (skip + k)].astype(np.float32) * (1.0 / Q11)).view(np.complex64)
+        return k, tick + skip, overrun
 
     def send(self, x, tick, first):
         v = np.empty(2 * x.size, np.int16)
@@ -418,6 +483,11 @@ class BladeRFRadio:
         z = np.zeros(2 * 1024, np.int16)
         self.lib.bladerf_sync_tx(self.dev, z.ctypes.data, 1024, self.c.byref(md), 1000)
         self.lib.bladerf_enable_module(self.dev, CH_TX0, False)
+
+    def close(self):
+        if self.dev:
+            self.lib.bladerf_close(self.dev)
+            self.dev = self.c.c_void_p()
 
     def tx_event(self, timeout):
         if self._events:

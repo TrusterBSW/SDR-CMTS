@@ -54,6 +54,7 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 
 - USRP B210 sur un **contrôleur USB 3 dédié**, PC Linux. Testé sur Arch Linux, UHD 4.9,
   Python 3.14, portable 4 cœurs / 8 threads.
+- Ou un **bladeRF 2.0 micro** (`--sdr bladerf`, 3 DS + 1 US) : voir `docs/BLADERF.fr.md`.
 - Un répartiteur 1:2 (coupleur A), un atténuateur 8 dB, un second répartiteur pour l'observation.
 
 ```
@@ -106,7 +107,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--mtc-owed` | oui | requêtes multi-canal cumulées (le modem ne demande que les octets nouveaux), accordées sur chaque canal à chaque MAP, grant pending tant qu'il reste dû ; `--no-mtc-owed` : chaque requête remplace la précédente |
 | `--ds-aqm` | 30 ms | CoDel sur les files descendantes : quelques trames jetées une à une au lieu de rafales à la limite `--ds-queue-ms` ; ping pendant un téléchargement 88 → 55 ms ; 0 = sans |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
-| `--sdr`, `--sdr-args` | b210, — | `bladerf` : un bladeRF 2.0 micro (libbladeRF appelée directement, `cmts/sdrdev.py`) à la place du B210, TX1 vers le modem, RX1 pour le montant ; émission et réception au même débit, donc 3 DS au plus ; `--sdr-args "*:serial=…"` choisit la carte. Vérification : `tools/bladerf_check.py --loop` |
+| `--sdr`, `--sdr-args` | b210, — | `bladerf` : un **bladeRF 2.0 micro** à la place du B210 (libbladeRF appelée directement, `cmts/sdrdev.py`), TX1 vers le modem, RX1 pour le montant. Validé en **3 DS + 1 US** (138 / 24,5 Mbit/s) : émission et réception au même débit (27,8 MS/s en 16 bits au plus), réception à partir de 70 MHz (un seul canal montant, à 61,8 MHz). `--sdr-args "*:serial=…"` choisit la carte. Choix, pièges et limites : `docs/BLADERF.fr.md` ; vérification : `tools/bladerf_check.py --loop` |
 | `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | plusieurs radios (branche `multi-b210`) : les canaux descendants répartis en blocs adjacents, une radio par bloc ; la première reçoit aussi le montant. Sans 10 MHz commun (`internal`), la suiveuse se recale sur la principale par groupes de 8 paquets MPEG (dérive mesurée entre deux B210 : 2,5 ppm, 8,9 ms/h) ; 2 B210 en 2 + 2 DS : 189 / 50 Mbit/s |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |
 

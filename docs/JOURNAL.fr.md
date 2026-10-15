@@ -780,3 +780,31 @@ Résultat : 5 démarrages sur 5 en ligne en ~70 s.
   isolés : à essayer sur le contrôleur 43:00.3.
 - 3 + 3 DS, puis 12 DS avec plus de mémoire ; le 10 MHz commun (`--clock-source external`), avec lequel le recalage
   n'aura plus rien à corriger.
+
+## Un bladeRF 2.0 micro à la place d'un B210 (15/10/2026)
+
+**Pourquoi.** Que d'autres que les possesseurs d'un B210 puissent essayer le CMTS. Le bladeRF 2.0 micro a la même puce
+RF (AD9361). Pilote écrit sans carte dans la nuit (`cmts/sdrdev.py`, libbladeRF appelée directement, sans SoapySDR),
+puis essayé sur la carte.
+
+**Résultat.** 3 DS + 1 US à 61,8 MHz : modem en ligne, 138 Mbit/s en descendant (les 3 canaux pleins), 24,5 en
+montant, ping ~144 ms, MER montant 22 dB.
+
+**Ce qu'il a fallu comprendre.**
+- Le bladeRF ne reçoit qu'à partir de 70 MHz : l'oscillateur de réception y est placé et le DDC ramène le canal
+  montant (61,8 MHz, sous la limite EuroDOCSIS de 65 MHz).
+- Émission et réception ont toujours le même débit sur cette carte : un tick par échantillon, pas de décimation par
+  le FPGA. En 16 bits, l'USB tient 27,8 MS/s dans les deux sens (3 DS), pas 34,8 ni au-delà.
+- Le FPGA 0.16 de la carte est trop récent pour la libbladeRF 2.4.1 de Debian 12 : métadonnées mal lues, réception
+  fausse. Avec le FPGA 0.14 de la même version, tout marche ; le pilote refuse maintenant le mélange.
+- libbladeRF 2.4.1 ignore un gain réglé avant l'activation du module ; la réception doit lire des tampons contigus
+  en demandant l'horodatage suivant ; les compteurs TX et RX sont la même horloge.
+- Le gain de réception à 20 dB faisait arriver le modem trop fort même à sa puissance minimale : ranging jamais
+  terminé. À 14 dB, il converge.
+
+**Fausse piste.** Un B210 témoin, qui comparait chaque canal à la médiane de la bande, ne pouvait pas voir un signal
+large bande : il a fait croire que le bladeRF n'émettait rien et que son gain n'agissait pas. Une porteuse émise par
+`bladeRF-cli`, puis une mesure de puissance absolue, ont montré que tout fonctionnait.
+
+**Suite.** Échantillons 8 bits (libbladeRF ≥ 2.5) pour 55,6 MS/s dans les deux sens, soit 2 US et 4 à 6 DS ;
+tampon d'émission plus court ; un pilote par radio pour mélanger B210 et bladeRF.

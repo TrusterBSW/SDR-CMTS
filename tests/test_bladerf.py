@@ -25,12 +25,18 @@ class Meta(ctypes.Structure):
                 ("actual_count", ctypes.c_uint), ("reserved", ctypes.c_uint8 * 32)]
 
 
+class Version(ctypes.Structure):
+    _fields_ = [("major", ctypes.c_uint16), ("minor", ctypes.c_uint16), ("patch", ctypes.c_uint16),
+                ("describe", ctypes.c_char_p)]
+
+
 class FakeLib:
     """The libbladeRF calls BladeRFRadio makes; counters: TX = tick, RX = tick - 1000."""
     Meta = Meta
+    Version = Version
 
-    def __init__(self, board=b"bladerf2"):
-        self.board = board
+    def __init__(self, board=b"bladerf2", fpga=(0, 14, 0)):
+        self.board, self.fpga = board, fpga
         self.rate, self.freq, self.gain = {}, {}, {}
         self.tx, self.cfg, self.enabled = [], {}, {}
         self.tick = 5_000_000
@@ -112,6 +118,10 @@ class FakeLib:
     def bladerf_strerror(self, ret):
         return b"erreur"
 
+    def bladerf_fpga_version(self, dev, pv):
+        pv._obj.major, pv._obj.minor, pv._obj.patch = self.fpga
+        return 0
+
 
 def params(rx_f=56.5e6):
     return dict(args="*:serial=0123", fs_tx=27.808e6, mcr=27.808e6, tx_center=302e6, tx_bw=24e6, gain=40,
@@ -175,6 +185,13 @@ try:
     check("bladeRF 1 et montant à 56,5 MHz : refusé (XB-200)", False)
 except RuntimeError as e:
     check("bladeRF 1 et montant à 56,5 MHz : refusé (XB-200)", "XB-200" in str(e), str(e)[:70])
+sdrdev._BRF = (FakeLib(fpga=(0, 16, 0)), (2, 4, 1))
+try:
+    sdrdev.BladeRFRadio(params(), True)
+    check("FPGA 0.16 avec libbladeRF 2.4.1 : refusé (métadonnées mal lues)", False)
+except RuntimeError as e:
+    check("FPGA 0.16 avec libbladeRF 2.4.1 : refusé (métadonnées mal lues)", "hostedxA4.rbf" in str(e), str(e)[:60])
+check("FPGA 0.16 avec libbladeRF 2.6 : accepté", sdrdev.fpga_mismatch((2, 6, 0), (0, 16, 0)) is None)
 sdrdev._BRF = None
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

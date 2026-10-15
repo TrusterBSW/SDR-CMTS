@@ -376,6 +376,8 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
         q.put(("fatal", err))
         return
     dev.open_streams()
+    if getattr(dev, "note", None):
+        log(f"[{tag}] {dev.note}")
 
     stop = threading.Event()
     q_tx = queue.Queue(maxsize=p["tx_queue"])
@@ -454,7 +456,6 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
             if overflow:
                 counters["O"] += 1
                 log(f"[RX] !! overflow à t={air_s():.2f} s (échantillons montants perdus)")
-                continue
             if n:
                 ring.push(tick, buf[0, :n])
                 now_p = time.monotonic()

@@ -5,7 +5,7 @@ code as the radio process (cmts/sdrdev.py BladeRFRadio, libbladeRF called direct
   tools/bladerf_check.py [--id "*:serial=..."] [--seconds 10] [--loop]
 
   1. the device: board, serial, libbladeRF / firmware / FPGA versions, USB speed, gain ranges;
-  2. the CMTS settings (27.808 MS/s, TX 302 MHz, RX 56.5 MHz): rates obtained, TX/RX counters;
+  2. the CMTS settings (27.808 MS/s, TX 302 MHz, RX 70 MHz, its lowest): rates obtained, TX/RX counters;
   3. TX and RX streaming together for --seconds at that rate, TX timed block by block as the
      radio process sends: underruns, overruns, RX timestamp continuity;
   4. --loop (TX1 and RX1 on the same coax, e.g. both on the coupler, CMTS stopped): RX tuned to
@@ -28,10 +28,8 @@ def device_info(ident):
     import ctypes as c
     lib, ver = sdrdev._lib()
     print(f"libbladeRF {'.'.join(map(str, ver))} : format SC16_Q11_META = {sdrdev.bladerf_meta_format(ver)}")
-    V = type("V", (c.Structure,), {"_fields_": [("major", c.c_uint16), ("minor", c.c_uint16),
-                                                ("patch", c.c_uint16), ("describe", c.c_char_p)]})
-    for fn in ("bladerf_fw_version", "bladerf_fpga_version"):
-        getattr(lib, fn).argtypes, getattr(lib, fn).restype = [c.c_void_p, c.POINTER(V)], c.c_int
+    V = lib.Version                                       # (the structure the driver's prototypes use)
+    lib.bladerf_fw_version.argtypes, lib.bladerf_fw_version.restype = [c.c_void_p, c.POINTER(V)], c.c_int
     lib.bladerf_is_fpga_configured.argtypes, lib.bladerf_is_fpga_configured.restype = [c.c_void_p], c.c_int
     has_speed = hasattr(lib, "bladerf_device_speed")
     if has_speed:
@@ -69,9 +67,8 @@ def params(fs, tx_f, rx_f, gain, rx_gain):
                 rx_lo_off=0.0, rx_bw=20e6, rx_gain=rx_gain, clock_source="internal", driver="bladerf")
 
 
-def stream_test(ident, seconds, gain, rx_gain):
-    fs = 27.808e6
-    p = params(fs, 302e6, 56.5e6, gain, rx_gain)
+def stream_test(ident, seconds, gain, rx_gain, fs=27.808e6):
+    p = params(fs, 302e6, sdrdev.BLADERF2_RX_MIN_HZ, gain, rx_gain)     # (RX from 70 MHz on the bladeRF 2.0)
     p["args"] = ident
     r = sdrdev.BladeRFRadio(p, True)
     print(r.describe())
@@ -79,10 +76,10 @@ def stream_test(ident, seconds, gain, rx_gain):
     if err:
         sys.exit(f"!! {err}")
     r.open_streams()
-    print(f"compteurs : TX - RX = {r.rx_to_tx} échantillons ({r.rx_to_tx / fs * 1e6:.1f} µs)")
+    print(r.note)
     r.set_time(0.0)
     t0 = r.time_now()
-    n = 78336 // 2                                     # one block of the CMTS (48 TS packets, 4 sps)
+    n = int(round(78336 // 2 * fs / 27.808e6))       # one block of the CMTS (48 TS packets)
     rng = np.random.default_rng(1)
     blk = ((rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.2).astype(np.complex64)
     stop = threading.Event()
@@ -94,7 +91,6 @@ def stream_test(ident, seconds, gain, rx_gain):
             k, tick, ovf = r.recv(buf)
             if ovf:
                 rx_stats["overflow"] += 1
-                continue
             if k:
                 if rx_stats["last"] is not None and tick != rx_stats["last"]:
                     rx_stats["gaps"] += 1
@@ -114,6 +110,7 @@ def stream_test(ident, seconds, gain, rx_gain):
     print(f"{seconds:.0f} s à {fs / 1e6:.3f} MS/s : TX {k} blocs, underruns {u} | RX {rx_stats['n'] / seconds / 1e6:.3f} MS/s, "
           f"overflows {rx_stats['overflow']}, ruptures d'horodatage {rx_stats['gaps']}")
     r.stop_rx()
+    r.close()
     return r
 
 
@@ -143,10 +140,12 @@ def loop_test(ident, gain, rx_gain):
     r.send(quiet, start, True)
     r.send(burst, start + quiet.size, False)
     r.send(quiet, start + quiet.size + burst.size, False)
-    time.sleep(0.6)
+    time.sleep(2.5)                     # (long: an offset between the TX and RX clocks shows whole)
     r.end_burst()
     stop.set()
     th.join(2)
+    r.stop_rx()
+    r.close()
     ticks = np.concatenate([np.arange(tk, tk + x.size) for tk, x in got])
     x = np.concatenate([x for _, x in got])
     pw = np.abs(x) ** 2
@@ -165,12 +164,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--id", default="", help='identifiant libbladeRF ("" = le premier, "*:serial=...")')
     ap.add_argument("--seconds", type=float, default=10.0)
+    ap.add_argument("--rate", type=float, default=27.808e6, help="débit TX et RX (55.616e6 : 6 DS + 2 US)")
     ap.add_argument("--gain", type=float, default=30.0, help="gain TX (dB, échelle libbladeRF)")
     ap.add_argument("--rx-gain", type=float, default=20.0)
     ap.add_argument("--loop", action="store_true", help="mesure du retard TX->RX (TX1 et RX1 sur le même coax)")
     a = ap.parse_args()
     device_info(a.id)
-    stream_test(a.id, a.seconds, a.gain, a.rx_gain)
+    stream_test(a.id, a.seconds, a.gain, a.rx_gain, a.rate)
     if a.loop:
         loop_test(a.id, a.gain, a.rx_gain)
 
