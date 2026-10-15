@@ -129,6 +129,8 @@ class DownstreamMux:
         self.next_map_ms = None    # next alloc start, in minislots
         self.map_count = 0
         self.stats = dict(sync=0, ucd=0, map=0, im=0, null=0, ucast=0, data=0, data_drop=0, data_max_ms=0.0)
+        self.last_block_t = float("inf")    # end of the last TS block (mini_cmts run_split; inf = no encoder)
+        self.late_s = float("inf")
         # upstream hooks:
         #  scheduler(start_ms, free_ms) -> [(sid, iuc, n_minislots)] unicast grants for a MAP
         #  on_grants([(start_ts, end_ts, iuc, sid)]) receives every interval of every MAP

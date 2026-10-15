@@ -24,7 +24,7 @@ import multiprocessing as mp
 import queue
 import threading
 import time
-from multiprocessing import shared_memory
+from multiprocessing import resource_tracker, shared_memory
 
 import numpy as np
 
@@ -33,6 +33,21 @@ _GRING = 1 << 16                     # MAP intervals in flight (start, end, IUC,
 
 
 DDC_TAPS = 63
+
+
+def attach_shm(name):
+    """Attach to a segment another process created, without registering it with the resource
+    tracker, which would unlink it when this process exits. track=False is Python 3.13+; before
+    (Debian 12: 3.11), the registration is skipped by hand."""
+    try:
+        return shared_memory.SharedMemory(name=name, track=False)
+    except TypeError:
+        reg = resource_tracker.register
+        resource_tracker.register = lambda *a, **k: None
+        try:
+            return shared_memory.SharedMemory(name=name)
+        finally:
+            resource_tracker.register = reg
 
 
 class SampleRing:
@@ -49,8 +64,8 @@ class SampleRing:
             self.ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 2)
         else:
             name, ctl_name, n = attach
-            self.shm = shared_memory.SharedMemory(name=name, track=False)
-            self.ctl_shm = shared_memory.SharedMemory(name=ctl_name, track=False)
+            self.shm = attach_shm(name)
+            self.ctl_shm = attach_shm(ctl_name)
         self.buf = np.ndarray(n, np.complex64, self.shm.buf)
         self.ctl = np.ndarray(2, np.int64, self.ctl_shm.buf)
         if attach is None:
@@ -270,10 +285,10 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
     _dump = open(f"/tmp/usproc_{os.getpid()}.stack", "w")
     faulthandler.register(signal.SIGUSR1, file=_dump, all_threads=True)
     mac.configure_upstream(p["us_mode"], p["us_bits"])
-    shm = shared_memory.SharedMemory(name=ring_name, track=False)
-    rctl_shm = shared_memory.SharedMemory(name=rctl_name, track=False)
-    ctl_shm = shared_memory.SharedMemory(name=ctl_name, track=False)
-    g_shm = shared_memory.SharedMemory(name=g_name, track=False)
+    shm = attach_shm(ring_name)
+    rctl_shm = attach_shm(rctl_name)
+    ctl_shm = attach_shm(ctl_name)
+    g_shm = attach_shm(g_name)
     ring = np.ndarray(p["n"], np.complex64, shm.buf)
     rctl = np.ndarray(2, np.int64, rctl_shm.buf)
     ctl = np.ndarray(5, np.int64, ctl_shm.buf)
@@ -291,6 +306,8 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                              log=lambda s: q_out.put(("log", s)), buf=buf, **p["rx_kwargs"])
     ctl[_ALIVE] = 1
     t_stats = time.monotonic() + 0.5
+    debug = bool(os.environ.get("MINI_CMTS_US_DEBUG"))     # diagnostic: ring/window positions every 2 s
+    t_debug = 0.0
     # garbage collector pauses, per generation, in the timing statistics (MINI_CMTS_TIMING)
     import gc
     gc_t0 = [0.0]
@@ -315,6 +332,7 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
         t_dump = time.monotonic() + 20
     ddc_stop = threading.Event()
     ddc_nw = [0]                                       # narrow samples in buf, published by ddc_loop
+    ddc_valid = [DDC_TAPS]                             # first narrow sample past a skip and the FIR's warm-up
 
     def ddc_loop():
         """The DDC in a thread of its own (2026-10-11): its C call releases the GIL, so it runs
@@ -329,6 +347,9 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                 dpos += skip
                 nw += skip // ddc["factor"]
                 rx.stats["ddc_skipped"] += skip
+                # buf keeps zeros over the skipped part, and the FIR restarts from them: no
+                # window is read before this (a noise floor taken there stuck at -270 dBFS)
+                ddc_valid[0] = nw + DDC_TAPS
             if dpos >= written:
                 time.sleep(0.001)
                 continue
@@ -370,6 +391,8 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                 rx.rx_tick0 = int(rctl[_TICK0]) + p["tick_shift"]
             t0 = time.perf_counter()
             rx.written = ddc_nw[0] if ddc else int(rctl[_WRITTEN])
+            if ddc:
+                rx.valid_from = ddc_valid[0]
             n = rx.process()
             t1 = time.perf_counter()
             rx.scan_raw()
@@ -382,6 +405,15 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
             ctl[_PROCESSED] = int(rx.processed_ts)
             if time.monotonic() > t_stats:
                 t_stats = time.monotonic() + 0.5
+                if debug and time.monotonic() > t_debug:
+                    t_debug = time.monotonic() + 2.0
+                    w0 = rx.windows[0] if rx.windows else None
+                    s_w = None if w0 is None or rx.rx_tick0 is None else rx.sample_of_ts(w0[0])
+                    q_out.put(("log", f"[US-DEBUG {ddc['offset'] / 1e6 if ddc else 0:+.1f} MHz] tick0 anneau "
+                               f"{int(rctl[_TICK0])} récepteur {rx.rx_tick0} | écrits large {int(rctl[_WRITTEN])} "
+                               f"étroit {rx.written} | 1re fenêtre {None if s_w is None else int(s_w)} "
+                               f"({len(rx.windows)} en file) | traité ts {rx.processed_ts} | "
+                               f"seuil {rx.floor} | en retard {rx.stats['late']}"))
                 st = dict(rx.stats)
                 st["windows_queued"] = len(rx.windows)
                 q_out.put(("stats", st, rx.noise_dbfs(), rx.lag_max_ms, dict(rx.timing)))

@@ -47,7 +47,7 @@ from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
-from cmts.radio import TX_CAL_RX_BW
+from cmts.sdrdev import TX_CAL_RX_BW
 from cmts.usproc import RemoteUpstream, SampleRing
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
@@ -123,7 +123,7 @@ def build(a, log=print):
         # 4 channels: 34.760 MS/s (5 per symbol; -12/-4/+4/+12 MHz fill +-16 of +-17.38): online on
         # 4 channels, 156 Mbit/s carried (2026-10-10, Proxmox host, --radio-process).
         # Above 34.76 MHz the Sagem used not to lock: UHD's TX quadrature calibration ran with the
-        # RX filter at the upstream width and failed from 41.712 MHz on (radio.TX_CAL_RX_BW).
+        # RX filter at the upstream width and failed from 41.712 MHz on (sdrdev.TX_CAL_RX_BW).
         # Since that fix it locks at 41.712 and 55.616 MHz; 5-6 channels at 55.616 MS/s run on the
         # Proxmox host with the AVX2 synthesis and 16 KB USB frames (2026-10-11).
         a.sps = 4 if nr <= 3 else (5 if nr <= 4 else 8)
@@ -324,6 +324,13 @@ def start_bridge(a, mux, core, stop):
     mux.per_chan = fwd.per_chan
 
     def down(eth):
+        if time.perf_counter() - mux.last_block_t > mux.late_s:
+            # the TS block encoder (same process, same GIL) is behind: a download starting after a
+            # quiet spell brought the sender's whole window into the TAP at once, this thread went
+            # through it without a pause and the encoder waited 18-25 ms for one block; the radios
+            # underflowed together and the modem lost a channel ~10 s (2026-10-15). Here it steps
+            # aside until the encoder has caught up.
+            time.sleep(TAP_YIELD_S)
         fwd.send(eth)
         if flim.ok():
             log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
@@ -857,6 +864,31 @@ def ds_fill(mux, prev):
     return "remplissage " + "/".join(out) + " %, "
 
 
+SWITCH_INTERVAL_S = 0.0005    # GIL hand-over in the MAC process (run_split); Python's default: 5 ms
+TAP_YIELD_S = 200e-6          # pause of the TAP thread per frame while the TS block encoder is late
+
+
+def watch_gc(log, slow_ms=15.0):
+    """Logs every pause of Python's garbage collector longer than slow_ms in this (MAC) process:
+    it holds the GIL, so the encoder thread feeding the radios stops too."""
+    import gc
+    t0 = [0.0]
+    stats = dict(n=0, worst=0.0)
+
+    def cb(phase, info):
+        if phase == "start":
+            t0[0] = time.perf_counter()
+            return
+        dt = (time.perf_counter() - t0[0]) * 1e3
+        if dt >= slow_ms:
+            stats["n"] += 1
+            stats["worst"] = max(stats["worst"], dt)
+            log(f"[MAC] !! ramasse-miettes Python : {dt:.0f} ms (génération {info['generation']}, "
+                f"{info['collected']} objets libérés, {len(gc.get_objects(info['generation']))} suivis)")
+    gc.callbacks.append(cb)
+    return stats
+
+
 def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center):
     """--radio-process: the B210, J.83 encoding, shaping and the timed send in a process of
     their own (cmts/radio.py); this process keeps the MAC layer, the bridge and builds the TS
@@ -883,6 +915,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             "chaque radio (uhd_find_devices donne les numéros de série)")
     ctx = mp.get_context("spawn")
     origin = ctx.Value("d", 0.0) if len(groups) > 1 else None
+    # the primary's clock against the host's, for the followers to realign on (cmts/radio.py)
+    clock = ctx.Array("d", 5, lock=False) if len(groups) > 1 else None
     radios = []
     for r, g in enumerate(groups):
         fr = [chans[i][1] for i in g]
@@ -895,16 +929,25 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                       qams=[a.qam] * len(g), sps=a.sps, invert=mux.invert, scale=a.scale,
                       synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
                       tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
-                      pk_shape=(len(g), a.block, 2), rx=(r == 0), follow=(r > 0),
+                      pk_shape=(len(g), a.block, 2 if r == 0 else 8), rx=(r == 0), follow=(r > 0),
                       clock_source=getattr(a, "clock_source", "internal"),
                       tag="RADIO" if r == 0 else f"RADIO{r + 1}")
         # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
-        radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, 2, log,
-                                   origin=origin, name="radio" if r == 0 else f"radio{r + 1}"))
+        radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, params["pk_shape"][2], log,
+                                   origin=origin, name="radio" if r == 0 else f"radio{r + 1}", clock=clock))
         if len(groups) > 1:
             log(f"[RADIO{r + 1}] {len(g)} canaux " + ", ".join(f"{f / 1e6:.0f}" for f in fr)
                 + f" MHz, centre {center / 1e6:.0f} MHz" + (f", B210 {serials[r]}" if r < len(serials) else ""))
     radio = radios[0]
+    watch_gc(log)
+    # A download starting after a quiet spell starved the thread building the TS blocks of the
+    # GIL (the TAP thread busy without a pause, cmts/bridge.py): the radios waited 18-25 ms for one
+    # block and underflowed together, the modem losing a channel ~10 s. Three measures against it,
+    # none enough alone, together no stall in 7 bursts out of 8 (2026-10-15, T69): this shorter
+    # switch interval (the encoder lets go of the GIL at every C call and takes it back each
+    # time), the TAP thread's pause in a burst (bridge.BURST_FRAMES) and its yield while the
+    # encoder is late (start_bridge).
+    sys.setswitchinterval(SWITCH_INTERVAL_S)
     radio.start()                                 # the followers once it is on the air (below):
     stop = threading.Event()                      # two processes opening "a B210" could swap them
 
@@ -916,8 +959,16 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     def encoder():
         nonlocal dump_f, dump_end
         seq = 0
+        t_slow_log = 0.0
+        mux.late_s = 2 * blk_ms * 1e-3            # no block for 2 block times: starved (start_bridge)
         while not stop.is_set():
+            t0 = time.perf_counter()
             pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
+            t1 = time.perf_counter()
+            if t1 - t0 > 0.010 and t1 - t_slow_log > 1.0:
+                # the blocks of every radio wait for this: one late here starves them all together
+                t_slow_log = t1
+                log(f"[MAC] !! bloc TS produit en {(t1 - t0) * 1e3:.0f} ms (bloc de {blk_ms:.1f} ms à l'antenne)")
             if dump and dump_f is None and dump_end is None and os.path.exists(dump + ".go"):
                 dump_f = open(dump, "wb")
                 dump_end = time.monotonic() + float(os.environ.get("MINI_CMTS_TSDUMP_S", "10"))
@@ -933,8 +984,16 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                 # a follower never holds the MAC back: not started, dead or late, its block is dropped
                 # (it times every block from its number, so a gap cannot shift it)
                 if rp.alive() and not rp.failed:
-                    rp.pk.put([pks[i] for i in g], stop, seq, wait=False)
+                    if rp.pk.put([pks[i] for i in g], stop, seq, wait=False) is None:
+                        rp.dropped += 1
             seq += 1
+            mux.last_block_t = time.perf_counter()
+            if seq % 4096 == 0:
+                for rp in radios[1:]:
+                    if rp.dropped > rp.dropped_logged:
+                        log(f"[{rp.name.upper()}] !! {rp.dropped - rp.dropped_logged} blocs jetés (anneau plein), "
+                            f"{rp.dropped} au total : trous dans ses canaux descendants")
+                        rp.dropped_logged = rp.dropped
     threading.Thread(target=encoder, name="encoder", daemon=True).start()
     radio.started.wait()
     if radio.failed:
@@ -1020,7 +1079,6 @@ def run_usrp(a):
         log(lat)
     # UHD's own one-letter U/L/O prints are replaced by the dated lines of StallWatch
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
-    import uhd
     mux, core, rx, tb, mcr, decim = build(a, log)
     wall0 = [time.time()]                       # Unix time of DOCSIS timestamp 0, set at start
     pcap = attach_pcap(a.pcap, mux, rx, lambda ts: wall0[0] + ts / TS_RATE) if a.pcap else None
@@ -1043,6 +1101,7 @@ def run_usrp(a):
         args += f",recv_frame_size={a.recv_frame_size}"
     if a.radio_process:
         return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
+    import uhd
     usrp = uhd.usrp.MultiUSRP(args)
     usrp.set_tx_rate(fs_tx)
     usrp.set_tx_freq(uhd.types.TuneRequest(tx_center))

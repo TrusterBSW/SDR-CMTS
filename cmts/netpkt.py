@@ -94,7 +94,8 @@ def summary(eth):
             blk = struct.unpack(">H", u[2:4])[0]
             return f"TFTP {name} bloc {blk}" + (f" ({len(u) - 4} octets)" if op == 3 else "") + f" {s} → {d}"
         if op == 5:
-            return f"TFTP ERROR « {u[4:].split(b'\\0')[0].decode(errors='replace')} » {s} → {d}"
+            msg = u[4:].split(b"\0")[0].decode(errors="replace")
+            return f"TFTP ERROR « {msg} » {s} → {d}"
         return f"TFTP {name} {s} → {d}"
     if 37 in (sp, dp):
         return f"ToD (heure) {s}:{sp} → {d}:{dp}" + (f" = {struct.unpack('>I', u[:4])[0]}" if len(u) == 4 else "")

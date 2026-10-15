@@ -711,3 +711,72 @@ le port TX/RX du B210 débranché ; le B210 écoutait sur RX2, sur la 2e sortie 
 - Le suivi de phase de l'égaliseur prend 37 ns par symbole ; un suivi par blocs le réduirait.
 - Le RS pourrait passer en SIMD.
 - Il manque un essai long de stabilité.
+
+## Deux B210 sans horloge commune (nuit du 14 au 15/10/2026)
+
+**Pourquoi.** Un B210 porte au plus 6 canaux descendants. Pour en avoir plus, chaque radio émet un bloc de canaux
+adjacents (branche `multi-b210`, `--ds-radios 2`). Il faut deux contrôleurs USB : le Proxmox n'en a qu'un, d'où le
+Threadripper 2950X (10.5.1.3). Il n'y a pas encore de 10 MHz commun entre les deux B210.
+
+**Le 2950X.**
+- Debian 12 / PVE 8, Python 3.11 et UHD 4.3 : deux constructions réservées à Python 3.12+ corrigées (f-strings
+  imbriquées, `SharedMemory(track=False)` → `usproc.attach_shm`).
+- Mémoire sur un seul canal (2 × 8 Go en 2133 sur `P0 CHANNEL A`), nœud NUMA 1 sans mémoire, hyperthreads −25 % sur la
+  synthèse AVX2 : 6 DS par radio ne suivent pas, 3 oui. L'overclock du CPU a planté sous AVX : retiré.
+
+**Câblage.** Les TX/RX des deux B210 sur un coupleur 2→1, les RX2 sur un autre précédé du −8 dB, les deux sur les
+sorties d'un 1→3 dont l'**entrée** va au modem. Tout sur les sorties, le signal ne passait que par l'isolation entre
+sorties : canaux faibles qui décrochaient.
+
+**Un démarrage sur deux sans modem.** Le modem accrochait le primaire mais ses RNG-REQ restaient sans réponse : un
+canal montant ne décodait plus rien. Son seuil de bruit avait été pris sur les zéros que le DDC laisse quand le
+processus montant démarre en retard et saute le début du flux (−270 dBFS) ; avec un tel seuil tous les blocs
+paraissent occupés, et le seuil, mis à jour seulement sur les fenêtres calmes, ne remontait jamais.
+Correction (`cmts/upstream.py`, `cmts/usproc.py`) : aucune fenêtre lue dans la zone sautée (`valid_from`), pas de
+seuil sous −130 dBFS, et un seuil repris s'il reste 30 dB sous 20 fenêtres de contention d'affilée.
+Résultat : 5 démarrages sur 5 en ligne en ~70 s.
+
+**La dérive des horloges** (`tools/clock_drift.py`).
+- Ekard −6,97 ppm, JN76WAJ −4,49 ppm contre l'horloge de l'hôte ; **+2,5 ppm l'un contre l'autre, 8,9 ms par
+  heure**. Le modem remet les paquets agrégés dans l'ordre dans une fenêtre de 10 ms : sans correction, l'agrégation
+  casserait au bout d'environ une heure.
+- Juste après `set_time_now`, un B210 a encore rendu une fois son ancienne heure (0,72 s au lieu de 0,20) : une
+  lecture aberrante qui faussait toute la droite.
+
+**Le recalage de la suiveuse** (`cmts/radio.py`).
+- Chaque radio ajuste une droite de l'heure de son appareil contre `time.perf_counter()`, la même horloge pour tous
+  les processus (`ClockFit`, lectures aberrantes écartées). La principale publie la sienne en mémoire partagée.
+- Pour chaque bloc, la suiveuse calcule l'heure de sa propre horloge à laquelle la principale émet le même bloc. Si
+  son horaire s'en écarte de plus de ¾ de groupe, elle insère 8 paquets MPEG nuls dans le bloc, ou retire le groupe
+  de 8 qui en contient le plus.
+- 8 paquets = un cycle d'embrouillage J.83-A, et 8 × 204 octets tombent juste sur l'entrelaceur : le flux reste
+  un flux J.83-A valide, sans saut de phase ni de rythme symbole. Seul son contenu se déplace de ~235 µs.
+- Essai de 86 min (2 + 2 DS, émission horodatée) : **186-189 Mbit/s en descendant de bout en bout**, montant 46-50,
+  ping 68-73 ms, aucun oubli. La suiveuse a mesuré elle-même +2,35-2,50 ppm et inséré 53 groupes, **12,44 ms**
+  cumulés : au-delà de la fenêtre du modem.
+- Fausse piste en cours de nuit : « l'émission horodatée éteint la suiveuse ». L'essai qui l'avait fait croire
+  tournait sans suiveuse : le B210 était encore occupé par un script de test.
+
+**Décrochages au début d'un téléchargement.**
+- Reproduits à coup sûr : 4 min de calme, puis iperf3 en descendant (`tools/burst_test.sh`) → les deux radios
+  bloquées 40-100 ms ensemble, underflow, le modem perd un canal de la suiveuse ~10 s.
+- Réfuté par la mesure, une piste après l'autre : priorité des fils libusb, équilibrage NUMA du noyau, ramasse-miettes
+  de la MAC, iperf3 sur le jumeau du CPU des interruptions USB, lecture de l'heure de l'appareil.
+- Instrumentation de chaque étape du chemin d'émission (lignes `!! encodeur`, `!! envoi`, `[MAC] !!`) et du temps
+  d'attente de CPU par fil (`schedstat`) : les deux encodeurs attendaient **le même bloc** 18-25 ms de la MAC ; son
+  fil `tap` tournait 37 ms d'affilée, sans attendre de CPU.
+- **Cause** : au démarrage d'un téléchargement, toute la fenêtre TCP de l'émetteur arrive d'un coup dans le TAP ;
+  chaque lecture revient aussitôt et le fil `tap` traite des centaines de trames en Python sans jamais dormir. Le fil
+  qui construit les blocs TS, qui relâche le GIL à chaque appel C et à chaque sémaphore, ne le récupère qu'aux
+  bascules forcées. En régime établi, les trames arrivent cadencées par les ACK et les lectures attendent : rien.
+- **Correction** : trois mesures contre cette même cause, aucune ne suffisant seule (1-2 blocages par rafale à chaque
+  essai d'une seule) : bascule du GIL toutes les 0,5 ms dans la MAC, pause du fil `tap` toutes les 32 trames lues sans
+  attente, et pause du fil `tap` tant que l'encodeur n'a pas fini de bloc depuis deux durées de bloc. Ensemble :
+  **7 rafales sur 8 sans blocage**, contre 2 blocages à chaque rafale avant.
+
+**Reste.**
+- La correction de fond : sortir le pont TAP du processus MAC, ou construire les blocs TS sans le GIL.
+- De rares retards USB de 14-20 ms sur JN76WAJ (contrôleur du chipset X399), un underflow et une perte de verrou
+  isolés : à essayer sur le contrôleur 43:00.3.
+- 3 + 3 DS, puis 12 DS avec plus de mémoire ; le 10 MHz commun (`--clock-source external`), avec lequel le recalage
+  n'aura plus rien à corriger.

@@ -14,6 +14,7 @@ import shutil
 import struct
 import subprocess
 import threading
+import time
 
 TUNSETIFF = 0x400454CA
 IFF_TAP, IFF_NO_PI = 0x0002, 0x1000
@@ -44,6 +45,19 @@ def ensure_tap(name, log):
 # longer TAP queue only absorbs the pauses of the reader.
 TAP_QLEN = 10000
 
+# A download starting after a quiet spell: the sender's whole window lands in the TAP queue at
+# once (iperf3 on the CMTS host: memory speed), and this thread, each read returning at once,
+# went through hundreds of frames in Python without ever sleeping (37 ms, 2026-10-15). The TS
+# block encoder of the same process lets go of the GIL at every C call: it got it back only at
+# forced switches, the radios waited 18-25 ms for one block and underflowed together, the modem
+# dropping a channel for ~10 s. A short pause every BURST_FRAMES frames read without waiting
+# bounds that; in steady traffic the reads wait (ACK-clocked arrivals) and nothing changes.
+# Capacity in a burst: ~32 frames per ~1 ms, ~3 times what 4 DS carry. Not enough alone: see
+# mini_cmts.py (SWITCH_INTERVAL_S, and the yield of start_bridge while the encoder is late).
+BURST_FRAMES = 32
+BURST_PAUSE_S = 150e-6
+BURST_READ_S = 20e-6          # a read faster than this found the frame already queued
+
 
 def set_qlen(name, qlen, log):
     cmd = ["ip", "link", "set", "dev", name, "txqueuelen", str(qlen)]
@@ -70,11 +84,17 @@ class TapBridge:
     def start(self, downstream, stop):
         """downstream(eth) is called for every frame Linux sends on the TAP."""
         def loop():
+            run = 0                            # frames read in a row without waiting
             while not stop.is_set():
+                t0 = time.perf_counter()
                 try:
                     eth = os.read(self.fd, 2048)
                 except OSError:
                     break
+                run = run + 1 if time.perf_counter() - t0 < BURST_READ_S else 0
+                if run >= BURST_FRAMES:
+                    run = 0
+                    time.sleep(BURST_PAUSE_S)
                 self.stats["down"] += 1
                 downstream(eth)
         threading.Thread(target=loop, name="tap", daemon=True).start()

@@ -72,6 +72,7 @@ def is_udp(eth, sport=None, dport=None):
     return (sport is None or sp == sport) and (dport is None or dp == dport)
 
 
+existed = os.path.exists(f"/sys/class/net/{IFACE}")
 if not ensure_tap(IFACE, print):
     sys.exit("cmts0 impossible à créer")
 br = TapBridge(IFACE, print)                    # carrier up before the servers start
@@ -121,5 +122,9 @@ finally:
     out = prov.communicate(timeout=5)[0]
     print("--- provision.py :")
     print("\n".join("    " + l for l in out.splitlines() if l.startswith("[")))
+if not existed:
+    # (a cmts0 left with 10.10.0.1 on this PC took the traffic meant for the CMTS behind the modem
+    # once, 2026-10-15: every iperf3 / ping to 10.10.0.1 answered locally)
+    subprocess.run(["sudo", "-n", "ip", "link", "del", IFACE], capture_output=True)
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

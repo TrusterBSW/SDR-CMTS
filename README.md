@@ -100,6 +100,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--mtc-owed` | on | multi-channel requests added up (the modem only requests new bytes), granted on every channel each MAP, Data Grant Pending while bytes are owed; `--no-mtc-owed`: each request replaces the previous one |
 | `--ds-aqm` | 30 ms | CoDel on the downstream queues: a few frames dropped one at a time instead of bursts at the `--ds-queue-ms` limit; ping during a download 88 -> 55 ms; 0 = off |
 | `--tx-dc-cal` | off | measure and cancel the B210's TX LO leakage at start (-2 to -24 dB; did not help the 3rd channel) |
+| `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | several radios (branch `multi-b210`): the downstream channels split into adjacent blocks, one radio per block; the first one also receives the upstream. Without a common 10 MHz (`internal`), the follower realigns on the primary by groups of 8 MPEG packets (drift measured between two B210s: 2.5 ppm, 8.9 ms/h); 2 B210s with 2 + 2 DS: 189 / 50 Mbit/s |
 | `--prov-args` | — | e.g. `"--us-burst 64000 --us-rate 1000000000"` (already the defaults; 1 Gbit/s both ways); `--us-buffer` (default 128 KB) sets the modem's upstream buffer (TLV 24.35): ping during an upload 237 -> 93 ms |
 
 `python3 mini_cmts.py --help` lists everything; `--sim SECONDS` runs a simulated modem without
@@ -132,6 +133,13 @@ hardware.
   order and cuts them into MAC frames again (Continuous Concatenation and Fragmentation). Requests
   are in bytes (queue-depth based requests) and only carry new bytes: the CMTS adds them up, grants
   them on every ranged channel and signals what it still owes with a Data Grant Pending.
+- **Several radios** (`--ds-radios 2`, branch `multi-b210`, `cmts/radio.py`):
+  - each radio transmits a block of adjacent channels in a process of its own; the first one also receives the upstream;
+  - the MAC numbers the blocks; a follower sets its clock on the primary's and timestamps its block k as the primary does;
+  - without a common 10 MHz the oscillators drift (2.5 ppm measured between two B210s, 8.9 ms/h, `tools/clock_drift.py`):
+    every radio fits a line of its clock against the host's, and the follower inserts or drops 8 null MPEG packets
+    (one J.83-A randomization cycle, ~235 µs) when it slides away from the primary;
+  - 2 B210s with 2 + 2 DS: 186-189 / 50 Mbit/s for 86 min, with 12.4 ms of correction in total.
 - **Bridge** (`cmts/bridge.py`): Ethernet frames between the modems and the TAP interface.
 - **Provisioning** (`provision.py`, `cmts/cmcfg.py`): DHCP, TFTP, ToD, config file generator.
 

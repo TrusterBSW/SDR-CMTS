@@ -30,6 +30,39 @@ Ce qui a été fait le 12/10 (détails : `docs/TESTS.fr.md` T60-T65, `PLAN_AGREG
 - **TCP sur un seul flux en descendant** : la limite venait du client de test (carte USB-Ethernet sur un port USB 2.0). En USB 3, un seul flux fait 283 Mbit/s.
 - **Multi-B210** sur la branche `multi-b210`. Testé avec un seul B210 seulement, voir §3.
 
+### Nuit du 14 au 15/10 : deux B210 sur le 2950X (branche `multi-b210`, non commité)
+
+| Essai (2 B210, 2 + 2 DS, horloges internes, émission horodatée) | Valeur |
+|---|---|
+| Descendant, 8 flux | **189 Mbit/s** (capacité des 4 canaux) |
+| Montant, 8 flux | 50 Mbit/s |
+| Ping | ~68 ms |
+| Niveaux au modem | 4 canaux à 7-9 dBmV, SNR 38-41 dB |
+
+- **Démarrage** : 5 démarrages sur 5 en ligne en ~70 s. Avant, un sur deux échouait : le récepteur montant prenait son seuil de bruit sur les zéros laissés par le DDC au démarrage (−270 dBFS), ne décodait plus rien, et le modem restait au ranging sans réponse.
+- **Dérive des horloges sans 10 MHz commun** (`tools/clock_drift.py`) :
+  - Ekard −6,97 ppm et JN76WAJ −4,49 ppm par rapport à l'hôte, soit **+2,5 ppm l'un par rapport à l'autre** ;
+  - ça fait **8,9 ms par heure** : sans correction, la fenêtre de 10 ms du modem serait dépassée au bout d'environ une heure.
+- **Recalage de la suiveuse** (`cmts/radio.py`) :
+  - chaque radio ajuste une droite de l'heure de son appareil en fonction de l'horloge de l'hôte ; la principale publie la sienne en mémoire partagée ;
+  - la suiveuse insère ou retire un groupe de 8 paquets MPEG, environ 235 µs, quand l'écart dépasse ¾ de groupe ;
+  - le flux J.83-A reste continu, sans saut de phase ni perte de verrouillage ;
+  - elle mesure elle-même +2,4 à +2,5 ppm, comme l'outil de mesure.
+- **Essai long de 86 min** (T68) :
+  - descendant 185-189 Mbit/s jusqu'au bout, avec 12,44 ms de recalage cumulé, et 0 oubli du modem ;
+  - les seuls décrochages, d'environ 10 s sur un canal de la suiveuse, suivaient des underflows USB des deux radios au début de chaque rafale de trafic.
+- **Cause de ces décrochages, trouvée par la mesure** (T69) :
+  - au démarrage d'un téléchargement, toute la fenêtre TCP arrive d'un coup dans le TAP ;
+  - le fil `tap` de la MAC la traite en Python sans jamais dormir, et le fil qui construit les blocs TS n'obtient plus le GIL ;
+  - les radios attendent alors 18 à 25 ms le même bloc, ce qui épuise leur réserve.
+- **Correction** : trois mesures contre cette même cause, aucune ne suffisant seule (T69) :
+  - la bascule du GIL de la MAC à 0,5 ms ;
+  - une pause du fil `tap` toutes les 32 trames lues d'affilée ;
+  - une pause du fil `tap` tant que l'encodeur est en retard.
+
+  Ensemble : 7 rafales sur 8 sans blocage, contre 2 blocages à chaque rafale avant. Ça réduit le problème sans le supprimer : la correction de fond serait de sortir le pont TAP du processus MAC, ou de construire les blocs TS sans le GIL.
+- **Reste** : de rares retards USB de 14-18 ms sur JN76WAJ, sur le contrôleur du chipset, qui ont causé une perte de verrouillage isolée. À essayer : brancher JN76WAJ sur le contrôleur 43:00.3 (un port arrière du second die).
+
 ## 2. Lancer, configurer, lire les journaux
 
 Sur le Proxmox (`ssh root@10.5.1.2`). Le code de `main` est dans `/root/mini-cmts`, celui de la branche `multi-b210` dans `/root/mini-cmts-multi`.
@@ -73,15 +106,28 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
    - Lire son REG-REQ (capacités, RCP éventuels).
    - Vérifier que les deux modems tiennent ensemble : ranging, SID, grants, et un éventuel PC derrière le décodeur.
 2. **Usage réel** : YouTube, téléchargements, en surveillant le journal court.
-3. **Multi-B210 (12 DS)**, sur la branche `multi-b210` :
-   - `--ds-radios 2 --radio-serials A,B --clock-source external`, voir `configs/multi-b210.args` ;
-   - **il faut deux contrôleurs USB** : le Proxmox n'en a qu'un, d'où le 2950X, avec un nœud NUMA et un contrôleur USB par B210 ;
-   - numéros de série : `uhd_find_devices` ;
-   - **10 MHz commun** : CLKOUT du HackRF → répartiteur → entrées « 10MHz » des deux B210. Sans référence commune (`--clock-source internal`), l'écart entre les deux radios grandit d'environ 1 ms toutes les 10 minutes ; c'est tolérable pour un premier essai court ;
-   - combiner les deux sorties TX/RX avec un répartiteur monté à l'envers ;
-   - déjà vérifié avec un seul B210 : la radio principale émet, la 2e échoue proprement, et le Sagem accepte un RCC de 12 canaux. Ses profils CLAB-8M-016/024 ont un seul module 112-1002 MHz, sans limite d'adjacence ;
-   - avec 12 DS sur 266-354 MHz, les harmoniques 5 et 6 de l'oscillateur local de réception tombent dans le descendant, d'où du bruit sur le montant (§4) ;
-   - fusionner dans `main` seulement une fois validé à deux B210.
+3. **Multi-B210**, sur la branche `multi-b210`, et le 2950X (`ssh root@10.5.1.3`) :
+   - **Ce qui marche** : 2 + 2 DS sur deux B210, sans 10 MHz commun (§1).
+   - **La commande** :
+     ```bash
+     setsid -f /root/cmts-tools/run_multi.sh nom @configs/multi-b210.args
+     ```
+     Le fichier contient : 4 DS, `--radio-serials 000000367,JN76WAJ`, `--clock-source internal`, `--cpus 2-7,18-23`.
+   - **Les deux B210** :
+     - `000000367` « Ekard » : FPGA Ettus, en principale (réception montante sur son RX2), sur le contrôleur USB 09:00.3 ;
+     - `JN76WAJ` (LibreSDR) : FPGA LibreSDR, par `/root/.config/uhd.conf`, sur le contrôleur du chipset ;
+     - les deux sens fonctionnent, chacun a été principal à son tour.
+   - **Câblage** :
+     - les TX/RX des deux B210 sur un coupleur 2→1 ;
+     - les RX2 sur un autre 2→1, précédé du −8 dB ;
+     - ces deux coupleurs sur les **sorties** d'un 1→3, et le modem sur son **entrée**. Tout sur les sorties, ça ne passe que par l'isolation : signal faible et canaux qui décrochent.
+   - **Suite** :
+     - 3 + 3 DS, avec le canal du centre de chaque radio sur son oscillateur local (fuite, à surveiller) ;
+     - un essai de plusieurs heures avec le recalage ;
+     - 6 + 6 DS (12 DS) seulement avec plus de mémoire sur le 2950X (§4).
+   - **10 MHz commun**, quand il sera là : `--clock-source external`. Le recalage reste actif, et il n'aura plus rien à corriger.
+   - Avec 12 DS sur 266-354 MHz, les harmoniques 5 et 6 de l'oscillateur local de réception tombent dans le descendant, d'où du bruit sur le montant (§4).
+   - Fusionner dans `main` seulement après un essai long validé.
 4. **Fichiers de configuration complets (TOML)**. Les fichiers `@configs/*.args` sont la version simple, déjà utilisable. La suite :
    - un `--config lab.toml` lisible, avec des sections `[downstream]`, `[upstream]`, `[radios]` et `[provisioning]` ;
    - plusieurs profils de banc (`proxmox-6ds`, `2950x-12ds`…) ;
@@ -107,6 +153,17 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
 - **Carte USB-Ethernet du portable** : à brancher sur un port USB 3. En USB 2.0, elle perd des paquets en rafales au-delà de ~300 Mbit/s. Le 12/10, elle a aussi cessé de recevoir pendant ~2 h, puis a été rebranchée.
 - **NetworkManager** : `ipv4.never-default yes` sur « Connexion filaire 1 », sinon le modem devient la route par défaut du portable.
 - **Copies de sûreté** : tag `ok-2026-10-12-avant-sfr`, `/root/mini-cmts.ok-2026-10-12` et `/root/cmts-tools.ok-2026-10-12`.
+- **2950X (10.5.1.3)** : Debian 12 et PVE 8, avec Python 3.11 et UHD 4.3. Le code reste compatible 3.11 : pas de f-string imbriquée avec les mêmes guillemets, pas de `SharedMemory(track=…)`.
+  - **Pas d'overclock** : il a planté sous la charge AVX.
+  - **La mémoire** : 2 × 8 Go sur un seul canal (`P0 CHANNEL A`, 2133 MT/s), et le nœud NUMA 1 n'a aucune mémoire. Utiliser les cœurs 2-7 (nœud 0) ; leurs hyperthreads 18-23 coûtent 25 % sur la synthèse. Jusqu'à 3 DS par radio, ça tient ; à 6 DS par radio, il ne suit pas.
+  - **Interruptions USB** : à replacer après chaque redémarrage, xhci 97 sur le CPU 0 et 106 sur le CPU 1 :
+    ```bash
+    echo 0 > /proc/irq/97/smp_affinity_list
+    echo 1 > /proc/irq/106/smp_affinity_list
+    ```
+- **« US: bruit −303 dBFS »** dans la ligne d'état : avant le 15/10, c'était un seuil de bruit bloqué près de zéro, et ce canal ne décodait plus rien. C'est corrigé ; s'il réapparaît, `MINI_CMTS_US_DEBUG=1` affiche les positions de l'anneau toutes les 2 s.
+- **`tests/test_provision_tap.py`** crée `cmts0` en 10.10.0.1 sur la machine qui le lance. Sur le portable, cette interface captait tout le trafic destiné au vrai CMTS. Le test la supprime maintenant s'il l'a créée.
+- **Page d'état du modem** (192.168.100.1, accès par le bouton WPS) : niveau et SNR de chaque canal, et puissance montante. C'est le meilleur outil pour régler les niveaux.
 
 ## 5. Annexe : écoute de SFR (terminée)
 

@@ -79,5 +79,62 @@ check("6 canaux : le RCC d'avant (un module, profil 8 canaux)", rid6 == b"\x00\x
       and len([1 for k, v in cmcfg.parse(cmcfg.parse(rcc6)[0][1]) if k == 4]) == 1)
 check("profil trop petit : pas de RCC", registration.receive_channel_config([tlvs[0]], chans) == (b"", None))
 print("\n".join("   " + l for l in registration.describe_rcps(tlvs)))
+
+# ---- a follower without a common 10 MHz: realigned on the primary by groups of 8 TS packets
+import numpy as np  # noqa: E402
+from cmts import radio  # noqa: E402
+from cmts.j83a import J83AEncoder  # noqa: E402
+
+rng = np.random.default_rng(5)
+fs, n_nom, g = 27.808e6, 48 * 204 * 4, 8 * 204 * 4          # 256-QAM, 4 samples per symbol
+EPS_P, EPS_F, OFF_F = 1.5e-6, -3.5e-6, 180e-6               # device clocks vs the host, follower offset
+
+
+def dev(h, eps, off):
+    return off + h * (1 + eps)
+
+
+fp, ff = radio.ClockFit(), radio.ClockFit()
+for i in range(60):                                          # one reading per second, 0-60 us of USB jitter
+    h = 10.0 + i
+    fp.add(h + rng.uniform(0, 60e-6), dev(h, EPS_P, 0.0))
+    ff.add(h + rng.uniform(0, 60e-6), dev(h, EPS_F, OFF_F))
+check("ClockFit : pente de chaque horloge à 0,1 ppm près",
+      abs(fp.model[2] - 1 - EPS_P) < 1e-7 and abs(ff.model[2] - 1 - EPS_F) < 1e-7,
+      f"{(fp.model[2] - 1) * 1e6:+.2f} / {(ff.model[2] - 1) * 1e6:+.2f} ppm")
+t_p = 75.0
+want = radio.follower_time(fp.model, ff.model, t_p)
+h_true = t_p / (1 + EPS_P)
+check("follower_time : la même heure de l'hôte à 50 µs près",
+      abs(want - dev(h_true, EPS_F, OFF_F)) < 50e-6, f"{(want - dev(h_true, EPS_F, OFF_F)) * 1e6:+.1f} µs")
+
+# one hour of blocks: the follower's schedule against the true time it should use
+adj, worst, ins, drop = 0, 0.0, 0, 0
+blk_s = n_nom / fs
+fpm, ffm = (0.0, 0.0, 1 + EPS_P), (0.0, OFF_F, 1 + EPS_F)
+for seq in range(0, int(3600 / blk_s), 7):                   # (one block in 7: the drift is slow)
+    t_air = 0.5 + seq * n_nom / fs
+    err = radio.follower_time(fpm, ffm, t_air) - (0.5 + (seq * n_nom + adj) / fs)
+    worst = max(worst, abs(err)) if seq > 2000 else worst
+    a = radio.group_action(err, g / fs)
+    adj += a * g
+    ins, drop = ins + (a > 0), drop + (a < 0)
+check("une heure à 5 ppm d'écart : décalage tenu sous 3/4 de groupe (~176 µs)",
+      worst <= 0.75 * g / fs + 1e-6, f"pire {worst * 1e6:.0f} µs, groupes +{ins} / -{drop}")
+check("la suiveuse lente retire des groupes, sans en ajouter une fois calée", drop > 50 and ins <= 1,
+      f"+{ins} / -{drop}")
+
+pk = np.tile(radio.NULL_TS, (2, 48, 1)).copy()
+pk[:, :, 1:3] = (0x1F, 0xFE)                                 # DOCSIS packets everywhere ...
+pk[:, 24:32, 1:3] = (0x1F, 0xFF)                             # ... but group 3 is null
+less = radio.regroup(pk, -1)
+more = radio.regroup(pk, +1)
+check("retrait : le groupe de 8 paquets nuls, pas un groupe de données",
+      less.shape == (2, 40, 188) and not np.any(((less[:, :, 1] & 0x1F) == 0x1F) & (less[:, :, 2] == 0xFF)))
+check("ajout : 8 paquets nuls devant le bloc", more.shape == (2, 56, 188)
+      and np.all(more[:, :8, 2] == 0xFF) and np.array_equal(more[:, 8:], pk))
+enc = J83AEncoder(256)
+ok_enc = all(enc.encode(b[0]).size == b.shape[1] * 204 for b in (less, more, pk))
+check("J.83-A : 40, 48 et 56 paquets s'encodent d'affilée (multiples de 8)", ok_enc)
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

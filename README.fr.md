@@ -106,6 +106,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--mtc-owed` | oui | requêtes multi-canal cumulées (le modem ne demande que les octets nouveaux), accordées sur chaque canal à chaque MAP, grant pending tant qu'il reste dû ; `--no-mtc-owed` : chaque requête remplace la précédente |
 | `--ds-aqm` | 30 ms | CoDel sur les files descendantes : quelques trames jetées une à une au lieu de rafales à la limite `--ds-queue-ms` ; ping pendant un téléchargement 88 → 55 ms ; 0 = sans |
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
+| `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | plusieurs radios (branche `multi-b210`) : les canaux descendants répartis en blocs adjacents, une radio par bloc ; la première reçoit aussi le montant. Sans 10 MHz commun (`internal`), la suiveuse se recale sur la principale par groupes de 8 paquets MPEG (dérive mesurée entre deux B210 : 2,5 ppm, 8,9 ms/h) ; 2 B210 en 2 + 2 DS : 189 / 50 Mbit/s |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |
 
 `python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
@@ -147,6 +148,14 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - les requêtes sont en octets (requêtes « queue-depth ») et ne portent que les octets nouveaux :
     le CMTS les cumule, les accorde sur chaque canal rangé et signale par un grant pending ce qu'il
     doit encore.
+- **Plusieurs radios** (`--ds-radios 2`, branche `multi-b210`, `cmts/radio.py`) :
+  - chaque radio émet un bloc de canaux adjacents dans son propre processus ; la première reçoit aussi le montant ;
+  - la MAC numérote les blocs ; une suiveuse règle son horloge sur celle de la principale et horodate son bloc k
+    comme la principale ;
+  - sans 10 MHz commun, les oscillateurs dérivent (2,5 ppm mesurés entre deux B210, 8,9 ms/h, `tools/clock_drift.py`) :
+    chaque radio ajuste une droite de son horloge contre celle de l'hôte, et la suiveuse insère ou retire 8 paquets
+    MPEG nuls (un cycle d'embrouillage J.83-A, ~235 µs) quand elle s'écarte de la principale ;
+  - 2 B210 en 2 + 2 DS : 186-189 / 50 Mbit/s pendant 86 min, avec 12,4 ms de correction cumulée.
 - **Pont** (`cmts/bridge.py`) : trames Ethernet entre les modems et l'interface TAP.
 - **Provisionnement** (`provision.py`, `cmts/cmcfg.py`) : DHCP, TFTP, ToD, générateur de fichier
   de configuration.

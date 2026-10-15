@@ -148,7 +148,7 @@ def main():
             c = collections.Counter((iuc, z) for _, iuc, _, z in ev)
             sz = collections.Counter(n for _, iuc, n, z in ev if iuc in DATA_IUC and not z)
             print(f"   canal {ch} : {len(ev)} IE de {ev[0][0] % 86400 / 3600:.0f}h… "
-                  f"({', '.join(f'IUC {i}{' (en attente)' if z else ''} x{n}' for (i, z), n in sorted(c.items()))}), "
+                  f"({', '.join(f'IUC {i}' + (' (en attente)' if z else '') + f' x{n}' for (i, z), n in sorted(c.items()))}), "
                   f"tailles de grant {sz.most_common(5)}")
     return 0
 
