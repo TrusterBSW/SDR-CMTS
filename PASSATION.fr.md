@@ -62,6 +62,7 @@ Ce qui a été fait le 12/10 (détails : `docs/TESTS.fr.md` T60-T65, `PLAN_AGREG
 
   Ensemble : 7 rafales sur 8 sans blocage, contre 2 blocages à chaque rafale avant. Ça réduit le problème sans le supprimer : la correction de fond serait de sortir le pont TAP du processus MAC, ou de construire les blocs TS sans le GIL.
 - **Reste** : de rares retards USB de 14-18 ms sur JN76WAJ, sur le contrôleur du chipset, qui ont causé une perte de verrouillage isolée. À essayer : brancher JN76WAJ sur le contrôleur 43:00.3 (un port arrière du second die).
+- **Pilote bladeRF** (`--sdr bladerf`, `cmts/sdrdev.py`) : libbladeRF appelée directement via `ctypes`, sans SoapySDR. Il est écrit et testé sans carte (`tests/test_bladerf.py`), mais **pas encore essayé sur la carte**, voir §3.
 
 ## 2. Lancer, configurer, lire les journaux
 
@@ -128,6 +129,26 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
    - **10 MHz commun**, quand il sera là : `--clock-source external`. Le recalage reste actif, et il n'aura plus rien à corriger.
    - Avec 12 DS sur 266-354 MHz, les harmoniques 5 et 6 de l'oscillateur local de réception tombent dans le descendant, d'où du bruit sur le montant (§4).
    - Fusionner dans `main` seulement après un essai long validé.
+3 bis. **bladeRF 2.0 micro** (`--sdr bladerf`, branche `multi-b210`) :
+   - **Matériel** :
+     - TX1 vers le modem, RX1 pour le montant (à partir de 47 MHz) ;
+     - jusqu'à 3 DS : émission et réception à 27,808 MS/s, soit environ 222 Mo/s d'USB ;
+     - un bladeRF 1 est refusé pour le montant : il ne reçoit pas sous 300 MHz sans le transverter XB-200.
+   - **Paquets sur le 2950X** : `bladerf libbladerf2 libbladerf-dev bladerf-fpga-hostedxa4` (déjà installés). Pour un xA9 : `bladerf-fpga-hostedxa9`.
+   - **D'abord** : `python3 tools/bladerf_check.py [--id "*:serial=…"] [--loop]`. Il affiche :
+     - la carte, les versions, la liaison USB 3 et les plages de gain ;
+     - 10 s d'émission et de réception (underruns, overflows) ;
+     - avec `--loop` (TX1 et RX1 sur le même coax, CMTS arrêté) : le retard TX→RX.
+   - **Ensuite** :
+     ```bash
+     run_multi.sh bl1 @configs/bladerf.args
+     ```
+     Le fichier contient : 3 DS, `--sdr bladerf`, `--gain` à caler avec la page d'état du modem (viser 5-10 dBmV par canal).
+   - **À vérifier sur la carte** :
+     - le format d'horodatage de libbladeRF : 1 en 2.4.1, 2 à partir de 2.6 ; forçable par `MINI_CMTS_BLADERF_META_FORMAT` ;
+     - le gain TX : son échelle diffère de celle du B210 ;
+     - la mise à jour d'horodatage par bloc (`TX_UPDATE_TIMESTAMP`) ;
+     - les underruns signalés.
 4. **Fichiers de configuration complets (TOML)**. Les fichiers `@configs/*.args` sont la version simple, déjà utilisable. La suite :
    - un `--config lab.toml` lisible, avec des sections `[downstream]`, `[upstream]`, `[radios]` et `[provisioning]` ;
    - plusieurs profils de banc (`proxmox-6ds`, `2950x-12ds`…) ;

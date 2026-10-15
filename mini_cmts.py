@@ -136,6 +136,9 @@ def build(a, log=print):
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
+    if getattr(a, "sdr", "b210") == "bladerf":
+        # its TX and RX share one sample rate and its counters count samples: one tick per sample
+        a.mcr_mult = 1
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
@@ -230,6 +233,11 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     # through its CIC alone, and 5 DS + 2 US at 55.616 MHz / 3 left the upstream at MER 14 dB
     # instead of 26 (2026-10-10). At /2 the same pair took 333 MB/s of USB: TX late, RX overflows.
     decim = max(d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d)
+    if getattr(a, "sdr", "b210") == "bladerf":
+        decim = 1                               # (no FPGA decimation: the upstream processes decimate)
+        if mcr > 30.72e6:
+            log(f"!! bladeRF : émission ET réception à {mcr / 1e6:.3f} MS/s ({mcr * 8 / 1e6:.0f} Mo/s d'USB) : "
+                f"au-delà de ce que tient un bladeRF 2.0 en 16 bits ; 3 DS au plus (27,808 MS/s)")
     if (mcr + mcr / decim) * 4 > 300e6:
         log(f"!! USB : {(mcr + mcr / decim) * 4 / 1e6:.0f} Mo/s (émission + réception large bande) : au-delà "
             f"d'environ 300 Mo/s, le B210 décroche (essai du 2026-10-10)")
@@ -922,7 +930,10 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
         fr = [chans[i][1] for i in g]
         center = (min(fr) + max(fr)) / 2 if len(groups) > 1 else tx_center
         span_r = (max(fr) - min(fr)) + 8e6
-        args_r = args + (f",serial={serials[r]}" if r < len(serials) else "")
+        if a.sdr == "bladerf":
+            args_r = f"*:serial={serials[r]}" if r < len(serials) else args
+        else:
+            args_r = args + (f",serial={serials[r]}" if r < len(serials) else "")
         params = dict(args=args_r, mcr=mcr, fs_tx=fs_tx, tx_center=center, tx_bw=min(56e6, max(20e6, 1.5 * span_r)),
                       gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
                       rx_gain=a.us_gain, steps=[2 * np.pi * (f - center) / fs_tx for f in fr],
@@ -931,6 +942,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                       tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
                       pk_shape=(len(g), a.block, 2 if r == 0 else 8), rx=(r == 0), follow=(r > 0),
                       clock_source=getattr(a, "clock_source", "internal"),
+                      driver="bladerf" if a.sdr == "bladerf" else "uhd",
                       tag="RADIO" if r == 0 else f"RADIO{r + 1}")
         # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
         radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, params["pk_shape"][2], log,
@@ -1079,6 +1091,8 @@ def run_usrp(a):
         log(lat)
     # UHD's own one-letter U/L/O prints are replaced by the dated lines of StallWatch
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
+    if a.sdr != "b210" and not a.radio_process:
+        sys.exit(f"--sdr {a.sdr} : avec --radio-process uniquement")
     mux, core, rx, tb, mcr, decim = build(a, log)
     wall0 = [time.time()]                       # Unix time of DOCSIS timestamp 0, set at start
     pcap = attach_pcap(a.pcap, mux, rx, lambda ts: wall0[0] + ts / TS_RATE) if a.pcap else None
@@ -1099,6 +1113,8 @@ def run_usrp(a):
         # same on the receive side: 6 DS + 2 US, RX at 27.8 MS/s, the radio's RX thread went
         # from 24 to 14 % of a core (2026-10-11)
         args += f",recv_frame_size={a.recv_frame_size}"
+    if a.sdr == "bladerf":
+        args = a.sdr_args                       # libbladeRF device identifier ("" = the first one)
     if a.radio_process:
         return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
     import uhd
@@ -1444,6 +1460,11 @@ def parser():
     g.add_argument("--recv-frame-size", type=int, default=16360,
                    help="UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX "
                         "stream; 0 = UHD's")
+    g.add_argument("--sdr", choices=("b210", "bladerf"), default="b210",
+                   help="the SDR: b210 (Ettus, UHD) or bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at "
+                        "the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream)")
+    g.add_argument("--sdr-args", default="",
+                   help="--sdr bladerf: libbladeRF device identifier (\"\" = the first one, \"*:serial=...\")")
     g.add_argument("--args", default="type=b200", help="UHD device args")
     g.add_argument("--rt-prio", type=int, default=50,
                    help="real-time priority (SCHED_RR 1-99) of the whole process, 0 = normal")

@@ -2,6 +2,10 @@
 devices than the B210 can carry the CMTS:
 
   UhdRadio    Ettus B200/B210 through UHD (the reference: everything measured so far).
+  BladeRFRadio  Nuand bladeRF 2.0 micro (AD9361, like the B210) through libbladeRF, Nuand's own
+              library, called directly (ctypes): no SoapySDR or other layer in between. TX and
+              RX run at the same sample rate (no FPGA decimation: the upstream processes
+              decimate); its sample counters are the ticks of the radio process.
 
 Interface (times in seconds of the device clock, ticks at p["mcr"]):
   describe() -> str          one log line: rates, frequencies, gains
@@ -31,10 +35,12 @@ TX_CAL_RX_BW = 56e6
 
 
 def open_radio(p, has_rx):
-    """The device of the radio parameters p (p["driver"]: "uhd", the default)."""
+    """The device of the radio parameters p (p["driver"]: "uhd", the default, or "bladerf")."""
     drv = p.get("driver", "uhd")
     if drv == "uhd":
         return UhdRadio(p, has_rx)
+    if drv == "bladerf":
+        return BladeRFRadio(p, has_rx)
     raise ValueError(f"pilote SDR inconnu : {drv}")
 
 
@@ -164,4 +170,257 @@ class UhdRadio:
             return "U"
         if ec == C.time_error:
             return "L"
+        return None
+
+
+# ------------------------------------------------------------------ bladeRF (libbladeRF, ctypes)
+_BRF = None
+CH_RX0, CH_TX0 = 0, 1                     # BLADERF_CHANNEL_RX(0), BLADERF_CHANNEL_TX(0)
+RX_X1, TX_X1 = 0, 1                       # bladerf_channel_layout
+DIR_RX, DIR_TX = 0, 1                     # bladerf_direction
+GAIN_MGC = 1                              # bladerf_gain_mode: BLADERF_GAIN_DEFAULT, BLADERF_GAIN_MGC
+META_TX_BURST_START, META_TX_BURST_END, META_TX_UPDATE_TIMESTAMP = 1 << 0, 1 << 1, 1 << 3
+META_RX_NOW = 1 << 31
+META_STATUS_OVERRUN, META_STATUS_UNDERRUN = 1 << 0, 1 << 1
+Q11 = 2048.0                              # SC16 Q11: +-2048 full scale
+
+
+def _lib():
+    """libbladeRF with the prototypes used here; (lib, (major, minor, patch))."""
+    global _BRF
+    if _BRF is not None:
+        return _BRF
+    import ctypes
+    import ctypes.util
+    name = ctypes.util.find_library("bladeRF") or "libbladeRF.so.2"
+    lib = ctypes.CDLL(name)
+    c = ctypes
+    P = c.c_void_p
+
+    class Version(c.Structure):
+        _fields_ = [("major", c.c_uint16), ("minor", c.c_uint16), ("patch", c.c_uint16), ("describe", c.c_char_p)]
+
+    class Range(c.Structure):
+        _fields_ = [("min", c.c_int64), ("max", c.c_int64), ("step", c.c_int64), ("scale", c.c_float)]
+
+    class Meta(c.Structure):
+        _fields_ = [("timestamp", c.c_uint64), ("flags", c.c_uint32), ("status", c.c_uint32),
+                    ("actual_count", c.c_uint), ("reserved", c.c_uint8 * 32)]
+
+    protos = {
+        "bladerf_open": (c.c_int, [c.POINTER(P), c.c_char_p]),
+        "bladerf_close": (None, [P]),
+        "bladerf_get_board_name": (c.c_char_p, [P]),
+        "bladerf_get_serial": (c.c_int, [P, c.c_char_p]),
+        "bladerf_set_sample_rate": (c.c_int, [P, c.c_int, c.c_uint, c.POINTER(c.c_uint)]),
+        "bladerf_get_sample_rate": (c.c_int, [P, c.c_int, c.POINTER(c.c_uint)]),
+        "bladerf_set_bandwidth": (c.c_int, [P, c.c_int, c.c_uint, c.POINTER(c.c_uint)]),
+        "bladerf_set_frequency": (c.c_int, [P, c.c_int, c.c_uint64]),
+        "bladerf_get_frequency": (c.c_int, [P, c.c_int, c.POINTER(c.c_uint64)]),
+        "bladerf_set_gain_mode": (c.c_int, [P, c.c_int, c.c_int]),
+        "bladerf_set_gain": (c.c_int, [P, c.c_int, c.c_int]),
+        "bladerf_get_gain": (c.c_int, [P, c.c_int, c.POINTER(c.c_int)]),
+        "bladerf_get_gain_range": (c.c_int, [P, c.c_int, c.POINTER(c.POINTER(Range))]),
+        "bladerf_sync_config": (c.c_int, [P, c.c_int, c.c_int, c.c_uint, c.c_uint, c.c_uint, c.c_uint]),
+        "bladerf_enable_module": (c.c_int, [P, c.c_int, c.c_bool]),
+        "bladerf_get_timestamp": (c.c_int, [P, c.c_int, c.POINTER(c.c_uint64)]),
+        "bladerf_sync_tx": (c.c_int, [P, c.c_void_p, c.c_uint, c.POINTER(Meta), c.c_uint]),
+        "bladerf_sync_rx": (c.c_int, [P, c.c_void_p, c.c_uint, c.POINTER(Meta), c.c_uint]),
+        "bladerf_strerror": (c.c_char_p, [c.c_int]),
+        "bladerf_version": (None, [c.POINTER(Version)]),
+    }
+    for fn, (res, args) in protos.items():
+        f = getattr(lib, fn)
+        f.restype, f.argtypes = res, args
+    v = Version()
+    lib.bladerf_version(c.byref(v))
+    lib.Meta, lib.Range = Meta, Range
+    _BRF = (lib, (v.major, v.minor, v.patch))
+    return _BRF
+
+
+def bladerf_meta_format(version):
+    """BLADERF_FORMAT_SC16_Q11_META: 1 up to libbladeRF 2.5 (Debian 12: 2.4.1), 2 from 2.6, where
+    BLADERF_FORMAT_SC16_Q11_PACKED was inserted before it (the enum has no fixed values)."""
+    import os
+    if os.environ.get("MINI_CMTS_BLADERF_META_FORMAT"):      # diagnostic override
+        return int(os.environ["MINI_CMTS_BLADERF_META_FORMAT"])
+    return 2 if tuple(version[:2]) >= (2, 6) else 1
+
+
+class BladeRFRadio:
+    """A Nuand bladeRF 2.0 micro. p["args"]: the libbladeRF device identifier ("" for the first
+    one, "*:serial=<serial>"); TX on TX1, RX on RX1. Its sample counters cannot be set: the
+    device time is the TX counter plus an offset kept here (set_time), and the RX counter is
+    tied to it by a reading of both taken once both modules run."""
+
+    def __init__(self, p, has_rx):
+        import ctypes
+        self.c = ctypes
+        self.lib, self.version = _lib()
+        self.p, self.has_rx = p, has_rx
+        self.fmt = bladerf_meta_format(self.version)
+        self.dev = ctypes.c_void_p()
+        ident = p.get("args", "") or ""
+        self._ok(self.lib.bladerf_open(ctypes.byref(self.dev), ident.encode() if ident else None),
+                 f"ouverture « {ident or 'premier bladeRF'} »")
+        self.board = (self.lib.bladerf_get_board_name(self.dev) or b"?").decode()
+        sn = ctypes.create_string_buffer(64)
+        self.serial = sn.value.decode() if self.lib.bladerf_get_serial(self.dev, sn) == 0 else "?"
+        self.name = f"{self.board} {self.serial[:12]}"
+        if self.board == "bladerf1" and has_rx and p["rx_target"] < 300e6:
+            raise RuntimeError("bladeRF 1 (LMS6002D) : réception de 300 MHz à 3,8 GHz seulement, le montant "
+                               f"({p['rx_target'] / 1e6:.1f} MHz) demande le transverter XB-200")
+        fs = int(round(p["fs_tx"]))
+        if abs(fs - p["fs_tx"]) > 1e-3:
+            raise ValueError("bladeRF : débit d'échantillons entier en Hz seulement")
+        act = ctypes.c_uint()
+        L = self.lib
+        self._ok(L.bladerf_set_sample_rate(self.dev, CH_TX0, fs, ctypes.byref(act)), "débit TX")
+        self._ok(L.bladerf_set_bandwidth(self.dev, CH_TX0, int(p["tx_bw"]), ctypes.byref(act)), "bande TX")
+        self._ok(L.bladerf_set_frequency(self.dev, CH_TX0, int(round(p["tx_center"]))), "fréquence TX")
+        self._ok(L.bladerf_set_gain(self.dev, CH_TX0, int(round(p["gain"]))), "gain TX")
+        if has_rx:
+            if p["decim"] != 1:
+                raise ValueError("bladeRF : réception au débit de l'émission seulement (décimation 1)")
+            self._ok(L.bladerf_set_sample_rate(self.dev, CH_RX0, fs, ctypes.byref(act)), "débit RX")
+            self._ok(L.bladerf_set_frequency(self.dev, CH_RX0, int(round(p["rx_target"] + p["rx_lo_off"]))),
+                     "fréquence RX")
+            self._ok(L.bladerf_set_bandwidth(self.dev, CH_RX0, int(p["rx_bw"]), ctypes.byref(act)), "bande RX")
+            self._ok(L.bladerf_set_gain_mode(self.dev, CH_RX0, GAIN_MGC), "gain RX manuel")
+            self._ok(L.bladerf_set_gain(self.dev, CH_RX0, int(round(p["rx_gain"]))), "gain RX")
+        self.base = 0                     # device time = (TX counter + base) / fs, in samples
+        self.rx_to_tx = 0                 # TX counter - RX counter, read once both run
+        self.tx_spp = self.rx_spp = 0
+        self.fs = fs
+        self._events = []
+        self._md = L.Meta()
+        self._rmd = L.Meta()
+        self._ibuf = None
+
+    def _ok(self, ret, what):
+        if ret < 0:
+            raise RuntimeError(f"bladeRF {what} : {(self.lib.bladerf_strerror(ret) or b'?').decode()} ({ret})")
+        return ret
+
+    def _get(self, fn, ch, ctype):
+        v = ctype()
+        fn(self.dev, ch, self.c.byref(v))
+        return v.value
+
+    def describe(self):
+        L, c = self.lib, self.c
+        ver = ".".join(map(str, self.version))
+        s = (f"{self.name} (libbladeRF {ver}) | TX {self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint) / 1e6:.6f} MS/s "
+             f"@ {self._get(L.bladerf_get_frequency, CH_TX0, c.c_uint64) / 1e6:.3f} MHz "
+             f"gain {self._get(L.bladerf_get_gain, CH_TX0, c.c_int)} dB")
+        if self.has_rx:
+            s += (f" | RX {self._get(L.bladerf_get_sample_rate, CH_RX0, c.c_uint) / 1e6:.6f} MS/s "
+                  f"@ {self._get(L.bladerf_get_frequency, CH_RX0, c.c_uint64) / 1e6:.4f} MHz "
+                  f"gain {self._get(L.bladerf_get_gain, CH_RX0, c.c_int)} dB")
+        else:
+            s += " | émission seule"
+        return s + f" | horloge {self.p.get('clock_source', 'internal')}"
+
+    def warning(self):
+        if self.p.get("clock_source", "internal") != "internal":
+            return "!! bladeRF : référence externe non gérée ici (horloge interne)"
+        return None
+
+    def check(self):
+        L, c = self.lib, self.c
+        if self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint) != self.fs:
+            return f"bladeRF : débit TX obtenu {self._get(L.bladerf_get_sample_rate, CH_TX0, c.c_uint)} au lieu de {self.fs}"
+        if self.has_rx and self._get(L.bladerf_get_sample_rate, CH_RX0, c.c_uint) != self.fs:
+            return "bladeRF : débits TX et RX différents, la base de temps commune serait fausse"
+        return None
+
+    def open_streams(self):
+        L = self.lib
+        nbuf, blen, nxfer = 64, 16384, 32       # deep USB buffering, as the B210's 48 x 16 KB frames
+        self._ok(L.bladerf_sync_config(self.dev, TX_X1, self.fmt, nbuf, blen, nxfer, 1000), "flux TX")
+        self._ok(L.bladerf_enable_module(self.dev, CH_TX0, True), "activation TX")
+        self.tx_spp = blen
+        if self.has_rx:
+            self._ok(L.bladerf_sync_config(self.dev, RX_X1, self.fmt, nbuf, blen, nxfer, 1000), "flux RX")
+            self._ok(L.bladerf_enable_module(self.dev, CH_RX0, True), "activation RX")
+            self.rx_spp = blen
+            # the two counters, read back to back (the shortest of 8 round trips): a constant
+            # error here is a constant timing offset, which the ranging takes up
+            best = None
+            for _ in range(8):
+                t0 = time.perf_counter()
+                tx = self._counter(DIR_TX)
+                rx = self._counter(DIR_RX)
+                d = time.perf_counter() - t0
+                if best is None or d < best[0]:
+                    best = (d, tx - rx)
+            self.rx_to_tx = best[1]
+
+    def _counter(self, direction):
+        v = self.c.c_uint64()
+        self._ok(self.lib.bladerf_get_timestamp(self.dev, direction, self.c.byref(v)), "horodatage")
+        return v.value
+
+    def set_time(self, t):
+        self.base = int(round(t * self.fs)) - self._counter(DIR_TX)
+
+    def time_now(self):
+        return (self._counter(DIR_TX) + self.base) / self.fs
+
+    def start_rx(self, t):
+        pass                                    # (read with RX_NOW: every block carries its timestamp)
+
+    def stop_rx(self):
+        if self.has_rx:
+            self.lib.bladerf_enable_module(self.dev, CH_RX0, False)
+
+    def recv(self, buf):
+        n = buf.shape[1]
+        if self._ibuf is None or self._ibuf.size != 2 * n:
+            self._ibuf = np.empty(2 * n, np.int16)
+        md = self._rmd
+        md.flags, md.status, md.actual_count = META_RX_NOW, 0, 0
+        ret = self.lib.bladerf_sync_rx(self.dev, self._ibuf.ctypes.data, n, self.c.byref(md), 500)
+        if ret < 0:
+            return 0, None, False
+        if md.status & META_STATUS_OVERRUN:
+            return 0, None, True
+        k = md.actual_count
+        if not k:
+            return 0, None, False
+        buf[0, :k] = (self._ibuf[:2 * k].astype(np.float32) * (1.0 / Q11)).view(np.complex64)
+        return k, md.timestamp + self.rx_to_tx + self.base, False
+
+    def send(self, x, tick, first):
+        v = np.empty(2 * x.size, np.int16)
+        np.multiply(x.view(np.float32), Q11 - 1, out=v, casting="unsafe")
+        md = self._md
+        md.status = 0
+        if first:
+            md.flags = META_TX_BURST_START
+        elif tick is not None:
+            md.flags = META_TX_UPDATE_TIMESTAMP     # zero-padded up to it if there is a gap
+        else:
+            md.flags = 0
+        if tick is not None:
+            ts = tick - self.base
+            if ts < 0:
+                raise RuntimeError("bladeRF : horodatage d'émission avant le zéro du compteur")
+            md.timestamp = ts
+        self._ok(self.lib.bladerf_sync_tx(self.dev, v.ctypes.data, x.size, self.c.byref(md), 1000), "émission")
+        if md.status & META_STATUS_UNDERRUN:
+            self._events.append("U")
+
+    def end_burst(self):
+        md = self._md
+        md.flags, md.status = META_TX_BURST_END, 0
+        z = np.zeros(2 * 1024, np.int16)
+        self.lib.bladerf_sync_tx(self.dev, z.ctypes.data, 1024, self.c.byref(md), 1000)
+        self.lib.bladerf_enable_module(self.dev, CH_TX0, False)
+
+    def tx_event(self, timeout):
+        if self._events:
+            return self._events.pop(0)
+        time.sleep(timeout)                 # (libbladeRF's sync interface reports underruns per call)
         return None

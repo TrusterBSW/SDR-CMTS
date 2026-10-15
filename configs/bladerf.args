@@ -1,0 +1,14 @@
+# Un bladeRF 2.0 micro à la place du B210 (libbladeRF, --sdr bladerf) : TX1 vers le modem, RX1 montant.
+#   d'abord : python3 tools/bladerf_check.py --loop      puis : run_multi.sh <nom> @configs/bladerf.args
+# Émission et réception au même débit (27,808 MS/s) : 3 DS au plus.
+--sdr bladerf
+# "" = le premier bladeRF trouvé ; sinon "*:serial=<numéro>"
+"--sdr-args="
+--us-channels 2
+--us-target -20
+"--prov-args=--dns 1.1.1.1"
+--ds-channels 3
+# gain TX à l'échelle libbladeRF (pas celle du B210) : à régler avec la page d'état du modem,
+# 5 à 10 dBmV par canal descendant
+--gain 30
+--cpus 2-7,18-23
