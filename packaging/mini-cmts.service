@@ -17,8 +17,8 @@ StateDirectory=mini-cmts
 KillSignal=SIGINT
 KillMode=mixed
 TimeoutStopSec=30
-# the host settings the run changed (CPU governor, interrupts) put back after every stop, a
-# SIGKILL or a crash included (the CMTS restores them itself on a clean stop)
+# the host settings the run changed (CPU governor, interrupts) set back to the kernel's defaults
+# after every stop, a SIGKILL or a crash included (the CMTS does it itself on a clean stop)
 ExecStopPost=/usr/bin/mini-cmts --restore-host
 # a radio lost (SDR unplugged: exit code 3) or any failure: started again 15 s later, until the
 # SDR is back

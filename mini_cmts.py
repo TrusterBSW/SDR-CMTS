@@ -1709,8 +1709,9 @@ def parser():
                         "none to turn it off; 0.0.0.0:8090 to reach it from the network (closed lab only: "
                         "it shows the modems' MAC addresses)")
     g.add_argument("--restore-host", action="store_true",
-                   help="only put back the host settings a run changed (CPU governor, interrupts) if it "
-                        "could not (killed); the systemd service runs it after every stop")
+                   help="only set the host settings a run changed (CPU governor, energy preference, interrupts) back to "
+                        "the kernel's defaults, if the run could not (killed); the systemd service runs it after "
+                        "every stop")
     g.add_argument("--status-edit", choices=("auto", "on", "off"), default="auto",
                    help="the Configuration form of the status page writes the --config file and restarts the "
                         "CMTS: auto = from this machine only (its browser, or ssh -L 8090:127.0.0.1:8090), read-only "

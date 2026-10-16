@@ -3,8 +3,10 @@
 """What the CMTS changes on the host for a run, and how it is put back, whatever the end.
 
 For a run (--performance, --irq-herd) the CMTS sets the CPU governor and energy/performance
-preference to "performance" and moves the interrupts away from its cores. The original values are
-written here BEFORE any change, and put back:
+preference to "performance" and moves the interrupts away from its cores. What it changed is
+written here BEFORE any change, and set back to the KERNEL'S DEFAULTS (the boot governor, the
+firmware's energy preference, /proc/irq/default_smp_affinity; the values found at the start only
+when a default cannot be found):
   - when it stops (atexit);
   - by `mini-cmts --restore-host`, which the systemd service runs after every stop (ExecStopPost),
     a SIGKILL or a crash included;
@@ -15,8 +17,11 @@ that holds it.)
 The file lives in /run (tmpfs: gone at reboot, when the kernel defaults are back anyway) and
 carries the boot ID, so a stale one is never applied.
 """
+import gzip
 import json
 import os
+import platform
+import re
 import subprocess
 
 
@@ -75,8 +80,70 @@ def write(values):
     return err
 
 
+GOVERNORS = {"PERFORMANCE": "performance", "POWERSAVE": "powersave", "SCHEDUTIL": "schedutil",
+             "ONDEMAND": "ondemand", "CONSERVATIVE": "conservative", "USERSPACE": "userspace"}
+
+
+def kernel_default_governor():
+    """The governor the kernel boots with: cpufreq.default_governor= on its command line, else its
+    configuration (CONFIG_CPU_FREQ_DEFAULT_GOV_*); None if neither can be read."""
+    try:
+        with open("/proc/cmdline") as f:
+            m = re.search(r"cpufreq\.default_governor=(\w+)", f.read())
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    rel = platform.release()
+    for p in ("/proc/config.gz", f"/boot/config-{rel}", f"/lib/modules/{rel}/config", f"/usr/lib/modules/{rel}/config"):
+        try:
+            text = (gzip.open(p, "rt") if p.endswith(".gz") else open(p)).read()
+        except OSError:
+            continue
+        m = re.search(r"^CONFIG_CPU_FREQ_DEFAULT_GOV_(\w+)=y", text, re.M)
+        if m:
+            return GOVERNORS.get(m.group(1))
+    return None
+
+
+def _first(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def defaults(remembered):
+    """The kernel's defaults for the remembered {path: value}; a path whose default cannot be found
+    keeps its remembered value."""
+    out = dict(remembered)
+    gov = kernel_default_governor()
+    for p in remembered:
+        if p.endswith("scaling_governor") and gov:
+            avail = _first(p.replace("scaling_governor", "scaling_available_governors")).split()
+            driver = _first(p.replace("scaling_governor", "scaling_driver"))
+            if gov in avail:
+                out[p] = gov
+            elif "powersave" in avail and driver.startswith(("intel_pstate", "amd-pstate")):
+                out[p] = "powersave"            # these drivers' own governors (no schedutil in active mode)
+    for p in remembered:
+        if p.endswith("energy_performance_preference"):
+            g = out.get(p.replace("energy_performance_preference", "scaling_governor"))
+            if g and g != "performance":
+                out[p] = "default"              # the firmware's value (with "performance" the driver forces it)
+            else:
+                out.pop(p)                      # left to the driver
+        elif "/proc/irq/" in p:
+            mask = _first("/proc/irq/default_smp_affinity")
+            if mask:
+                out.pop(p)
+                out[p.replace("smp_affinity_list", "smp_affinity")] = mask
+    return out
+
+
 def restore(why=""):
-    """Puts back every remembered setting and forgets them -> a line for the log, None if there
+    """Sets every remembered setting back to the kernel's default (defaults()) and forgets them -> a line for the log, None if there
     was nothing to put back."""
     st = load()
     if not st:
@@ -86,7 +153,7 @@ def restore(why=""):
             pass
         return None
     done, errors = [], []
-    cpufreq = st.get("cpufreq", {})
+    cpufreq = defaults(st.get("cpufreq", {}))
     # the governor first: setting "performance" also forces the EPP, put back after it
     gov = {p: v for p, v in cpufreq.items() if p.endswith("scaling_governor")}
     epp = {p: v for p, v in cpufreq.items() if not p.endswith("scaling_governor")}
@@ -97,7 +164,7 @@ def restore(why=""):
                 errors.append(f"{name} : {e}")
             else:
                 done.append(f"{name} {'/'.join(sorted(set(part.values())))}")
-    irq = st.get("irq", {})
+    irq = defaults(st.get("irq", {}))
     if irq:
         e = write(irq)
         done.append(f"{len(irq)} interruptions" + (" (certaines refusées)" if e else ""))
@@ -105,5 +172,5 @@ def restore(why=""):
         os.unlink(path())
     except OSError:
         pass
-    return ("réglages de l'hôte rétablis" + (f" ({why})" if why else "") + " : " + ", ".join(done)
+    return ("réglages de l'hôte remis aux défauts du noyau" + (f" ({why})" if why else "") + " : " + ", ".join(done)
             + (f" ; !! {'; '.join(errors)}" if errors else ""))

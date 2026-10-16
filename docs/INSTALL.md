@@ -105,8 +105,8 @@ sudo systemctl stop mini-cmts                   # Ctrl+C for the CMTS: radios st
 
 It restarts after a failure (15 s later): an SDR unplugged stops the CMTS (exit code 3) and the
 service starts it again every 15 s until the SDR is back. The host settings changed for the run
-(CPU governor, interrupts moved off the CMTS cores) are put back after every stop, even a killed
-one (`ExecStopPost=mini-cmts --restore-host`; by hand: `sudo mini-cmts --restore-host`). The log of
+(CPU governor, interrupts moved off the CMTS cores) are set back to the kernel's defaults after
+every stop, even a killed one (`ExecStopPost=mini-cmts --restore-host`; by hand: `sudo mini-cmts --restore-host`). The log of
 every run is also in `/var/lib/mini-cmts/captures/cmts_<date>_<time>.log`.
 
 ## 6. The bench file
