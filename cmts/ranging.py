@@ -14,7 +14,7 @@ import struct
 import threading
 import time
 
-from . import cmcfg, registration
+from . import cmcfg, modeminfo, registration
 from . import docsis_mac as mac
 from .upstream import TS_RATE
 
@@ -685,6 +685,10 @@ class CmtsCore:
             self.log(f"[REG] {fmt_mac(m.mac)} {name} répété -> même réponse")
             return
         self.log(f"[REG] {fmt_mac(m.mac)} SID {sid:#06x}: {name} ({len(body)} octets, {b.power_db:.1f} dBFS)")
+        try:
+            m.announced = modeminfo.from_regreq(tlvs, mp)          # for the status page
+        except Exception as e:                                     # noqa: BLE001 - never blocks registration
+            self.log(f"[REG] !! capacités de {fmt_mac(m.mac)} illisibles : {e}")
         for line in cmcfg.describe(tlvs):
             self.log(line)
         got = dict(tlvs).get(cmcfg.CMTS_MIC)
@@ -937,5 +941,6 @@ class CmtsCore:
         with self.lock:
             return [dict(mac=fmt_mac(m.mac), sid=m.sid, state=m.state, n_req=m.n_req, **m.last,
                          links={u: (k.sid, k.state) for u, k in m.links.items()} if m.mtc else {},
-                         reasm=dict(m.reasm.stats) if m.reasm else None)
+                         reasm=dict(m.reasm.stats) if m.reasm else None,
+                         announced=getattr(m, "announced", None), devices=dict(getattr(m, "devices", {})))
                     for m in self.modems.values()]

@@ -1,0 +1,26 @@
+# Every test that needs no radio and no root, on each push and pull request: the PHY (J.83,
+# upstream bursts replayed from a real modem), the MAC (ranging, registration, bonding), the C
+# kernels, the bridge, the configuration files, the status page; and the Debian package built.
+name: tests
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: dependencies (those of the .deb; GNU Radio and tshark for the cross-checks)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3-numpy python3-scipy gcc libc6-dev gnuradio tshark
+      - name: tests
+        run: python3 tests/run.py
+      - name: Debian package
+        run: ./packaging/build-deb.sh dist && dpkg-deb --info dist/*.deb && dpkg-deb --contents dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mini-cmts-deb
+          path: dist/*.deb

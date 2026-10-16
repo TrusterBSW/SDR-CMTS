@@ -128,6 +128,7 @@ def level_of(line):
 
 
 _logfile = None
+listeners = []          # fn(text) called with every log() line (e.g. the status page's alerts)
 
 
 def open_log(path):
@@ -143,6 +144,8 @@ def log(*args, console=True, **kw):
     text = " ".join(str(x) for x in args)
     if _logfile:
         _logfile.write(text + kw.get("end", "\n"))
+    for fn in listeners:
+        fn(text)
     if not console:
         return
     shown = [ln for ln in text.split("\n") if level_of(ln) <= verbosity]

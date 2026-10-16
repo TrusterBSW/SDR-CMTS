@@ -24,7 +24,7 @@ class Chan:
     def __init__(self):
         self.data = []
 
-    def send_data(self, pdu):
+    def send_data(self, pdu, t=None):
         self.data.append(pdu)
 
     def backlog(self):

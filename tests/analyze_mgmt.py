@@ -1,4 +1,4 @@
-"""Statistics on a DOCSIS management pcap (from sfr_capture.py or from our own
+"""Statistics on a DOCSIS management pcap (from origin_capture.py or from our own
 transmitter via tests/test_loopback.py) to compare a real CMTS with ours."""
 import collections
 import struct

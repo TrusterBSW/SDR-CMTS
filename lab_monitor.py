@@ -87,7 +87,7 @@ def analyze(res, t0, pcap, lab_mac, state):
         if p[1] & 0x80:
             continue
         dm.push_packet(p)
-        # SYNC position for the jitter check (SYNC at the start of a packet, as ds_tx.py and SFR do)
+        # SYNC position for the jitter check (SYNC at the start of a packet, as ds_tx.py and the origin network do)
         if (int(p[1]) & 0x1F) << 8 | int(p[2]) == 0x1FFE and p[1] & 0x40 and p[4] == 0 and p[5] == 0xC0:
             n = i * 204 + 31
             sync_pos.append((n + 204 * (n % 12)) * 8 // res["m"])

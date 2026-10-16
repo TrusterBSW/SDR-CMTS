@@ -14,7 +14,7 @@ mini_cmts.py --all-in-one starts it (through sudo) with the same shared secret. 
 servers instead (dnsmasq, ISC DHCP, tftpd...), run mini_cmts.py without --all-in-one and give
 cmts0 an address yourself, or bridge it to a real network.
 
-Needs root: ports 67/69/37 and SO_BINDTODEVICE. Serves cmts0 only; never on the SFR network.
+Needs root: ports 67/69/37 and SO_BINDTODEVICE. Serves cmts0 only; never on an operator's network.
 """
 import argparse
 import ipaddress

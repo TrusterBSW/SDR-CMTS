@@ -16,7 +16,7 @@
 | Ping pendant un envoi | ~87-93 ms (237 avant le tampon de 128 Ko) |
 
 Ce qui a été fait le 12/10 (détails : `docs/TESTS.fr.md` T60-T65, `PLAN_AGREGATION_US.fr.md`) :
-- **Écoute du CMTS SFR**, un ARRIS, en réception seule avec le B210. Lecture de son REG-RSP-MP, de ses UCD et de ses MAP.
+- **Écoute du CMTS du réseau d'origine**, un ARRIS, en réception seule avec le B210. Lecture de son REG-RSP-MP, de ses UCD et de ses MAP.
 - **Enregistrement multi-canal conforme** (`--mtc-std`) : le Sagem accepte enfin la fenêtre de dynamique, envoyée dans la TCC.
 - **Requêtes montantes cumulées et grant pending** (`--mtc-owed`).
 - **Récepteur montant en C** :
@@ -161,7 +161,7 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
 - **Prise Home Assistant du modem** (`switch.0x70b3d52b600443a8`) : ne répondait plus le 12/10 vers 16h (reste sur « on »).
 - **Carte USB-Ethernet du portable** : à brancher sur un port USB 3. En USB 2.0, elle perd des paquets en rafales au-delà de ~300 Mbit/s. Le 12/10, elle a aussi cessé de recevoir pendant ~2 h, puis a été rebranchée.
 - **NetworkManager** : `ipv4.never-default yes` sur « Connexion filaire 1 », sinon le modem devient la route par défaut du portable.
-- **Copies de sûreté** : tag `ok-2026-10-12-avant-sfr`, `/root/mini-cmts.ok-2026-10-12` et `/root/cmts-tools.ok-2026-10-12`.
+- **Copies de sûreté** : tag `ok-2026-10-12-avant-ecoute`, `/root/mini-cmts.ok-2026-10-12` et `/root/cmts-tools.ok-2026-10-12`.
 - **2950X (10.5.1.3)** : Debian 12 et PVE 8, avec Python 3.11 et UHD 4.3. Le code reste compatible 3.11 : pas de f-string imbriquée avec les mêmes guillemets, pas de `SharedMemory(track=…)`.
   - **Pas d'overclock** : il a planté sous la charge AVX.
   - **La mémoire** : 2 × 8 Go sur un seul canal (`P0 CHANNEL A`, 2133 MT/s), et le nœud NUMA 1 n'a aucune mémoire. Utiliser les cœurs 2-7 (nœud 0) ; leurs hyperthreads 18-23 coûtent 25 % sur la synthèse. Jusqu'à 3 DS par radio, ça tient ; à 6 DS par radio, il ne suit pas.
@@ -174,12 +174,12 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
 - **`tests/test_provision_tap.py`** crée `cmts0` en 10.10.0.1 sur la machine qui le lance. Sur le portable, cette interface captait tout le trafic destiné au vrai CMTS. Le test la supprime maintenant s'il l'a créée.
 - **Page d'état du modem** (192.168.100.1, accès par le bouton WPS) : niveau et SNR de chaque canal, et puissance montante. C'est le meilleur outil pour régler les niveaux.
 
-## 5. Annexe : écoute de SFR (terminée)
+## 5. Annexe : écoute du réseau d'origine (terminée)
 
-Câblage : prise SFR → coupleur → modem + B210 (RX2 seul, TX/RX débranché, sans atténuateur). Le CMTS du labo doit être arrêté pendant l'écoute.
-- `tools/sfr_rx.sh rec SECONDES 40` (avec `CENTER=282e6 RATE=16e6`) : capture, MER 36 dB.
-- `sfr_listen.py <fichier> --fs 16e6 --center 282e6 --freq 282e6 --hard` : décodage parallèle.
-- `tools/sfr_maps.py <pcap>` : UCD et MAP.
-- Résultats dans `~/sfrcap/rb1/` (portable) et `/root/sfrcap/rb1/`.
-- Capture brute gardée : `/root/sfrcap/sfr_094245.sc16` (11,6 Go, contient le trafic d'autres abonnés : à supprimer quand plus utile).
+Câblage : prise du réseau d'origine → coupleur → modem + B210 (RX2 seul, TX/RX débranché, sans atténuateur). Le CMTS du labo doit être arrêté pendant l'écoute.
+- `tools/origin_rx.sh rec SECONDES 40` (avec `CENTER=282e6 RATE=16e6`) : capture, MER 36 dB.
+- `origin_listen.py <fichier> --fs 16e6 --center 282e6 --freq 282e6 --hard` : décodage parallèle.
+- `tools/origin_maps.py <pcap>` : UCD et MAP.
+- Résultats dans `~/origincap/rb1/` (portable) et `/root/origincap/rb1/`.
+- Capture brute gardée : `/root/origincap/origin_094245.sc16` (11,6 Go, contient le trafic d'autres abonnés : à supprimer quand plus utile).
 - La prise et le portable : `tools/modem_cycle.sh`, `~/.config/ha_token`.

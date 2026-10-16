@@ -34,7 +34,9 @@ import multiprocessing as mp
 import os
 import subprocess
 import queue
+import re
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -42,8 +44,8 @@ import time
 import numpy as np
 
 from cmts import docsis_mac as mac
-from cmts import cdsp, netpkt
-from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
+from cmts import cdsp, modeminfo, netpkt, tomlconf
+from cmts.bridge import TapFeed, BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
@@ -317,9 +319,48 @@ class LineLimiter:
         return True
 
 
-def start_bridge(a, mux, core, stop):
+RESTART = 75                    # run_split's return code when the status page asked for a restart
+_restart = threading.Event()
+
+
+def web_config(a):
+    """The "Configuration" form of the status page (cmts/webconfig.py), on the bench file of
+    --config; changes from this machine only unless --status-edit on (cmts/webconfig.py)."""
+    from cmts import webconfig
+    import provision
+    path = getattr(a, "config_path", None)
+    why = f"{path} non modifiable par ce processus" if path and not os.access(path, os.W_OK) else ""
+
+    def restart(what):
+        log(f"[WEB] configuration changée depuis la page d'état ({what}) : redémarrage du CMTS")
+        _restart.set()
+    return webconfig.WebConfig(a, os.path.abspath(path) if path else None, getattr(a, "cli_locked", ()),
+                               parse=lambda argv: parser().parse_args(argv),
+                               channels=lambda ns: ([f for _, f in ds_channels(ns)], [f for _, f in us_channels(ns)]),
+                               to_argv=lambda p: tomlconf.to_argv(p, parser(), provision.parser()),
+                               restart=restart, edit=a.status_edit, why=why)
+
+
+def start_status_page(a, info):
+    """The status page (cmts/webstatus.py) on --status-http; None when off or the port is taken."""
+    from cmts import webstatus
+    addr = webstatus.parse_addr(a.status_http)
+    if addr is None:
+        return None
+    board = webstatus.StatusBoard(info)
+    try:
+        webstatus.StatusServer(board, *addr, log=log, config=web_config(a))
+    except OSError as e:
+        log(f"!! page d'état sur {addr[0]}:{addr[1]} impossible ({e.strerror or e}) : le CMTS tourne sans")
+        return None
+    termcolor.listeners.append(board.alert)
+    return board
+
+
+def start_bridge(a, mux, core, stop, batched=False):
     """Modems <-> Linux TAP (a.tap): upstream Packet PDUs out on the TAP, frames from the TAP
-    into downstream Packet PDUs."""
+    into downstream Packet PDUs. batched: the TAP read by batches into a TapFeed (br.feed) that
+    the TS block encoder pumps (run_split); otherwise every frame is queued by the TAP thread."""
     if not a.tap:
         core.on_data = lambda eth, ok, sid: log(f"[PONT] ↑ {netpkt.summary(eth)} (pas de --tap : jetée)")
         return None
@@ -334,6 +375,14 @@ def start_bridge(a, mux, core, stop):
             return
         fwd.learn(eth, sid)                        # which modem this address sits behind
         br.upstream(eth)
+        dh = modeminfo.dhcp_of_frame(eth)          # what the modem and the devices behind it say
+        if dh is not None:
+            m = core.by_sid.get(sid)
+            if m is not None:
+                if not hasattr(m, "devices"):
+                    m.devices = {}
+                info = modeminfo.from_dhcp(dh)
+                m.devices[info["MAC"]] = {**m.devices.get(info["MAC"], {}), **info}
         if flim.ok():
             log(f"[PONT] ↑ {netpkt.summary(eth)}", console=lim.ok())
 
@@ -342,19 +391,13 @@ def start_bridge(a, mux, core, stop):
         fwd.force_ch = int(os.environ["MINI_CMTS_BOND_CH"]) - 1
     mux.per_chan = fwd.per_chan
 
-    def down(eth):
-        if time.perf_counter() - mux.last_block_t > mux.late_s:
-            # the TS block encoder (same process, same GIL) is behind: a download starting after a
-            # quiet spell brought the sender's whole window into the TAP at once, this thread went
-            # through it without a pause and the encoder waited 18-25 ms for one block; the radios
-            # underflowed together and the modem lost a channel ~10 s (2026-10-15). Here it steps
-            # aside until the encoder has caught up.
-            time.sleep(TAP_YIELD_S)
-        fwd.send(eth)
+    def down(eth, t=None):
+        fwd.send(eth, t)
         if flim.ok():
             log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
     core.on_data = up
-    br.start(down, stop)
+    br.feed = TapFeed(down, max_age_s=mux.data_max_ms / 1e3) if batched else None
+    br.start(down, stop, feed=br.feed)
     log(f"[PONT] modems <-> {a.tap} (état {br.link_up()})")
     return br
 
@@ -872,19 +915,58 @@ def cpu_latency(want):
 
 
 def ds_fill(mux, prev):
-    """Share of the TS packets of each downstream channel that were not null since the last
-    call ("remplissage 97/96/... %"): a channel near 100 % is full. prev: dict kept by the caller."""
+    """Share (%) of the TS packets of each downstream channel that were not null since the last
+    call, None for a channel that sent nothing: a channel near 100 % is full. prev: dict kept by
+    the caller."""
     out = []
     for k, m in enumerate([mux] + list(getattr(mux, "secondary", []))):
         p, nul = m.p, m.stats["null"]
         p0, n0 = prev.get(k, (p, nul))
         prev[k] = (p, nul)
-        out.append(f"{100 * (1 - (nul - n0) / (p - p0)):.0f}" if p > p0 else "-")
-    return "remplissage " + "/".join(out) + " %, "
+        out.append(100 * (1 - (nul - n0) / (p - p0)) if p > p0 else None)
+    return out
 
 
-SWITCH_INTERVAL_S = 0.0005    # GIL hand-over in the MAC process (run_split); Python's default: 5 ms
-TAP_YIELD_S = 200e-6          # pause of the TAP thread per frame while the TS block encoder is late
+def fill_text(fill):
+    return "remplissage " + "/".join("-" if v is None else f"{v:.0f}" for v in fill) + " %, "
+
+
+def web_snapshot(a, mux, core, rx, radios, br, fill, prev):
+    """The status page's view of this status line (cmts/webstatus.py): read before status_line()
+    takes the counters it resets. prev: dict kept by the caller (radio counters of the last call)."""
+    rad = []
+    for rp in radios:
+        last = dict(getattr(rp, "last", {}) or {})
+        p = prev.setdefault(rp.name, {})
+        d = {k: last.get(k, 0) - p.get(k, 0) for k in ("U", "L", "O") if k in last}
+        p.update({k: last[k] for k in ("U", "L", "O") if k in last})
+        m = last.get("margin_ms")
+        rad.append(dict(name=rp.name, alive=rp.alive(), U=last.get("U"), L=last.get("L"), O=last.get("O"),
+                        dU=d.get("U", 0), dL=d.get("L", 0), dO=d.get("O", 0), gap_ms=last.get("gap_ms"),
+                        margin_ms=m if m is not None and m < float("inf") else None))
+    ups = []
+    for (ucid, freq), r in zip(us_channels(a), getattr(rx, "all_channels", None) or [rx]):
+        ups.append(dict(ucid=ucid, freq=freq, noise_dbfs=r.noise_dbfs(), lag_ms=r.lag_max_ms,
+                        bursts=r.stats["bursts"], decoded=r.stats["decoded"], fast=r.stats.get("fast", 0)))
+    st = mux.stats
+    fd = getattr(br, "feed", None) if br else None
+    bridge = dict(up=br.stats["up"], down=br.stats["down"]) if br else {}
+    if fd:
+        bridge.update(tap_waiting=fd.waiting(), tap_dropped=fd.stats["dropped"], max_batch=fd.stats["max_batch"])
+    return dict(radios=rad, upstream=ups, bridge=bridge,
+                downstream=dict(fill=fill, queue=len(mux.data), wait_max_ms=st["data_max_ms"], dropped=st["data_drop"]),
+                modems=core.summary(), rng_rsp=core.n_rsp, grants=dict(core.n))
+
+
+def web_info(a, chans, groups=None):
+    """Fixed part of the status page: channels, radios, modulations."""
+    radio_of = {}
+    for r, g in enumerate(groups or [list(range(len(chans)))]):
+        for i in g:
+            radio_of[i] = "radio" if r == 0 else f"radio{r + 1}"
+    return dict(sdr=a.sdr, qam=f"{a.qam}-QAM", us_mode=a.us_mode.upper(), us_mod=a.us_mod.upper(),
+                ds=[dict(dcid=d, freq=f, radio=radio_of.get(i)) for i, (d, f) in enumerate(chans)],
+                us=[dict(ucid=u, freq=f) for u, f in us_channels(a)])
 
 
 def watch_gc(log, slow_ms=15.0):
@@ -902,10 +984,25 @@ def watch_gc(log, slow_ms=15.0):
         if dt >= slow_ms:
             stats["n"] += 1
             stats["worst"] = max(stats["worst"], dt)
+            if info["generation"] == 2:
+                stats["refreeze"] = True          # done by the status loop (freeze_gc), not in here
             log(f"[MAC] !! ramasse-miettes Python : {dt:.0f} ms (génération {info['generation']}, "
                 f"{info['collected']} objets libérés, {len(gc.get_objects(info['generation']))} suivis)")
     gc.callbacks.append(cb)
     return stats
+
+
+def freeze_gc(log, why):
+    """Moves every object Python's garbage collector tracks to its permanent generation: a full
+    collection no longer walks them. The MAC process keeps nearly all its objects to the end
+    (tables, channels, modems): on the 2950X a full collection walked 45554 of them for 22 ms,
+    freeing none, and held the GIL as long; the encoder thread feeding the radios stopped, both
+    B210s ran dry (2026-10-15). Objects frozen and later dropped are still freed by their
+    reference count; only a cycle among them would stay."""
+    import gc
+    n = len(gc.get_objects())
+    gc.freeze()
+    log(f"[MAC] ramasse-miettes : {n} objets figés ({why}), {gc.get_freeze_count()} en tout")
 
 
 def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center):
@@ -965,15 +1062,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             log(f"[RADIO{r + 1}] {len(g)} canaux " + ", ".join(f"{f / 1e6:.0f}" for f in fr)
                 + f" MHz, centre {center / 1e6:.0f} MHz" + (f", B210 {serials[r]}" if r < len(serials) else ""))
     radio = radios[0]
-    watch_gc(log)
-    # A download starting after a quiet spell starved the thread building the TS blocks of the
-    # GIL (the TAP thread busy without a pause, cmts/bridge.py): the radios waited 18-25 ms for one
-    # block and underflowed together, the modem losing a channel ~10 s. Three measures against it,
-    # none enough alone, together no stall in 7 bursts out of 8 (2026-10-15, T69): this shorter
-    # switch interval (the encoder lets go of the GIL at every C call and takes it back each
-    # time), the TAP thread's pause in a burst (bridge.BURST_FRAMES) and its yield while the
-    # encoder is late (start_bridge).
-    sys.setswitchinterval(SWITCH_INTERVAL_S)
+    gc_stats = watch_gc(log)
+    freeze_gc(log, "démarrage")
     radio.start()                                 # the followers once it is on the air (below):
     stop = threading.Event()                      # two processes opening "a B210" could swap them
 
@@ -982,13 +1072,19 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     dump = os.environ.get("MINI_CMTS_TSDUMP")
     dump_f, dump_end = None, None
 
+    feed_box = [None]                             # the bridge's TapFeed, once it runs (below)
+
     def encoder():
         nonlocal dump_f, dump_end
         seq = 0
         t_slow_log = 0.0
-        mux.late_s = 2 * blk_ms * 1e-3            # no block for 2 block times: starved (start_bridge)
+        # frames from the TAP turned into PDUs here, before each block (cmts/bridge.py TapFeed):
+        # twice what the block carries on every channel, the rest waits for the next blocks
+        budget = 2 * a.block * (1 + len(mux.secondary)) * 183
         while not stop.is_set():
             t0 = time.perf_counter()
+            if feed_box[0] is not None:
+                feed_box[0].pump(budget)
             pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
             t1 = time.perf_counter()
             if t1 - t0 > 0.010 and t1 - t_slow_log > 1.0:
@@ -1007,9 +1103,11 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             if not radio.pk.put([pks[i] for i in groups[0]], stop, seq):
                 return
             for rp, g in zip(radios[1:], groups[1:]):
-                # a follower never holds the MAC back: not started, dead or late, its block is dropped
-                # (it times every block from its number, so a gap cannot shift it)
-                if rp.alive() and not rp.failed:
+                # a follower never holds the MAC back: dead or late, its block is dropped (it times
+                # every block from its number, so a gap cannot shift it). Nothing before it is on the
+                # air: it would drop those blocks itself, and the ~0.8 s its B210 takes to open filled
+                # its ring and raised a false "!! 435 blocs jetés" at every start
+                if rp.alive() and not rp.failed and rp.started.is_set():
                     if rp.pk.put([pks[i] for i in g], stop, seq, wait=False) is None:
                         rp.dropped += 1
             seq += 1
@@ -1035,7 +1133,9 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             log(f"!! {rp.name} : {rp.failed or 'pas démarrée en 10 s'} ; ses canaux descendants manquent")
     wall0[0] = radio.wall0
     tb.origin += round(t_start * mcr)             # TX sample 0 goes out at tick t_start * mcr
-    br = start_bridge(a, mux, core, stop)
+    br = start_bridge(a, mux, core, stop, batched=True)
+    feed_box[0] = getattr(br, "feed", None)
+    board = start_status_page(a, web_info(a, chans, groups))
     rxs = getattr(rx, "all_channels", None) or [rx]
     for r in rxs:
         r.start()                                 # the time base is final from here on
@@ -1045,27 +1145,40 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     if a.cpus == "auto":
         log(split_cpus([r.pid for r in rxs], shared_pids=[rp.pid for rp in radios], tx_need=tx_cores(a),
                        mode=a.us_cpus, prio=a.rt_prio))
-    fill_prev = {}
+    fill_prev, web_prev = {}, {}
+    rc = 0
     try:
         while True:
-            time.sleep(5)
+            if _restart.wait(5):
+                rc = RESTART
+                break
             if not radio.alive():
                 log("!! processus radio arrêté")
                 break
+            if gc_stats.pop("refreeze", False):
+                freeze_gc(log, "après une collecte complète lente")
             for rp in radios[1:]:
                 if not rp.alive() and not getattr(rp, "_dead_logged", False):
                     rp._dead_logged = True
                     log(f"!! {rp.name} arrêtée : ses canaux descendants manquent, le reste continue")
             st = mux.stats
             split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
-            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{ds_fill(mux, fill_prev)}file DS "
+            fd = getattr(br, "feed", None) if br else None
+            tapq = f"file TAP {fd.waiting()} (jetées {fd.stats['dropped']}, lot max {fd.stats['max_batch']}), " if fd else ""
+            fill = ds_fill(mux, fill_prev)
+            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{fill_text(fill)}{tapq}file DS "
                     f"{len(mux.data)}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
-            st["data_max_ms"] = 0.0
             tx = radio.status() + "".join(f"{rp.name} : {rp.status()}" for rp in radios[1:])
+            if board:
+                board.publish(web_snapshot(a, mux, core, rx, radios, br, fill, web_prev), iface=a.tap)
+            if fd:
+                fd.stats["max_batch"] = 0
+            st["data_max_ms"] = 0.0
             log("\n" + status_line(mux, core, rx, tx + pont))
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)   # the stop sequence runs to its end (_sigint_once)
         stop.set()
         for rp in radios:
             rp.stop()
@@ -1078,7 +1191,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             pcap.close()
             log(f"pcap: {pcap.count} trames dans {a.pcap} (wireshark, filtre docsis)"
                 + (f", {pcap.dropped} perdues (file pleine)" if pcap.dropped else ""))
-    return 0
+    return rc
 
 
 def run_usrp(a):
@@ -1408,6 +1521,7 @@ def run_usrp(a):
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)   # the stop sequence runs to its end (_sigint_once)
         stop.set()
         rx_stream.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
         md.end_of_burst = True
@@ -1432,6 +1546,12 @@ class _ArgsFileParser(argparse.ArgumentParser):
     """`mini_cmts.py @configs/lab.args [more options]`: the options of a file, several per line
     if wanted, `#` comments; options given after the file override it (the last one wins)."""
 
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        # "--us-spacing -7e6": argparse takes -7, -0.5 for values but -7e6 for an option (its
+        # pattern for negative numbers knows no exponent); the README examples write it this way
+        self._negative_number_matcher = re.compile(r"^-(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$")
+
     def convert_arg_line_to_args(self, line):
         return shlex.split(line, comments=True)
 
@@ -1439,6 +1559,10 @@ class _ArgsFileParser(argparse.ArgumentParser):
 def parser():
     ap = _ArgsFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                          fromfile_prefix_chars="@")
+    ap.add_argument("--config", metavar="BANC.toml",
+                    help="bench description in TOML (configs/*.toml, cmts/tomlconf.py): sections [radio], "
+                         "[downstream], [upstream], [host]... with the option names as keys, [provisioning] "
+                         "for provision.py; options given on the command line win")
     g = ap.add_argument_group("downstream (comme ds_tx.py)")
     g.add_argument("--freq", type=float, default=306e6,
                    help="primary downstream channel (Hz), on the 8 MHz European raster (114 + 8 n: the Sagem "
@@ -1497,7 +1621,7 @@ def parser():
     g = ap.add_argument_group("upstream")
     g.add_argument("--us-freq", type=float, default=60e6,
                    help="upstream center frequency (UCD); 53-64 MHz keeps the B210 LO >= 50 MHz with a "
-                        "small offset (SFR uses 60.4 MHz)")
+                        "small offset (the modem's origin network uses 60.4 MHz)")
     g.add_argument("--us-rate", type=int, default=32,
                    help="symbol rate in 160 ksym/s units (16 = 2.56 Msym/s, 3.2 MHz; 8 = 1.28 Msym/s)")
     g.add_argument("--us-channels", type=int, default=1,
@@ -1558,6 +1682,15 @@ def parser():
                    help="Linux TAP interface bridged to the modems (created with sudo if missing); none = no bridge")
     g.add_argument("--all-in-one", action="store_true",
                    help="also run provision.py (DHCP, TFTP + generated config file, ToD) on the TAP, through sudo")
+    g.add_argument("--status-http", metavar="[ADDR:]PORT", default="127.0.0.1:8090",
+                   help="status page (channels, radios, modems, throughput, alerts) on this address; "
+                        "none to turn it off; 0.0.0.0:8090 to reach it from the network (closed lab only: "
+                        "it shows the modems' MAC addresses)")
+    g.add_argument("--status-edit", choices=("auto", "on", "off"), default="auto",
+                   help="the Configuration form of the status page writes the --config file and restarts the "
+                        "CMTS: auto = from this machine only (its browser, or ssh -L 8090:127.0.0.1:8090), read-only "
+                        "from the network; on = from wherever the page is reachable (anyone there could make the "
+                        "radio transmit elsewhere); off = read-only")
     g.add_argument("--prov-args", default="", help="extra arguments for provision.py, e.g. \"--config my.cfg\"")
     g.add_argument("--shared-secret", default="docsis-lab", help="CMTS MIC shared secret (same as in the config file)")
     g.add_argument("--strict-mic", action="store_true", help="refuse a REG-REQ whose CMTS MIC is wrong")
@@ -1621,8 +1754,32 @@ def parser():
     return ap
 
 
-def main():
-    a = parser().parse_args()
+def _sigint_once(signum, frame):
+    """Ctrl+C / systemctl stop: KeyboardInterrupt once, the next ones ignored. `timeout` signals the
+    process and then its group, an impatient user presses twice: a second KeyboardInterrupt landed
+    in the stop sequence and left the radios and the shared memory behind (2026-10-15)."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def main(argv=None):
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _sigint_once)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    path, rest = tomlconf.split_config(argv)
+    ap = parser()
+    if path:                                      # a TOML bench file: its options first, ours win
+        import provision
+        try:
+            argv = tomlconf.to_argv(path, ap, provision.parser()) + rest
+        except (OSError, ValueError) as e:
+            sys.exit(f"--config : {e}")
+        except Exception as e:                    # noqa: BLE001 - tomllib.TOMLDecodeError
+            sys.exit(f"--config {path} : {e}")
+    a = ap.parse_args(argv)
+    a.config_path = path
+    opt_dest = {o: act.dest for act in ap._actions for o in act.option_strings}
+    a.cli_locked = {opt_dest[t.split("=", 1)[0]] for t in rest if t.split("=", 1)[0] in opt_dest}
     termcolor.setup(a.color)
     termcolor.set_verbosity(a.verbose)
     if a.us_mod == "64qam" and a.us_mode != "atdma":
@@ -1649,7 +1806,12 @@ def main():
     if a.sim:
         res = run_sim(a, log)
         return 0 if res["state"] == "ranged" else 1
-    return run_usrp(a)
+    rc = run_usrp(a)
+    if rc == RESTART:                             # asked by the status page: the same command again
+        atexit._run_exitfuncs()                   # provision.py, latency holder: stopped first
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+    return rc
 
 
 if __name__ == "__main__":

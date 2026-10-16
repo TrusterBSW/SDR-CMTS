@@ -1,0 +1,21 @@
+# A Nuand bladeRF 2.0 micro instead of the B210: 3 DS + 1 US (138 / 24.5 Mbit/s), docs/BLADERF.md.
+# TX1 to the modem, RX1 for the upstream. Check the board first: python3 tools/bladerf_check.py --loop
+#   python3 mini_cmts.py --all-in-one --config configs/bladerf.toml
+
+[radio]
+sdr = "bladerf"
+sdr_args = ""               # "" = the first bladeRF, or "*:serial=<serial>"
+gain = 50                   # TX gain, libbladeRF scale (not the B210's)
+us_gain = 14                # RX gain: at 20 the modem arrived too strong even at its minimum power
+
+[downstream]
+freq = 306e6
+ds_channels = 3             # TX and RX share one rate on this board: 27.8 MS/s in 16 bits at most
+
+[upstream]
+us_channels = 1             # its RX starts at 70 MHz: one channel fits below 65 MHz
+us_freq = 61.8e6
+us_target = -20
+
+[provisioning]
+dns = "1.1.1.1"

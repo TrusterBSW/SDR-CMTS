@@ -1,0 +1,24 @@
+# Two B210s: 2 + 2 downstream channels + 2 upstream channels (189 / 50 Mbit/s, 2026-10-15).
+# The first serial is the primary (low channels + upstream on its RX2), the second a follower;
+# without a common 10 MHz the follower realigns on the primary (cmts/radio.py, docs/JOURNAL.fr.md).
+#   python3 mini_cmts.py --all-in-one --config configs/2xb210.toml
+
+[radio]
+sdr = "b210"
+ds_radios = 2
+radio_serials = ["000000367", "JN76WAJ"]    # uhd_find_devices
+clock_source = "internal"                   # "external": a common 10 MHz on both "10MHz" inputs
+
+[downstream]
+freq = 306e6
+ds_channels = 4             # up to 6 per B210 with enough CPU and memory bandwidth
+
+[upstream]
+us_channels = 2
+us_target = -20
+
+[provisioning]
+dns = "1.1.1.1"
+
+[host]
+cpus = "2-7,18-23"          # Threadripper 2950X: the NUMA node holding the memory, USB IRQs on CPU 0-1

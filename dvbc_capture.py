@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--offset", type=float, default=0, help="channel center relative to capture center (Hz)")
     ap.add_argument("--symrate", type=float, default=DVBC_SYMRATE)
     ap.add_argument("--qam", type=int, choices=(64, 256), help="default: try 256 then 64")
-    ap.add_argument("--ntaps", type=int, default=31, help="equalizer length (SFR TV channels show echoes)")
+    ap.add_argument("--ntaps", type=int, default=31, help="equalizer length (operator TV channels show echoes)")
     ap.add_argument("--ts", help="write the transport stream here")
     a = ap.parse_args()
 

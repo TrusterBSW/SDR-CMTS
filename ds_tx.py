@@ -134,7 +134,7 @@ def main():
     ap.add_argument("--minislot", type=int, default=4, help="minislot size in 6.25 us ticks")
     ap.add_argument("--mac", default="02:00:00:ca:fe:01", help="CMTS MAC address")
     ap.add_argument("--no-invert", action="store_true",
-                    help="do not mirror the spectrum (default mirrors it, like the SFR network)")
+                    help="do not mirror the spectrum (default mirrors it, like the modem's origin network)")
     ap.add_argument("--args", default="type=b200", help="UHD device args")
     ap.add_argument("--bench", action="store_true")
     ap.add_argument("--out", help="write samples to this file instead of transmitting")

@@ -2,12 +2,12 @@
 """Weak 256-QAM downstream (HackRF, MER ~25 dB: ~10 % of the bytes wrong, beyond Reed-Solomon)
 -> the raw MPEG packets, NOT corrected, with a reliability per byte, for messages that are sent
 again and again (UCD, MAP) or at every modem reboot (REG-RSP-MP, config file) and can be voted
-byte by byte across copies (sfr_vote.py).
+byte by byte across copies (origin_vote.py).
 
 Sync tracking tolerates the symbol slips of long slices: the byte offset of the sync bytes is
 found again every 48 packets, and every run of constant offset is deinterleaved on its own.
 
-  ./sfr_raw.py rb.s8 --fmt s8 --fs 20e6 --center 282e6 --freq 282e6 --out rb   -> rb_raw.npz
+  ./origin_raw.py rb.s8 --fmt s8 --fs 20e6 --center 282e6 --freq 282e6 --out rb   -> rb_raw.npz
 """
 import argparse
 import os
@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-import sfr_listen as L
+import origin_listen as L
 from cmts import j83a
 from cmts import rx_j83a as rx
 

@@ -207,6 +207,7 @@ class RadioProcess:
         self.dropped = self.dropped_logged = 0   # blocks a follower missed (ring full)
         self.wall0 = None                      # Unix time of TX sample 0 on the air
         self._agg = {}                         # TX/RX counters since the last status line
+        self.last = {}
         self._lock = threading.Lock()
         sr = sample_ring
         self._ring = (sr.shm.name, sr.ctl_shm.name, sr.buf.size, sr.fs, sr.decim) if sr is not None else None
@@ -259,6 +260,7 @@ class RadioProcess:
         """TX part of the status line (as the single-process loop prints it), since the last call."""
         with self._lock:
             agg, self._agg = self._agg, {}
+        self.last = dict(agg)                  # for the status page (mini_cmts.py web_snapshot)
         if "U" not in agg:
             return "radio: pas encore d'état | "
         m = agg.get("margin_ms", float("inf"))
@@ -349,6 +351,10 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
         q.put(("log", s))
     _dump = open(f"/tmp/radio_{os.getpid()}.stack", "w")
     faulthandler.register(signal.SIGUSR1, file=_dump, all_threads=True)   # kill -USR1: stacks
+    # Ctrl+C (the terminal signals the whole process group) and systemctl stop are for the MAC
+    # process, which stops this one in order: interrupted here, the radio aborted inside UHD and
+    # the MAC waited for it until systemd killed everything (2026-10-15)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
     from cmts.sdrdev import open_radio
     from cmts.stallwatch import StallWatch
@@ -477,8 +483,9 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
     def l_ms(n):
         return n * spp / fs_tx * 1e3
     wd = StallWatch(log, counters, air_s, l_ms=l_ms)
-    for f in (encoder, async_loop, watch_stop):
-        threading.Thread(target=f, daemon=True).start()
+    workers = [threading.Thread(target=f, daemon=True) for f in (encoder, async_loop)]
+    for t in workers + [threading.Thread(target=watch_stop, daemon=True)]:
+        t.start()
     t_start = p["t_start"]
     if follow:
         # a follower: the blocks it gets before the primary's origin is known are dropped but
@@ -508,7 +515,8 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
         wall0 = time.time() + t_start
         if has_rx:
             dev.start_rx(t_start)
-            threading.Thread(target=rx_loop, daemon=True).start()
+            workers.append(threading.Thread(target=rx_loop, daemon=True))
+            workers[-1].start()
     q.put(("started", wall0))
     first = True
     tick0 = round(t_start * mcr)
@@ -597,6 +605,9 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
         if counters["U"] or counters["L"]:
             log(f"!! TX: {counters['U']} underflows, {counters['L']} paquets en retard jetés "
                 f"(~{l_ms(counters['L']):.0f} ms de downstream)")
+        for t in workers:                      # out of UHD before it is released (0.2 s timeouts)
+            t.join(1.0)
+        dev.close()
         pk.close()
         if ring is not None:
             ring.detach()

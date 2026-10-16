@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""UCD burst profiles and MAP usage per upstream channel, from a pcap of sfr_listen.py
+"""UCD burst profiles and MAP usage per upstream channel, from a pcap of origin_listen.py
 (broadcast management only), plus the grants of the SIDs given with --sid (the modem's own,
 read in its REG-RSP-MP TLV 47).
 
-  tools/sfr_maps.py ~/sfrcap/rb1/rb_282.pcap --sid 0x2589 --sid 0x258a
+  tools/origin_maps.py ~/origincap/rb1/rb_282.pcap --sid 0x2589 --sid 0x258a
 """
 import argparse
 import collections

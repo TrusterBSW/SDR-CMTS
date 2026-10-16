@@ -284,6 +284,10 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
     # diagnostic: kill -USR1 <pid> writes the Python stacks of this process
     _dump = open(f"/tmp/usproc_{os.getpid()}.stack", "w")
     faulthandler.register(signal.SIGUSR1, file=_dump, all_threads=True)
+    # Ctrl+C (the terminal signals the whole process group) and systemctl stop are for the MAC
+    # process, which stops this one in order: interrupted here, the radio aborted inside UHD and
+    # the MAC waited for it until systemd killed everything (2026-10-15)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     mac.configure_upstream(p["us_mode"], p["us_bits"])
     shm = attach_shm(ring_name)
     rctl_shm = attach_shm(rctl_name)

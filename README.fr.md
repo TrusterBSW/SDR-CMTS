@@ -1,45 +1,34 @@
-# mini-CMTS — un CMTS EuroDOCSIS logiciel sur un seul USRP B210
+# mini-CMTS — un CMTS EuroDOCSIS logiciel sur USRP B210 (ou bladeRF)
 
 *[English version: README.md](README.md)*
 
-Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C. Il pilote un seul
-**USRP B210** Ettus/NI et met **en ligne** un vrai modem câble, non modifié, dans un labo fermé :
+Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C. Il pilote un ou plusieurs
+**USRP B210** Ettus/NI (ou un **bladeRF 2.0 micro** de Nuand) et met **en ligne** un vrai modem câble, non modifié, dans un labo fermé :
 - voie descendante EuroDOCSIS, voie montante DOCSIS 1.x/2.0, ranging ;
 - DHCP, TFTP, ToD, enregistrement DOCSIS 1.1 et 3.0 ;
-- agrégation de canaux descendants et montants (DOCSIS 3.0), pont Ethernet vers le PC Linux.
+- agrégation de canaux descendants et montants (DOCSIS 3.0), pont Ethernet vers le PC Linux ;
+- paquet Debian, service systemd, page d'état dans le navigateur.
 
 À notre connaissance, aucun CMTS libre ne faisait cela avec un SDR bon marché. Le projet sert à
 apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 
 **État : outil de labo expérimental.** Validé avec un modem (Sagem F@st 3686, DOCSIS 3.0).
 
-## Résultats (Sagem F@st 3686, 12/10/2026, hôte Proxmox 6 cœurs i5-9500)
+## Résultats (modem Sagem F@st 3686 ; un B210 : hôte i5-9500 6 cœurs, 12/10/2026)
 
 | | Configuration | Mesuré (iperf3 à travers le modem) |
 |---|---|---|
 | Descendant | 6 canaux agrégés EuroDOCSIS 256-QAM (290-330 MHz, 306 principal au milieu) | **276-284 Mbit/s** (8-16 flux TCP ; ~235 avec 4 flux, 120-175 avec 1 flux, limités par la latence) |
 | Montant | 2 canaux agrégés ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2 --us-target -20` | **51-52 Mbit/s** (8 flux, essai de 45 min) ; 22-24 avec un seul canal |
 | Latence | ping à travers le modem | ~75 ms au repos, ~55 ms pendant un téléchargement (CoDel) |
+| Deux B210 | 2 + 2 DS, 2 US, sans 10 MHz commun (Threadripper 2950X, `configs/2xb210.toml`) | **188-189 / 49,5 Mbit/s**, essai de 86 min avec la suiveuse recalée (12,4 ms au total) |
+| bladeRF 2.0 micro | 3 DS + 1 US (`configs/bladerf.toml`) | **138 / 24,5 Mbit/s**, voir `docs/BLADERF.fr.md` |
 
 Proches des limites physiques des canaux utilisés : 6 × 256-QAM ≈ 300 Mbit/s ; 2 × 64-QAM ATDMA
 ≈ 50 Mbit/s, une fois retirés le RS et les en-têtes de rafale.
 
-Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
-
-| | Configuration | État |
-|---|---|---|
-| Descendant | 3 canaux agrégés (306 + 314 + 322 MHz) | 142,8 Mbit/s mesurés une fois ; le modem laisse souvent un canal de côté (service partiel), voir plus bas |
-| Agrégation montante | 2 canaux ATDMA 64-QAM 5,12 Msym/s (60 + 53 MHz), `--us-channels 2` | modem en ligne en mode multi-canal (MTC), ranging sur les deux canaux, trames reconstituées à partir de segments envoyés sur les deux ; débit mesuré depuis : 44-47 Mbit/s, dernière ligne |
-| Agrégation montante | 4 canaux ATDMA 64-QAM 2,56 Msym/s (60 / 56,4 / 52,8 / 49,2 MHz), `--us-channels 4 --us-rate 16 --us-spacing -3.6e6 --us-target -20` | en ligne, ping 30/30, 2 640 segments des 4 canaux réassemblés, aucun perdu |
-| Ensemble | 3 canaux descendants + 2 montants | en ligne à chaque fois ; les 3 canaux descendants acquis 6 fois sur 19 (gain TX de 44 à 52 sans différence nette), sinon service partiel sur 2 |
-| Ensemble | 3 canaux descendants + 4 montants | en ligne une fois avec tous les canaux, à la limite du processeur du portable 4 cœurs (montant en retard de ~150 ms) |
-| Ensemble, processus radio | `--radio-process --ds-channels 3` (3 DS + 1 US), PC 6 cœurs (i5-9500) | **130,8 Mbit/s descendant / 20,2 Mbit/s montant** (iperf3 à travers le modem) ; les canaux non acquis à l'enregistrement sont rattachés par CM-STATUS |
-| Ensemble, processus radio | `--radio-process --ds-channels 3 --us-channels 2`, même PC | 130,8 / 15,8 Mbit/s : l'agrégation montante n'apporte pas encore de débit (les processus montants sont à 70-90 %, latence ~93 ms) |
-| Descendant, processus radio | `--radio-process --ds-channels 4` : horloge maître 34,76 MHz (5 éch./symbole), PC 6 cœurs | **156 Mbit/s** descendant (131 sur un autre essai), 19,3 montant ; les 4 canaux portent chacun un quart du trafic ; les 2 canaux centraux (de part et d'autre de l'oscillateur local) décrochent parfois et reviennent par CM-STATUS |
-| Descendant, processus radio | `--radio-process --ds-channels 5` : horloge maître 55,616 MHz, synthèse AVX2, PC 6 cœurs | **215,6 Mbit/s** descendant, 20,2 montant, ping 91 ms ; 6 DS : 208-209 Mbit/s mais montant effondré (2,9 Mbit/s) et ping jusqu'à 1 s, à reprendre |
-| Descendant, processus radio | `--radio-process --ds-channels 6 --ds-layout around` : 290-330 MHz, 306 principal au milieu, 55,616 MHz, trames USB de 16 Ko | **257-279 Mbit/s** descendant (canaux remplis à 100 %), 21 montant, ping ~97 ms (170 ms pendant un envoi) ; **c'est le défaut** depuis le 2026-10-11 |
-| Ensemble, processus radio | 6 DS + `--us-channels 2` : processus montants sur tous les cœurs à priorité plus basse que l'émission, contre-réaction sur le retard, DDC dans son propre fil, une seule recherche de préambule par rafale | **269-277 Mbit/s descendant / 24 Mbit/s montant**, modem jamais oublié, 99,8 % des rafales décodées, ping 78 ms (~370 pendant un envoi) ; paquets TS fabriqués en C, trames réparties à tour de rôle sur les canaux |
-| Ensemble, agrégation montante | 6 DS + `--us-channels 2` (défauts `--mtc-std --mtc-owed --ds-aqm 30`) : enregistrement et requêtes multi-canal conformes au MULPI, comme un vrai CMTS (fenêtre de dynamique dans la TCC, requêtes cumulées, grant pending), CoDel sur le descendant, segments montants décodés entièrement en C | **270-284 Mbit/s descendant / 44-47 Mbit/s montant** (iperf3, 8-16 flux), ping 75 ms ; l'agrégation montante apporte enfin du débit |
+Étapes précédentes (1 à 5 canaux, processus unique, agrégation montante avant qu'elle n'apporte
+de débit) : [docs/HISTORY.fr.md](docs/HISTORY.fr.md).
 
 ## ⚠ Sécurité et cadre légal
 
@@ -52,8 +41,9 @@ Fonctionne aussi (expérimental, 10/10/2026, hors valeurs par défaut) :
 
 ## Matériel
 
-- USRP B210 sur un **contrôleur USB 3 dédié**, PC Linux. Testé sur Arch Linux, UHD 4.9,
-  Python 3.14, portable 4 cœurs / 8 threads.
+- USRP B210 sur un **contrôleur USB 3 dédié**, PC Linux. Testé : Arch Linux (UHD 4.9,
+  Python 3.14, portable 4 cœurs), Debian 13 (UHD 4.8, Python 3.13, i5-9500 6 cœurs), Debian 12
+  (UHD 4.3, Python 3.11, Threadripper 2950X 16 cœurs avec deux B210).
 - Ou un **bladeRF 2.0 micro** (`--sdr bladerf`, 3 DS + 1 US) : voir `docs/BLADERF.fr.md`.
 - Un répartiteur 1:2 (coupleur A), un atténuateur 8 dB, un second répartiteur pour l'observation.
 
@@ -65,12 +55,21 @@ B210 TX/RX ── coupleur A [entrée] ──┬── sortie 1 ── modem câ
 
 La voie montante du modem atteint RX2 par l'isolation entre les sorties du coupleur A.
 
-## Démarrage rapide
+Deux B210 : leurs TX/RX sur un coupleur 1:2, leurs RX2 sur un autre (derrière l'atténuateur de
+8 dB), et ces deux coupleurs et le modem sur les **sorties** d'un coupleur 1:3.
+
+## Installation et démarrage
+
+Guide complet (hôte, USB, priorité temps réel, radios, service) : [docs/INSTALL.fr.md](docs/INSTALL.fr.md).
 
 ```bash
-# priorité temps réel pour le shell qui le lance (ou via limits.d)
-sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40
-python3 mini_cmts.py --all-in-one          # puis allumer le modem
+# Debian 12+ / Ubuntu 24.04+ : le paquet (dépendances installées par apt, noyaux C compilés pour ce CPU)
+./packaging/build-deb.sh && sudo apt install ./mini-cmts_*_all.deb
+sudo mini-cmts --config /etc/mini-cmts/mini-cmts.toml          # puis allumer le modem
+
+# ou depuis les sources
+sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40               # priorité temps réel pour ce shell
+python3 mini_cmts.py --all-in-one --config configs/b210.toml
 ```
 
 `--all-in-one` lance aussi `provision.py` sur l'interface TAP `cmts0` (10.10.0.1/24) :
@@ -83,6 +82,26 @@ installation DOCSIS classique.
 
 Journal attendu, en une minute environ : `RANGING TERMINÉ`, DHCP, TFTP, puis
 `REG-ACK ok -> MODEM EN LIGNE`.
+
+- **Fichiers de banc** (`--config`, TOML) : les clés sont les options ci-dessous (`--ds-channels`
+  -> `ds_channels`), `[provisioning]` porte celles de `provision.py`, la ligne de commande
+  l'emporte sur le fichier, une clé mal écrite est refusée. Exemples dans `configs/` :
+  `b210.toml` (6 DS + 2 US), `2xb210.toml`, `bladerf.toml`.
+- **Page d'état** : <http://127.0.0.1:8090/> pendant qu'il tourne : débit sur 30 min, radios
+  (underflows, paquets en retard, marge d'émission), canaux descendants (remplissage), canaux
+  montants (bruit, retard du récepteur), modems (état, temps, puissance, MER), alertes récentes.
+  `--status-http 0.0.0.0:8090` pour le réseau du labo, `none` pour la couper.
+  - **Capacités** de chaque modem, telles qu'il les annonce : version DOCSIS, récepteurs
+    descendants et émetteurs montants, BPI+, IPv6, débits symbole, profils de réception
+    (REG-REQ-MP) ; fabricant, modèle, numéro de série, version logicielle, composants intégrés
+    (eCM, eMTA/eDVA, eRouter) d'après son DHCP ; les équipements derrière lui (eRouter, eMTA, PC).
+  - **Configuration** : les options courantes (radio, nombre de canaux, fréquences, modulations,
+    niveaux) dans un formulaire, vérifiées (bandes EuroDOCSIS, canaux par radio, chevauchements),
+    écrites dans le fichier de banc `--config` (commentaires gardés, `.bak`), puis le CMTS
+    redémarre dessus. Depuis la machine elle-même seulement (ou `ssh -L 8090:127.0.0.1:8090 hôte`) ;
+    `--status-edit on` depuis partout où la page est joignable, `off` en lecture seule.
+- **Service** : `sudo systemctl enable --now mini-cmts` lance le banc de
+  `/etc/mini-cmts/mini-cmts.toml` ; `journalctl -u mini-cmts -f` montre sa console.
 
 Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 
@@ -109,6 +128,9 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
 | `--sdr`, `--sdr-args` | b210, — | `bladerf` : un **bladeRF 2.0 micro** à la place du B210 (libbladeRF appelée directement, `cmts/sdrdev.py`), TX1 vers le modem, RX1 pour le montant. Validé en **3 DS + 1 US** (138 / 24,5 Mbit/s) : émission et réception au même débit (27,8 MS/s en 16 bits au plus), réception à partir de 70 MHz (un seul canal montant, à 61,8 MHz). `--sdr-args "*:serial=…"` choisit la carte. Choix, pièges et limites : `docs/BLADERF.fr.md` ; vérification : `tools/bladerf_check.py --loop` |
 | `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | plusieurs radios (branche `multi-b210`) : les canaux descendants répartis en blocs adjacents, une radio par bloc ; la première reçoit aussi le montant. Sans 10 MHz commun (`internal`), la suiveuse se recale sur la principale par groupes de 8 paquets MPEG (dérive mesurée entre deux B210 : 2,5 ppm, 8,9 ms/h) ; 2 B210 en 2 + 2 DS : 189 / 50 Mbit/s |
+| `--config` | — | un fichier de banc en TOML (ci-dessus) ; `@fichier.args` (une option par ligne) marche toujours |
+| `--status-http` | 127.0.0.1:8090 | la page d'état ; `none` : coupée |
+| `--status-edit` | auto | le formulaire de configuration : modifications depuis cette machine seulement ; `on` depuis partout, `off` lecture seule |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |
 
 `python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
@@ -144,7 +166,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - un modem DOCSIS 3.0 reçoit dans son REG-RSP-MP le mode multi-canal (MTC), une configuration
     des canaux d'émission (TCC, TLV 46 : garder le canal 1, ajouter le canal 2 avec son UCD, la
     fenêtre de dynamique), un cluster de SID (TLV 47, critères 47.3) et le TLV 52, comme le fait un
-    vrai CMTS (relevé sur un CMTS ARRIS en réception seule, `tools/sfr_maps.py`) ;
+    vrai CMTS (relevé sur un CMTS ARRIS en réception seule, `tools/origin_maps.py`) ;
   - il envoie alors ses données en segments (en-tête de 8 octets, numéro de séquence) sur les
     deux canaux ; le CMTS les remet dans l'ordre et les recoupe en trames MAC (CCF) ;
   - les requêtes sont en octets (requêtes « queue-depth ») et ne portent que les octets nouveaux :
@@ -158,9 +180,31 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
     chaque radio ajuste une droite de son horloge contre celle de l'hôte, et la suiveuse insère ou retire 8 paquets
     MPEG nuls (un cycle d'embrouillage J.83-A, ~235 µs) quand elle s'écarte de la principale ;
   - 2 B210 en 2 + 2 DS : 186-189 / 50 Mbit/s pendant 86 min, avec 12,4 ms de correction cumulée.
-- **Pont** (`cmts/bridge.py`) : trames Ethernet entre les modems et l'interface TAP.
+- **Pont** (`cmts/bridge.py`) : trames Ethernet entre les modems et l'interface TAP. Les trames de
+  Linux sont lues par lots par une fonction C (toutes celles en attente, en un appel) et changées en
+  PDU descendantes par le fil qui construit les blocs TS, un budget d'octets par bloc : une fenêtre
+  TCP arrivée d'un coup ne peut plus priver les radios du GIL (elle bloquait les deux B210 au début
+  de chaque téléchargement).
 - **Provisionnement** (`provision.py`, `cmts/cmcfg.py`) : DHCP, TFTP, ToD, générateur de fichier
   de configuration.
+
+## Outils d'analyse du réseau d'origine des modems (réception seule)
+
+Pour voir comment un vrai CMTS pilote un modem (c'est ce qui a débloqué l'agrégation montante, voir
+plus bas), la voie descendante du réseau d'où vient le modem peut être enregistrée et décodée, **en
+réception seule** : le B210 ou un HackRF sur un coupleur, sa sortie TX débranchée, le CMTS du labo
+arrêté.
+
+| Outil | Rôle |
+|---|---|
+| `tools/origin_rx.sh` | enregistre la voie descendante avec `uhd_rx_cfile` (aucun flux d'émission) |
+| `origin_listen.py` | décode l'enregistrement en parallèle : SYNC, UCD, MAP, MDD et les messages destinés à la MAC d'un modem, dans un pcap |
+| `origin_raw.py` | les octets décodés bruts, pour comparer plusieurs copies d'un message |
+| `tools/origin_maps.py` | profils de rafale montants (UCD) et usage des MAP par canal, à partir de ce pcap |
+| `tools/hackrf_us.sh`, `tools/hackrf_reboot_cap.sh` | la même chose avec un HackRF (bande montante, redémarrage d'un modem) |
+
+Seuls les messages de gestion sont gardés. Un enregistrement brut contient aussi le trafic d'autres
+abonnés : ne pas le conserver ni le partager. Ne jamais émettre sur ce réseau.
 
 ## Ce qui a été difficile
 
@@ -205,19 +249,24 @@ Détails, mesures et tous les bogues rencontrés : `docs/JOURNAL.fr.md` et `docs
 ## Tests
 
 ```bash
-for t in tests/test_*.py; do python3 $t | tail -1; done   # test_provision_tap.py demande sudo
+python3 tests/run.py            # tous les tests sans radio ni root (aussi dans GitHub Actions)
+python3 tests/run.py --sudo     # plus test_provision_tap.py (crée cmts0, lance provision.py)
 ```
 
-La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/`).
+La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/`) ; GNU Radio
+(gr-dtv) et tshark vérifient la voie descendante de façon indépendante. Sur le banc :
+`docs/TESTS.fr.md`, `tools/burst_test.sh` (téléchargements après un temps calme),
+`tools/arg_effects.py` (un second B210 vérifie ce que chaque option change à l'antenne).
 
 ## Feuille de route
 
-- Agrégation montante : essai long de stabilité, réduire encore le processeur du récepteur
-  montant (suivi de phase par blocs, Reed-Solomon en SIMD), puis plus de 2 canaux.
-- 3 canaux descendants de façon fiable (le modem en laisse souvent un), puis 4 et plus : bloqué
-  par la contrainte d'horloge à 27,808 MHz ci-dessus, donc un second B210 sur la même référence
-  10 MHz / PPS.
-- Répartition du CMTS sur plusieurs SDR et PC.
+- Un 10 MHz / PPS commun pour plusieurs B210 (`--clock-source external`) : plus rien à recaler ;
+  puis 3 + 3 DS et plus de radios sur un hôte avec assez de bande passante mémoire.
+- bladeRF : échantillons 8 bits (libbladeRF 2.5+) pour 2 US et 4 à 6 DS ; un pilote par radio,
+  pour mélanger B210 et bladeRF.
+- Plusieurs modems à la fois (testé avec un seul), et un second modèle de modem.
+- Montant : moins de processeur par canal (suivi de phase par blocs, Reed-Solomon en SIMD), plus
+  de 2 canaux en production.
 
 ## Licence
 

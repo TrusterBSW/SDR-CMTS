@@ -1,0 +1,22 @@
+Package: mini-cmts
+Version: @VERSION@
+Architecture: all
+Maintainer: By-Hoster <byhoster.association@gmail.com>
+Section: hamradio
+Priority: optional
+Depends: python3 (>= 3.11), python3-numpy, python3-scipy, gcc, libc6-dev, iproute2, sudo, adduser
+Recommends: python3-uhd, uhd-host
+Suggests: bladerf, libbladerf2, bladerf-fpga-hostedxa4, tshark, iperf3
+Installed-Size: @SIZE@
+Description: DOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
+ A cable modem termination system written in Python and C for a closed coax
+ lab: EuroDOCSIS downstream (J.83 annex A, 64/256-QAM, channel bonding up to
+ 6 channels per B210, several B210s) and upstream (TDMA / ATDMA up to 64-QAM,
+ multiple transmit channels), ranging, registration, BPI-less data path
+ bridged to a Linux TAP, DHCP / TFTP / ToD provisioning, status page.
+ .
+ Tested with a Sagem F@st 3686 (DOCSIS 3.0). Never connect it to an
+ operator's network: closed lab, with attenuators.
+ .
+ The C kernels are compiled at installation for the CPU of this machine
+ (dpkg-reconfigure mini-cmts after moving the disk to another CPU).

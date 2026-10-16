@@ -1,0 +1,28 @@
+[Unit]
+Description=mini-cmts, DOCSIS 3.0 CMTS on a software radio (USRP B210 / bladeRF)
+Documentation=file:///usr/share/doc/mini-cmts/README.md http://127.0.0.1:8090/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# the bench: /etc/mini-cmts/mini-cmts.toml (radio, channels, provisioning, status page)
+ExecStart=/usr/bin/mini-cmts --config /etc/mini-cmts/mini-cmts.toml --color never
+WorkingDirectory=/var/lib/mini-cmts
+# UHD reads root's ~/.config/uhd.conf (e.g. the FPGA image of a B210 clone) and fails without $HOME
+Environment=HOME=/root
+StateDirectory=mini-cmts
+# Ctrl+C for the CMTS process only (mixed): it stops its radio and upstream processes in order
+# (end of burst), provision.py and the pcap; whatever is left after the timeout gets SIGKILL
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=15
+# real-time priority of the radio and upstream processes (the CMTS raises it itself)
+LimitRTPRIO=99
+LimitNICE=-20
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

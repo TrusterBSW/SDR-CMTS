@@ -12,6 +12,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <poll.h>
+#include <unistd.h>
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -329,4 +332,37 @@ int ts_pack(const uint8_t *data, int n, const int *starts, int ns, int *cc, uint
     }
     *cc = c;
     return np_;
+}
+
+/* ------------------------------------------------------------------ TAP frames by batches
+ * The frames waiting on a TAP file descriptor (opened O_NONBLOCK) in one call, without Python in
+ * between: waits up to timeout_ms for the first one, then reads until none is left, maxn frames
+ * or fewer than 2048 bytes of room. buf: the frames back to back, lens[i] the size of each.
+ * Returns the number of frames, -1 on an error. (2026-10-15: a download starting after a quiet
+ * spell put the sender's whole window into the TAP at once; read and handled frame by frame in
+ * Python, the thread held the GIL for ~37 ms and the TS block encoder of the same process starved,
+ * the radios underflowing together.) */
+int tap_read_batch(int fd, uint8_t *buf, int cap, int32_t *lens, int maxn, int timeout_ms)
+{
+    struct pollfd p;
+    p.fd = fd;
+    p.events = POLLIN;
+    p.revents = 0;
+    int r = poll(&p, 1, timeout_ms);
+    if (r <= 0)
+        return (r < 0 && errno != EINTR) ? -1 : 0;
+    int n = 0, used = 0;
+    while (n < maxn && cap - used >= 2048) {
+        ssize_t k = read(fd, buf + used, 2048);
+        if (k < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                break;
+            return n ? n : -1;
+        }
+        if (k == 0)
+            break;
+        lens[n++] = (int32_t)k;
+        used += (int)k;
+    }
+    return n;
 }

@@ -118,6 +118,15 @@ class UhdRadio:
     def set_time(self, t):
         self.usrp.set_time_now(self.uhd.types.TimeSpec(t))
 
+    def close(self):
+        """Streams, then the device, released while the process still runs: left to the
+        interpreter's exit, UHD's threads were destroyed still running ("terminate called without
+        an active exception" at every stop)."""
+        self.tx_stream = self.rx_stream = None
+        self.usrp = None
+        import gc
+        gc.collect()
+
     def time_now(self):
         return self.usrp.get_time_now().get_real_secs()
 

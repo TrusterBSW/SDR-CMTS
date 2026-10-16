@@ -1,14 +1,14 @@
 #!/bin/bash
-# Capture of the SFR downstream, RECEIVE ONLY: uhd_rx_cfile opens no transmit stream, and the
+# Capture of the downstream of the modem's origin network, RECEIVE ONLY: uhd_rx_cfile opens no transmit stream, and the
 # B210's TX/RX port must be DISCONNECTED (nothing on it, or a 50 ohm load). RX2 <- 8 dB <- coupler.
-#   sfr_rx.sh check [gain]            0.2 s: levels, clipping, channels seen (file deleted)
-#   sfr_rx.sh rec SECONDS [gain]      $DIR/sfr_HHMMSS.sc16 (+ .t0 = time of the first sample)
-# CENTER=298e6 RATE=48e6 by default: 274-322 MHz, SFR's two primary channels (282 and 314 MHz,
-# 2026-10-06) in one capture, 192 MB/s on disk. Then: sfr_listen.py <file> --out <prefix>
+#   origin_rx.sh check [gain]            0.2 s: levels, clipping, channels seen (file deleted)
+#   origin_rx.sh rec SECONDS [gain]      $DIR/origin_HHMMSS.sc16 (+ .t0 = time of the first sample)
+# CENTER=298e6 RATE=48e6 by default: 274-322 MHz, the origin network's two primary channels (282 and 314 MHz,
+# 2026-10-06) in one capture, 192 MB/s on disk. Then: origin_listen.py <file> --out <prefix>
 set -u
 CENTER=${CENTER:-298e6}
 RATE=${RATE:-48e6}
-DIR=${DIR:-/root/sfrcap}
+DIR=${DIR:-/root/origincap}
 CODE=${CODE:-/root/mini-cmts}
 if pgrep -f "python3 mini_cmts" >/dev/null; then
   echo "!! le CMTS tourne (il émet) : /root/cmts-tools/stop.sh d'abord"; exit 1
@@ -18,7 +18,7 @@ mode=${1:-check}
 if [ "$mode" = check ]; then
   secs=0.25; gain=${2:-30}; out=$DIR/check.sc16
 else
-  secs=${2:?durée en secondes}; gain=${3:-30}; out=$DIR/sfr_$(date +%H%M%S).sc16
+  secs=${2:?durée en secondes}; gain=${3:-30}; out=$DIR/origin_$(date +%H%M%S).sc16
   need=$(python3 -c "print(int($secs * $RATE * 4 / 1e9) + 2)")
   avail=$(df -BG --output=avail "$DIR" | tail -1 | tr -dc 0-9)
   if [ "$avail" -le "$need" ]; then echo "!! $need Go nécessaires, $avail libres"; exit 1; fi

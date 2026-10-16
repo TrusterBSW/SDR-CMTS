@@ -92,6 +92,9 @@ def _load_ds():
     dll.ts_pack.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, I32, ctypes.c_void_p,
                             ctypes.c_int]
     dll.ts_pack.restype = ctypes.c_int
+    dll.tap_read_batch.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+                                   ctypes.c_int]
+    dll.tap_read_batch.restype = ctypes.c_int
     return dll
 
 
@@ -135,6 +138,12 @@ def ts_pack(frames, cc):
     if k < 0:
         raise ValueError("ts_pack")
     return out[:k], c.value
+
+
+def tap_read_batch(fd, buf, lens, timeout_ms):
+    """Frames waiting on the TAP fd (non-blocking) into buf (uint8), their sizes into lens
+    (int32): one C call, the GIL let go meanwhile (dsdsp.c). Returns the count (-1: error)."""
+    return _DS.tap_read_batch(fd, buf.ctypes.data, buf.size, lens.ctypes.data, lens.size, int(timeout_ms))
 
 
 def mix_add(x, step, phase, acc):
