@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 # Capture of the UPSTREAM band of the modem's origin network (the modem's bursts, 5-65 MHz, under the B210's range) with
 # the HackRF on the laptop, RECEIVE ONLY (hackrf_transfer -r). AMPLIFIER OFF: the modem transmits
 # up to ~+1 dBm, the HackRF takes -5 dBm at most; on a splitter port beside the modem's.

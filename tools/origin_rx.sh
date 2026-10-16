@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 # Capture of the downstream of the modem's origin network, RECEIVE ONLY: uhd_rx_cfile opens no transmit stream, and the
 # B210's TX/RX port must be DISCONNECTED (nothing on it, or a 50 ohm load). RX2 <- 8 dB <- coupler.
 #   origin_rx.sh check [gain]            0.2 s: levels, clipping, channels seen (file deleted)

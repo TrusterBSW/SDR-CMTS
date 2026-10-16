@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 # One downstream channel of the modem's origin network captured with the HackRF (RECEIVE ONLY) while the modem is power-cycled
 # through its Home Assistant plug, with a tcpdump of the modem's Ethernet side for the timeline.
 #   hackrf_reboot_cap.sh [SECONDS] [FREQ]     -> ~/origincap/rb_HHMMSS.s8 (+ .t0, .eth.pcap, .cycle)

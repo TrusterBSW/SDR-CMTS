@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The B210 in a process of its own (mini_cmts.py --radio-process).
 
 With every thread in one process, the transmit chain (J.83 encoding, shaping, timed send) and the

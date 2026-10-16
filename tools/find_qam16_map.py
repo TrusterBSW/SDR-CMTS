@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Find the 16-QAM label -> point mapping of a real modem from its own data bursts.
 
     python3 tools/find_qam16_map.py captures/bursts_ko/*.npz

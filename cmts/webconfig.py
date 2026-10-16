@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The common options of the CMTS, changed from the status page (cmts/webstatus.py, "Configuration").
 
 The page shows a form with the options people change most (radio, downstream and upstream

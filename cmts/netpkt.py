@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Just enough Ethernet / ARP / IPv4 / UDP / DHCP / TFTP decoding to log, in one line, what goes
 through the CMTS bridge (and to build the replies of provision.py)."""
 import ipaddress

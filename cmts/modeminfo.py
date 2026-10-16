@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """What a modem says about itself, for the status page (cmts/webstatus.py, "Capacités").
 
 Two sources the CMTS sees anyway:

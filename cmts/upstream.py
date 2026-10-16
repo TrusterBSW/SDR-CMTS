@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Upstream receiver: RX samples + the MAP schedule -> decoded bursts with ranging measurements.
 
 Time base: the B210 transmits the downstream and receives the upstream with ONE master clock.

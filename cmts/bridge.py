@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Layer 2 bridge between the cable side (DOCSIS Packet PDUs) and a Linux TAP interface (cmts0).
 
 Upstream: every Ethernet frame a modem sends (DHCP, TFTP, ToD, ARP, CPE traffic...) is written

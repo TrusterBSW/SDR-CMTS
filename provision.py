@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Provisioning servers for the lab cable modem: DHCP, TFTP (DOCSIS config file) and Time of Day,
 on the CMTS bridge interface (cmts0). They replace, for a lab, what a DOCSIS head end runs on
 separate machines (a DHCP server, a TFTP server and an RFC 868 time server):

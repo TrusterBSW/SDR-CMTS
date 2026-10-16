@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md */
 /* Downstream transmitter kernels (CMTS side), called through ctypes (GIL released).
  *
  *   j83a_encode : ITU-T J.83 Annex A, TS packets -> QAM symbols, bit-exact with the numpy

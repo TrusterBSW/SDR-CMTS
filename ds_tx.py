@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """EuroDOCSIS downstream test transmitter (J.83 Annex A + SYNC/UCD/MAP) for a USRP B210.
 
 Goal: make a real cable modem lock on the downstream and start ranging

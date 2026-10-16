@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """CMTS ranging (MULPIv3.0 7.1.3 and 10.2.3.7): RNG-REQ -> RNG-RSP, temporary SIDs and
 Station Maintenance polling.
 

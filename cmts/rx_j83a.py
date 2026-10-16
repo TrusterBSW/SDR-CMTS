@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """J.83 Annex A (DVB-C / EuroDOCSIS downstream) receiver for offline IQ captures.
 
 IQ -> channel select / resample to 4 sps -> RRC matched filter -> Oerder-Meyr

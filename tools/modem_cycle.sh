@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 # Power-cycles the modem through its Home Assistant smart plug, then waits until it is back
 # online (DHCP lease on the laptop's modem NIC + ping 9.9.9.9 through it). Prints a timeline.
 #   modem_cycle.sh [off_seconds]

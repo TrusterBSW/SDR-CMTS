@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 # Downloads that start after a quiet spell, the case that made both radios underflow together
 # (docs/JOURNAL.fr.md, 15/10/2026): N times, IDLE seconds without traffic, then 15 s of iperf3
 # downstream through the modem; after each, the TX stalls, GC pauses and lock losses of the run.

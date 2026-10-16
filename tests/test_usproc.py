@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Upstream receiver in its own process (cmts/usproc.py): samples pushed into the shared ring,
 the grant sent through the queue, the decoded burst back through on_burst; also the processed
 DOCSIS time (MAP Ack Time), the statistics, and a clean stop. Uses a real ATDMA 64-QAM burst of

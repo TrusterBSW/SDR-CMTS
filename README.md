@@ -245,7 +245,10 @@ checks what each option changes on the air).
 
 ## Licence
 
-To be chosen by the project owner before publication.
+**AGPL-3.0-only, or a commercial licence** (dual licensing): see `COMMERCIAL.md`. Free to use,
+modify and share; a modified version that is distributed or used over a network must come with its
+source. Building it into a closed product, or keeping your changes private, needs a commercial
+licence from the copyright holder. Contributions: `CONTRIBUTING.md`. Copyright © 2026 BILLY Rémi.
 
 Specifications referred to (not included): CableLabs DOCSIS MULPIv3.0 and PHYv3.0, ITU-T J.83,
 ETSI EN 300 429.

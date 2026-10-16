@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """CMTS side of registration (MULPIv3.0 10.2.6, DOCSIS 1.1 style REG-REQ / REG-RSP / REG-ACK).
 
     CM: REG-REQ (SID, config file TLVs + modem capabilities + CM MIC + CMTS MIC)

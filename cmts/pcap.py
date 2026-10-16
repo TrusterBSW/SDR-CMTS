@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """pcap writer for DOCSIS MAC frames (link type 143, DLT_DOCSIS: Wireshark's "docsis" dissector)."""
 import collections
 import os

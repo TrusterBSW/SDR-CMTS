@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """--radio-process (cmts/radio.py), without the B210:
   - PacketRing: TS blocks written here arrive intact and in order in a spawned process;
   - SampleRing opened by name in another process: what that process pushes is seen here, with

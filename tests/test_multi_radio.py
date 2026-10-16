@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Several B210s (mini_cmts --ds-radios 2): the bonded channels split into blocks of adjacent
 frequencies, one per device; the RCC of 12 channels over the receive modules of a 16-channel
 profile (MULPIv3.0 C.1.5.3); 6 channels keep the former single-module RCC."""

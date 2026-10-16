@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Spectrum scan with hackrf_transfer in RECEIVE mode only (no sweep firmware needed).
 Steps of 16 MHz (keeps the central 16 of 20 MHz), averages PSD, writes CSV freq_MHz,dBFS/Hz."""
 import argparse, os, subprocess, tempfile

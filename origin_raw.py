@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Weak 256-QAM downstream (HackRF, MER ~25 dB: ~10 % of the bytes wrong, beyond Reed-Solomon)
 -> the raw MPEG packets, NOT corrected, with a reliability per byte, for messages that are sent
 again and again (UCD, MAP) or at every modem reboot (REG-RSP-MP, config file) and can be voted

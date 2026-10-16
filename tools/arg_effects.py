@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Do the CMTS options really change the signal on the coax? Checked by a second radio.
 
 For each case (a set of options), the CMTS transmits on one B210 (--tx-serial) and a second B210

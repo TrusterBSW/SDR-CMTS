@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Bench files in TOML (mini_cmts.py --config, cmts/tomlconf.py): the example files of configs/ give
 the options they say; true / false become --x / --no-x; a list is joined with commas; the
 [provisioning] section becomes one --prov-args for provision.py; the command line wins over the

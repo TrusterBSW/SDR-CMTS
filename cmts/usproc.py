@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Upstream receiver in a process of its own.
 
 The upstream worker (MAP windows, preamble search, equalizer, decoding) used to be a thread of

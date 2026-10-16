@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """SYNC timestamp vs air position: fit timestamp = a * (symbol index of the timestamp byte) + b
 and report the residual jitter (DOCSIS requires < 500 ns peak-to-peak)."""
 import sys

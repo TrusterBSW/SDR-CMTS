@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Statistics on a DOCSIS management pcap (from origin_capture.py or from our own
 transmitter via tests/test_loopback.py) to compare a real CMTS with ours."""
 import collections

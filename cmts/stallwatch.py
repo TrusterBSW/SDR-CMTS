@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """TX stall watchdog: one dated line per gap in the B210 feed, saying where every thread was.
 
 The main loop calls feed() after each block handed to UHD (one every ~2.5 ms). A watchdog thread

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Long capture of EuroDOCSIS downstream channels (receive only) -> what concerns ONE modem.
 
 Decodes an IQ file recorded by tools/origin_rx.sh (several minutes, one or more channels in the

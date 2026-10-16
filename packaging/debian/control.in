@@ -1,7 +1,7 @@
 Package: mini-cmts
 Version: @VERSION@
 Architecture: all
-Maintainer: By-Hoster <byhoster.association@gmail.com>
+Maintainer: BILLY Rémi <byhoster.association@gmail.com>
 Section: hamradio
 Priority: optional
 Depends: python3 (>= 3.11), python3-numpy, python3-scipy, gcc, libc6-dev, iproute2, sudo, adduser
@@ -14,6 +14,8 @@ Description: DOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
  6 channels per B210, several B210s) and upstream (TDMA / ATDMA up to 64-QAM,
  multiple transmit channels), ranging, registration, BPI-less data path
  bridged to a Linux TAP, DHCP / TFTP / ToD provisioning, status page.
+ .
+ License: AGPL-3.0-only, or a commercial licence (COMMERCIAL.md).
  .
  Tested with a Sagem F@st 3686 (DOCSIS 3.0). Never connect it to an
  operator's network: closed lab, with attenuators.

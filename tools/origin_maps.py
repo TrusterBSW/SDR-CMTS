@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """UCD burst profiles and MAP usage per upstream channel, from a pcap of origin_listen.py
 (broadcast management only), plus the grants of the SIDs given with --sid (the modem's own,
 read in its REG-RSP-MP TLV 47).

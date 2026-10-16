@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """CM-STATUS (MULPIv3.0 6.4.34, 10.4.3): the MDD of the primary channel enables the reports (TLV 11
 per event type, upstream bits in TLV 7.2); a CM-STATUS is acknowledged (CM-STATUS-ACK, same
 transaction and event); a downstream channel the modem reports lost leaves its bonded channels, and

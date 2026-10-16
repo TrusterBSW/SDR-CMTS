@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """DOCSIS MAC downstream management messages (SYNC, UCD, MAP) and MPEG-TS packing."""
 import struct
 import zlib

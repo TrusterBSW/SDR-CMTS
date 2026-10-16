@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Runs every tests/test_*.py, one process each, and sums up: PASS, FAIL or SKIP.
 
     python3 tests/run.py               # everything that needs no radio and no root

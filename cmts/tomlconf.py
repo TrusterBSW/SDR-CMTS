@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Bench descriptions in TOML (mini_cmts.py --config bench.toml).
 
 A TOML file groups the options in sections for reading; the keys are the option names of

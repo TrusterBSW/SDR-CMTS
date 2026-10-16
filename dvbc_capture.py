@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Demodulate an IQ capture of a DVB-C channel (J.83 Annex A, 6.875 Msym/s, receive only)
 and write the MPEG transport stream to a .ts file (Wireshark opens it directly).
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """C downstream kernels (cmts/dsdsp.c) against the numpy references: J.83A encoder bit-exact over
 several consecutive calls (interleaver and rotation state), 64/256-QAM, random and null packets;
 mix_add (frequency placement for bonding) against numpy; ChannelSynth (shaping + conjugation +

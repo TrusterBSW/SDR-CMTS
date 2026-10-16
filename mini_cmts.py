@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Mini-CMTS, step 3: EuroDOCSIS downstream + upstream ranging on ONE USRP B210.
 
   B210 TX/RX (channel A) : downstream J.83A (as ds_tx.py)

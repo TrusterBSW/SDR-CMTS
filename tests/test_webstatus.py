@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Status page (cmts/webstatus.py, mini_cmts.py --status-http): the server answers the page and
 the last published snapshot as valid JSON (NaN / infinities / numpy values made plain), alerts are
 the "!!" log lines, the throughput comes from the interface's kernel counters, a taken port is
@@ -38,7 +40,12 @@ board.publish(dict(radios=[dict(name="radio", margin_ms=float("inf"), noise=floa
 board.publish(dict(radios=[], modems=[]), iface="lo")
 base = f"http://127.0.0.1:{port}"
 page = urllib.request.urlopen(base + "/").read().decode()
-check("la page HTML", "<title>mini-cmts</title>" in page and "status.json" in page)
+check("la page HTML", "<title>mini-cmts</title>" in page and "status.json" in page and "@VERSION@" not in page)
+import io, tarfile  # noqa: E401,E402
+src = tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(base + "/source.tar.gz").read()))
+names = src.getnames()
+check("code source servi (AGPL §13)", "mini-cmts/mini_cmts.py" in names and "mini-cmts/LICENSE" in names
+      and "mini-cmts/cmts/webstatus.py" in names and not any(n.endswith(".so") for n in names), f"{len(names)} fichiers")
 raw = urllib.request.urlopen(base + "/status.json").read().decode()
 try:
     d = json.loads(raw, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))

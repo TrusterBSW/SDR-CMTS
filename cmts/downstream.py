@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Downstream multiplexer: schedules SYNC / UCD / MAP into the MPEG-TS stream and
 turns it into baseband samples.
 

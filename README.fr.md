@@ -270,7 +270,11 @@ La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/
 
 ## Licence
 
-À choisir par le propriétaire du projet avant publication.
+**AGPL-3.0-only, ou licence commerciale** (double licence) : voir `COMMERCIAL.md`. Libre
+d'utiliser, de modifier et de partager ; une version modifiée distribuée ou utilisée à travers un
+réseau doit être accompagnée de son code source. L'intégrer dans un produit fermé, ou garder ses
+modifications privées, demande une licence commerciale du titulaire des droits. Contributions :
+`CONTRIBUTING.md`. Copyright © 2026 BILLY Rémi.
 
 Normes de référence (non incluses) : CableLabs DOCSIS MULPIv3.0 et PHYv3.0, UIT-T J.83,
 ETSI EN 300 429.

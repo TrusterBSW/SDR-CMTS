@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """What a modem says about itself (cmts/modeminfo.py), for the status page: the capabilities of a
 real REG-REQ of the Sagem F@st 3686 (tests/data/sagem3686/registration.pcap), a DOCSIS 3.0
 capability set built here (receivers, transmitters, US range, symbol rates), the DHCP of a modem

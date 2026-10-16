@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Downstream frames from the TAP by batches (cmts/bridge.py TapFeed, cdsp.tap_read_batch): the C
 reader takes every frame waiting in one call, up to its frame limit, sizes exact; the encoder side
 turns them into PDUs in order, a byte budget at a time, each with its arrival time; a batch older

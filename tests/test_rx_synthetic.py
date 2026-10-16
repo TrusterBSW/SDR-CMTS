@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Receiver check on a synthetic capture: our modulator -> 20 MS/s, +5 MHz offset,
 carrier error, clock error, noise, int8 quantization -> rx_j83a -> TS."""
 import os, sys

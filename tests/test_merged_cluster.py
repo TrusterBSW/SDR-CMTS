@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Real ATDMA 64-QAM 5.12 Msym/s windows (Sagem 3686, 2026-10-09) where the guard time (147
 samples) is shorter than an energy block (174 samples): the tail of the previous burst and the
 burst of this grant form one energy cluster. UpstreamRx._handle searched only where that cluster

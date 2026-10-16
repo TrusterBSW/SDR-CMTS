@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The bladeRF driver of the radio process (cmts/sdrdev.py BladeRFRadio) against a fake libbladeRF
 that records every call: format by library version, TX metadata flags and timestamps block after
 block, SC16 Q11 scaling both ways, device time from the free-running counters (TX and RX), the

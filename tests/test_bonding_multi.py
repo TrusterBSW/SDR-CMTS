@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """2, 4 and 6 bonded downstream channels as mini_cmts.py --ds-channels N builds them since
 2026-10-10: each channel shaped and shifted in one C pass (cdsp.ChannelSynth) at 4 / 6 / 8 samples
 per symbol (27.808 / 41.712 / 55.616 MS/s), summed, scaled and clipped (cdsp.scale_clip), then

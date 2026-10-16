@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """C kernels of the upstream receiver (cmts/usdsp.c) and of the downstream transmitter
 (cmts/dsdsp.c), compiled on first use, with pure Python fallbacks (same results, much slower)
 if no C compiler is available.

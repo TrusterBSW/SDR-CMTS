@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """End-to-end check: modulate with DownstreamMux, then demodulate with an
 independent receiver chain (spec Boolean differential decoder written literally,
 gr-dtv deinterleaver + RS decoder + descrambler), extract DOCSIS frames and

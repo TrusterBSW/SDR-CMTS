@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md */
 /* Upstream burst receiver kernels (CMTS side), called through ctypes (the GIL is released
  * during each call, so decoding a burst no longer stalls the downstream feed).
  *

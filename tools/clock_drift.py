@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Drift between the clocks of several B210s (no common 10 MHz): every device's time is read
 against the host's monotonic clock; a straight line per device gives its rate against the host,
 the differences between devices their relative drift, i.e. how fast the downstream channels of a

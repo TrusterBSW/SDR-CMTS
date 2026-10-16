@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Lab monitor: watch the downstream of OUR test CMTS (ds_tx.py) on the lab coax with a
 second receiver, decode it continuously, print live diagnostics and write a pcap.
 

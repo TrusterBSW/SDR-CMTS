@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The SDR under the radio process (cmts/radio.py), behind one small interface, so that other
 devices than the B210 can carry the CMTS:
 

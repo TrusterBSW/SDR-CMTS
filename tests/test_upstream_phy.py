@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Upstream burst PHY: modulate RNG-REQ / REQ bursts like a modem, add channel impairments,
 demodulate with BurstDemod. Checks decoding, arrival time, frequency and power estimates."""
 import os, sys

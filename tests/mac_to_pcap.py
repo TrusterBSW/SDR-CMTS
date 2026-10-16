@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Write SYNC/UCD/MAP frames to a DLT_DOCSIS pcap for dissection with tshark."""
 import sys, os, struct
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))

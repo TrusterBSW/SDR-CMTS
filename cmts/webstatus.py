@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Status page of the CMTS over HTTP (mini_cmts.py --status-http, 127.0.0.1:8090 by default).
 
 The status loop of mini_cmts.py publishes a snapshot every 5 s (a dict: channels, radios,
@@ -12,11 +14,18 @@ made once per snapshot). Bound to the loopback by default: the page shows the mo
 addresses, give another address (0.0.0.0:8090) only on a closed lab network.
 """
 import collections
+import glob
+import io
 import json
+import os
+import tarfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # mini_cmts.py and cmts/ live here
+SOURCE_GLOBS = ("*.py", "VERSION", "LICENSE", "COMMERCIAL.md", "cmts/*.py", "cmts/*.c", "tools/*.py", "tools/*.sh",
+                "configs/*.toml", "packaging/*", "packaging/debian/*")
 HISTORY = 360                       # snapshots kept for the throughput charts (30 min at 5 s)
 ALERTS = 50                         # last alert lines ("!!" in the log)
 
@@ -87,6 +96,31 @@ class StatusBoard:
             return self._json
 
 
+_source = []
+
+
+def source_archive():
+    """The program's own source as a .tar.gz, built once (GNU AGPL section 13: the users of a
+    modified version over a network must be offered its source; the page links here)."""
+    if not _source:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for pat in SOURCE_GLOBS:
+                for f in sorted(glob.glob(os.path.join(ROOT, pat))):
+                    if os.path.isfile(f) and not f.endswith((".so", ".pyc")):
+                        tar.add(f, arcname="mini-cmts/" + os.path.relpath(f, ROOT))
+        _source.append(buf.getvalue())
+    return _source[0]
+
+
+def version():
+    try:
+        with open(os.path.join(ROOT, "VERSION")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _finite(x):
     """NaN and infinities -> None (JSON has neither; the page's JSON.parse would refuse them)."""
     if isinstance(x, float):
@@ -115,7 +149,7 @@ class StatusServer:
 
     def __init__(self, board, host="127.0.0.1", port=8090, log=print, config=None):
         self.board = board
-        page = PAGE.encode()
+        page = PAGE.replace("@VERSION@", version()).encode()
 
         class Handler(BaseHTTPRequestHandler):
             def _send(self, body, ctype, code=200):
@@ -140,6 +174,14 @@ class StatusServer:
                     self._send(page, "text/html; charset=utf-8")
                 elif path == "/status.json":
                     self._send(board.json(), "application/json")
+                elif path == "/source.tar.gz":
+                    self.send_response(200)
+                    body = source_archive()
+                    self.send_header("Content-Type", "application/gzip")
+                    self.send_header("Content-Disposition", 'attachment; filename="mini-cmts-source.tar.gz"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 elif path == "/config.json":
                     self._json(config.describe(self._local()) if config else dict(fields=[], editable=False,
                                                                                   why="pas de formulaire"))
@@ -250,6 +292,8 @@ form input, form select { font:inherit; padding:3px 6px; border:1px solid var(--
   <span class="muted">le modem se réenregistre en une minute environ</span></div>
   <div id="cfgmsg" class="msg"></div></div></section>
 </main>
+<footer class="muted" style="padding:0 16px 16px;font-size:12px">mini-cmts @VERSION@ · GNU AGPL v3.0
+  (ou licence commerciale) · <a href="source.tar.gz" style="color:inherit">code source</a></footer>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
