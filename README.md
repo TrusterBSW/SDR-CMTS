@@ -96,7 +96,12 @@ TFTP, `REG-ACK ok -> MODEM EN LIGNE` within about a minute. The console and logs
     itself only (or `ssh -L 8090:127.0.0.1:8090 host`); `--status-edit on` from anywhere the page
     is reachable, `off` read-only.
 - **Service**: `sudo systemctl enable --now mini-cmts` runs the bench of
-  `/etc/mini-cmts/mini-cmts.toml`; `journalctl -u mini-cmts -f` shows its console.
+  `/etc/mini-cmts/mini-cmts.toml`; `journalctl -u mini-cmts -f` shows its console. An SDR
+  unplugged stops the CMTS (exit code 3) and the service starts it again every 15 s until the SDR
+  is back.
+- **Host settings**: for a run the CMTS sets the CPU governor to `performance`, blocks the deep
+  C-states and moves the other interrupts off its cores; after every stop (a killed one too) they go
+  back to the kernel's defaults (`mini-cmts --restore-host`, run by the service).
 
 Defaults (since 2026-10-10) = the configuration of the results above:
 

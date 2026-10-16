@@ -1633,7 +1633,8 @@ def parser():
                         "all, or a list like 1-3,5-7")
     g.add_argument("--performance", action=argparse.BooleanOptionalAction, default=True,
                    help="put every CPU in the 'performance' governor and block the deep C-states "
-                        "(/dev/cpu_dma_latency) for the run (sudo), restored on exit")
+                        "(/dev/cpu_dma_latency) for the run (sudo); on exit the governor and energy "
+                        "preference go back to the kernel's defaults, the C-states are free again")
     g.add_argument("--tx-dc-cal", action=argparse.BooleanOptionalAction, default=False,
                    help="measure and cancel the TX LO leakage at start (the B210 RX tuned to the TX centre "
                         "for a moment). It lowered the leakage in the middle of 3 channels (-31 dBc) by 2-24 dB "
@@ -1664,7 +1665,9 @@ def parser():
     g.add_argument("--us-lo-offset", type=float, default=None,
                    help="RX LO - upstream freq (Hz); default 3 MHz, more if needed to keep the LO >= 52 MHz")
     g.add_argument("--irq-herd", action=argparse.BooleanOptionalAction, default=True,
-                   help="with --cpus auto: move every other hardware interrupt onto the USB core (sudo)")
+                   help="with --cpus auto: move every other hardware interrupt off the CMTS cores (sudo), onto the "
+                        "USB core's other hyperthread, or the USB core itself without SMT; on exit they go "
+                        "back to the kernel's default affinity")
     g.add_argument("--us-process", action=argparse.BooleanOptionalAction, default=True,
                    help="upstream demodulation in a separate process (own GIL and core); "
                         "--no-us-process: a thread, as before 2026-10-09")

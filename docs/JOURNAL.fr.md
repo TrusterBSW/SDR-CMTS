@@ -850,3 +850,24 @@ Sur le 9500, tout ce travail tombait sur un cœur du CMTS : blocage d'émission 
 `--irq-herd` envoyait les interruptions vers le jumeau hyperthread du cœur USB, et l'i5-9500 n'en a pas : rien
 n'était déplacé, avec un message trompeur. Sans hyperthreading, elles vont maintenant sur le cœur USB lui-même,
 que `--cpus auto` laisse déjà libre : plus aucun incident pendant les speedtests.
+
+## SDR débranché et réglages de l'hôte (16/10/2026 soir)
+
+**Ce qui s'est passé.** Le B210 du 9500 débranché sous le service : UHD avorte dans le processus radio, la MAC le
+voit, entre dans sa séquence d'arrêt… et n'en sort plus. Le `systemctl stop` suivant est ignoré (SIGINT n'est pris
+qu'une fois, l'arrêt était déjà en cours), systemd tue tout au bout de 30 s, et rien n'est rétabli sur l'hôte.
+
+**La cause**, trouvée sans matériel avec une radio simulée (`MINI_CMTS_SDR_SIM`, débranchement simulé par
+`MINI_CMTS_SIM_UNPLUG_S`) et `kill -USR1` sur la MAC : le signal d'arrêt de la radio était un
+`multiprocessing.Event`. Son `set()` attend que chaque processus en attente accuse son réveil ; la radio, morte en
+attente, ne l'accuse jamais. C'est maintenant un octet en mémoire partagée, lu toutes les 100 ms par la radio.
+
+**Ensuite.** Une radio perdue arrête le CMTS avec le code 3, et le service le relance toutes les 15 s jusqu'au
+retour du SDR. Ce que le CMTS change sur l'hôte (gouverneur, préférence d'énergie, affinité des interruptions) est
+noté dans /run avant tout changement et remis aux valeurs par défaut du noyau à l'arrêt, par
+`ExecStopPost=mini-cmts --restore-host` après tout arrêt (même tué), et au lancement suivant. Avant, une exécution
+tuée laissait `performance`, que la suivante prenait pour l'original.
+
+**Le 9500 en `performance`** : ce n'est pas le CMTS, c'est le noyau Proxmox (`CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE`).
+Au repos il consomme ~10 W et ses cœurs dorment ~95 % du temps (C6-C10) : `performance` ne fixe que la fréquence
+pendant le travail, il n'empêche pas la veille.

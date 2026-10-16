@@ -102,7 +102,12 @@ Journal attendu, en une minute environ : `RANGING TERMINÉ`, DHCP, TFTP, puis
     redémarre dessus. Depuis la machine elle-même seulement (ou `ssh -L 8090:127.0.0.1:8090 hôte`) ;
     `--status-edit on` depuis partout où la page est joignable, `off` en lecture seule.
 - **Service** : `sudo systemctl enable --now mini-cmts` lance le banc de
-  `/etc/mini-cmts/mini-cmts.toml` ; `journalctl -u mini-cmts -f` montre sa console.
+  `/etc/mini-cmts/mini-cmts.toml` ; `journalctl -u mini-cmts -f` montre sa console. Un SDR débranché
+  arrête le CMTS (code 3) et le service le relance toutes les 15 s jusqu'à son retour.
+- **Réglages de l'hôte** : pendant qu'il tourne, le CMTS met le gouverneur du processeur en
+  `performance`, bloque les états de veille profonds et écarte les autres interruptions de ses
+  cœurs ; après chaque arrêt (même tué), tout revient aux valeurs par défaut du noyau
+  (`mini-cmts --restore-host`, lancé par le service).
 
 Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 
