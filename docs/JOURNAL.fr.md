@@ -25,7 +25,7 @@ attendu à cette étape.
 | `cmts/fastdsp.c` | Filtre polyphase en C, compilé automatiquement au premier lancement |
 | `cmts/docsis_mac.py` | Messages SYNC, UCD et MAP, HCS/CRC, mise en paquets MPEG-TS (PID 0x1FFE) |
 | `cmts/downstream.py` | Ordonnanceur et base de temps : l'horodatage 10,24 MHz est dérivé du compteur de symboles |
-| `cmts/ts_demux.py` | TS → trames MAC DOCSIS → pcap Wireshark (servira aussi à la phase 1, l'écoute du réseau SFR) |
+| `cmts/ts_demux.py` | TS → trames MAC DOCSIS → pcap Wireshark (servira aussi à la phase 1, l'écoute du réseau d'origine du modem) |
 | `tests/` | Comparaison avec GNU Radio gr-dtv et test de bouclage complet |
 | `mini_cmts.py` | **Étape 3** : downstream + réception upstream + ranging sur un seul B210 ; `--sim` sans matériel |
 | `cmts/us_phy.py` | Couche physique montante TDMA : RS, embrouilleur x^15+x^14+1, QPSK, RRC α=0,25 ; démodulateur de rafales |
@@ -56,7 +56,7 @@ B210 [TX/RX] ── coupleur A ──┬── modem
                                                        └── HackRF / RTL-SDR (observer l'upstream à 40 MHz)
 ```
 
-- **Banc fermé uniquement.** Jamais de liaison avec la prise SFR.
+- **Banc fermé uniquement.** Jamais de liaison avec la prise du réseau d'origine.
 - Niveau visé à l'entrée du modem : environ 0 dBmV (plage acceptée : −15 à +15 dBmV).
 - Pour régler : commence avec `--gain 50` à travers un coupleur 1 vers 2 (niveau au modem ≈ gain − 50 dBmV), puis lis la puissance reçue
   sur `http://192.168.100.1`.
@@ -71,7 +71,7 @@ python3 ds_tx.py --freq 474e6 --us-freq 60e6  # upstream annoncé à 60 MHz (pra
 ```
 
 **Astuce :** le modem mémorise sa dernière fréquence downstream. Émettre sur l'ancienne
-fréquence SFR, relevée sur la page d'état du modem avant de le débrancher, évite un scan
+fréquence du réseau d'origine, relevée sur la page d'état du modem avant de le débrancher, évite un scan
 complet qui peut durer plusieurs minutes. Sinon, utilise une fréquence de la grille européenne
 de 8 MHz, par exemple 474 MHz, 306 MHz ou 330 MHz.
 
@@ -101,9 +101,9 @@ de 8 MHz, par exemple 474 MHz, 306 MHz ou 330 MHz.
 - **Upstream** : le ranging est fait par `mini_cmts.py` (étape 3). Les grants de données, DHCP,
   TFTP et l'enregistrement restent à faire.
 
-## Phase 1 : écoute du downstream SFR (réception seule)
+## Phase 1 : écoute du downstream du réseau d'origine (réception seule)
 
-`sfr_capture.py` démodule une capture IQ d'un canal EuroDOCSIS et ne garde **que les messages de
+`origin_capture.py` démodule une capture IQ d'un canal EuroDOCSIS et ne garde **que les messages de
 gestion diffusés à tous les modems** (SYNC, UCD, MAP, MDD). Les trames de données et les messages
 unicast adressés à un modem sont jetés. Les captures IQ brutes contiennent tout le canal : supprime-les
 une fois analysées.
@@ -111,14 +111,14 @@ une fois analysées.
 ```bash
 # B210 sur RX2 : forcer master_clock_rate pour avoir EXACTEMENT 20 MS/s (sinon UHD prend 20,48 MS/s)
 uhd_rx_cfile -a "type=b200,master_clock_rate=40e6" -A RX2 --spec A:A -f 282e6 -r 20e6 -g 38 -N 20000000 -s ch.sc16
-./sfr_capture.py ch.sc16 --fmt sc16 --pcap mgmt.pcap
+./origin_capture.py ch.sc16 --fmt sc16 --pcap mgmt.pcap
 python3 tests/analyze_mgmt.py mgmt.pcap 2      # statistiques SYNC/MAP (2 = taille de minislot en ticks)
 python3 tests/sync_jitter.py ch.sc16 sc16 20e6  # précision des horodatages SYNC
 ```
 
-### Ce qui a été observé sur le réseau SFR (06/10/2026)
+### Ce qui a été observé sur le réseau d'origine (06/10/2026)
 
-| Élément | SFR | Mon émetteur |
+| Élément | Réseau d'origine | Mon émetteur |
 |---|---|---|
 | Plan de fréquences | DOCSIS de 282 à 530 MHz (6,952 Msym/s, 256-QAM, Annex A) ; TV DVB-C à 6,875 Msym/s sur 130–274 et 538–698 MHz | 6,952 Msym/s, 64 ou 256-QAM |
 | Canaux primaires (d'après le MDD) | 282 et 314 MHz ; 290/298/306 ne sont pas primaires (pas de SYNC/MAP) | un seul canal primaire |
@@ -131,7 +131,7 @@ python3 tests/sync_jitter.py ch.sc16 sc16 20e6  # précision des horodatages SYN
 | UCD | type 29 (ATDMA) ; canaux montants à 34,8 / 41,2 / 47,6 / 54,0 / 60,4 MHz, 5,12 Msym/s, donc **sub-split 5–65 MHz** | type 2 (TDMA), 40 MHz, 1,28 Msym/s |
 | MDD | présent (DOCSIS 3.0) | absent pour l'instant |
 
-Le HackRF suffit à décoder les canaux SFR (MER d'environ 25 dB), mais le B210 est bien meilleur (MER d'environ 34 dB).
+Le HackRF suffit à décoder les canaux du réseau d'origine (MER d'environ 25 dB), mais le B210 est bien meilleur (MER d'environ 34 dB).
 
 ### Mesures du 06/10/2026, entre 18 h et 18 h 30 (réception seule, comptages agrégés)
 
@@ -169,7 +169,7 @@ downstream (± 20 ppm sur un HackRF, soit 20 µs de dérive par seconde).
 | RTL-SDR | 8 bits, 2,4 MS/s, horodatage USB imprécis : non |
 
 Seule contrainte : UHD n'accorde pas l'AD9361 sous **50 MHz**. L'upstream est donc annoncé à
-**60 MHz** par défaut, une fréquence que SFR utilise déjà (60,4 MHz) et que ton modem sait donc émettre.
+**60 MHz** par défaut, une fréquence que le réseau d'origine utilise déjà (60,4 MHz) et que ton modem sait donc émettre.
 Le LO RX est réglé 3 MHz au-dessus, à 63 MHz, pour que la rafale ne tombe pas sur la fuite du LO au centre.
 Le FPGA ramène ensuite le signal à 0 Hz. On garde ainsi l'horloge maître validée de 27,8 MHz.
 Toute fréquence entre 53 et 64 MHz convient. Le canal montant EuroDOCSIS s'arrête à 65 MHz.
@@ -450,7 +450,7 @@ de la constellation donnent des correspondances équivalentes ; l'outil garde ce
 - une rafale de données n'est plus plafonnée à 2048 octets (le modem concatène jusqu'à 36 trames, 3030 octets) ;
 - le CMTS MIC excluait mal les TLV que le modem ne recopie pas (57, et les TLV SNMP 53 à 55).
 
-`provision.py --snmp-community NAME` ajoute un accès SNMP en lecture (TLV 53), mais le firmware SFR ne répond pas à SNMP
+`provision.py --snmp-community NAME` ajoute un accès SNMP en lecture (TLV 53), mais le firmware de l'opérateur ne répond pas à SNMP
 côté câble.
 
 ## Multicanal : agrégation de deux canaux descendants (DOCSIS 3.0, nuit du 2026-10-09)
@@ -466,7 +466,7 @@ sur 20 : il reçoit et resséquence bien le second canal.
 
 **Ce que fait le CMTS :**
 - `--docsis30` (implicite avec `--ds-channels 2`) : un **MDD** (MAC Domain Descriptor, type 33, version 4) par seconde sur
-  chaque canal : liste des canaux descendants (format repris du MDD du réseau SFR capturé le 06/10), canal montant, IPv4
+  chaque canal : liste des canaux descendants (format repris du MDD du réseau d'origine capturé le 06/10), canal montant, IPv4
   seul, pas de chiffrement précoce, rapport détaillé des profils de réception demandé. Le modem passe alors en mode 3.0 :
   il envoie un **REG-REQ-MP** (type 44) au lieu du REG-REQ ; le CMTS répond par une **REG-RSP-MP** (type 45).
 - **RCC** (TLV 49) construite à partir du profil de réception que le modem détaille (CLAB-8M-002 : un module, deux canaux,
@@ -568,7 +568,7 @@ plafonds physiques (2 canaux 256-QAM ; 1 canal ATDMA 64-QAM 5,12 Msym/s ≈ 25 M
 | Diagnostic « énergie brute » : FFT de 32 768 points par rafale | calculé seulement pour les lignes journalisées | `upstream._raw_event` |
 
 **Écartés :** raccourcir la chaîne d'émission (`--tx-queue 4 --tx-frames 64`, `--block 32`) : pertes TX et modem perdu
-sous charge. Le cycle demande → grant (~60 ms, contre 5-8 ms chez SFR d'après les captures) est la limite structurelle
+sous charge. Le cycle demande → grant (~60 ms, contre 5-8 ms sur le réseau d'origine d'après les captures) est la limite structurelle
 d'un SDR qui prépare le signal 36 ms à l'avance.
 
 **Diagnostics ajoutés :** ligne d'état `retard max` (traitement montant), `RX écart max`, `MINI_CMTS_TIMING=1` (temps
@@ -668,7 +668,7 @@ le port TX/RX du B210 débranché ; le B210 écoutait sur RX2, sur la 2e sortie 
 **Capture.**
 - Le HackRF plafonnait à ~25 dB de MER sur le 256-QAM : le RS ne passait presque jamais. Le B210 atteint 36 dB
   (282 MHz, 16 Méch/s, gain 40, sans atténuateur ; les rafales du modem arrivent à ~−21 dBm, loin de sa limite).
-- `sfr_listen.py` décode 182 s de capture en 11 min, découpées en segments de ~10 s sur les 6 cœurs du Proxmox.
+- `origin_listen.py` décode 182 s de capture en 11 min, découpées en segments de ~10 s sur les 6 cœurs du Proxmox.
 - Le décodage a rendu le DHCP, le fichier de configuration TFTP (complet, CM MIC correct) et le REG-RSP-MP.
 - Le CMTS est un ARRIS (OUI 00:01:5c), réglé aux valeurs d'usine du guide E6000 : MAP de 3,2 ms, backoff 2-7/2-8,
   maintenance toutes les 24 s, préambules de 640 et 104 bits ; pré-égalisation activée.
@@ -711,3 +711,133 @@ le port TX/RX du B210 débranché ; le B210 écoutait sur RX2, sur la 2e sortie 
 - Le suivi de phase de l'égaliseur prend 37 ns par symbole ; un suivi par blocs le réduirait.
 - Le RS pourrait passer en SIMD.
 - Il manque un essai long de stabilité.
+
+## Deux B210 sans horloge commune (nuit du 14 au 15/10/2026)
+
+**Pourquoi.** Un B210 porte au plus 6 canaux descendants. Pour en avoir plus, chaque radio émet un bloc de canaux
+adjacents (branche `multi-b210`, `--ds-radios 2`). Il faut deux contrôleurs USB : le Proxmox n'en a qu'un, d'où le
+Threadripper 2950X (10.5.1.3). Il n'y a pas encore de 10 MHz commun entre les deux B210.
+
+**Le 2950X.**
+- Debian 12 / PVE 8, Python 3.11 et UHD 4.3 : deux constructions réservées à Python 3.12+ corrigées (f-strings
+  imbriquées, `SharedMemory(track=False)` → `usproc.attach_shm`).
+- Mémoire sur un seul canal (2 × 8 Go en 2133 sur `P0 CHANNEL A`), nœud NUMA 1 sans mémoire, hyperthreads −25 % sur la
+  synthèse AVX2 : 6 DS par radio ne suivent pas, 3 oui. L'overclock du CPU a planté sous AVX : retiré.
+
+**Câblage.** Les TX/RX des deux B210 sur un coupleur 2→1, les RX2 sur un autre précédé du −8 dB, les deux sur les
+sorties d'un 1→3 dont l'**entrée** va au modem. Tout sur les sorties, le signal ne passait que par l'isolation entre
+sorties : canaux faibles qui décrochaient.
+
+**Un démarrage sur deux sans modem.** Le modem accrochait le primaire mais ses RNG-REQ restaient sans réponse : un
+canal montant ne décodait plus rien. Son seuil de bruit avait été pris sur les zéros que le DDC laisse quand le
+processus montant démarre en retard et saute le début du flux (−270 dBFS) ; avec un tel seuil tous les blocs
+paraissent occupés, et le seuil, mis à jour seulement sur les fenêtres calmes, ne remontait jamais.
+Correction (`cmts/upstream.py`, `cmts/usproc.py`) : aucune fenêtre lue dans la zone sautée (`valid_from`), pas de
+seuil sous −130 dBFS, et un seuil repris s'il reste 30 dB sous 20 fenêtres de contention d'affilée.
+Résultat : 5 démarrages sur 5 en ligne en ~70 s.
+
+**La dérive des horloges** (`tools/clock_drift.py`).
+- Ekard −6,97 ppm, JN76WAJ −4,49 ppm contre l'horloge de l'hôte ; **+2,5 ppm l'un contre l'autre, 8,9 ms par
+  heure**. Le modem remet les paquets agrégés dans l'ordre dans une fenêtre de 10 ms : sans correction, l'agrégation
+  casserait au bout d'environ une heure.
+- Juste après `set_time_now`, un B210 a encore rendu une fois son ancienne heure (0,72 s au lieu de 0,20) : une
+  lecture aberrante qui faussait toute la droite.
+
+**Le recalage de la suiveuse** (`cmts/radio.py`).
+- Chaque radio ajuste une droite de l'heure de son appareil contre `time.perf_counter()`, la même horloge pour tous
+  les processus (`ClockFit`, lectures aberrantes écartées). La principale publie la sienne en mémoire partagée.
+- Pour chaque bloc, la suiveuse calcule l'heure de sa propre horloge à laquelle la principale émet le même bloc. Si
+  son horaire s'en écarte de plus de ¾ de groupe, elle insère 8 paquets MPEG nuls dans le bloc, ou retire le groupe
+  de 8 qui en contient le plus.
+- 8 paquets = un cycle d'embrouillage J.83-A, et 8 × 204 octets tombent juste sur l'entrelaceur : le flux reste
+  un flux J.83-A valide, sans saut de phase ni de rythme symbole. Seul son contenu se déplace de ~235 µs.
+- Essai de 86 min (2 + 2 DS, émission horodatée) : **186-189 Mbit/s en descendant de bout en bout**, montant 46-50,
+  ping 68-73 ms, aucun oubli. La suiveuse a mesuré elle-même +2,35-2,50 ppm et inséré 53 groupes, **12,44 ms**
+  cumulés : au-delà de la fenêtre du modem.
+- Fausse piste en cours de nuit : « l'émission horodatée éteint la suiveuse ». L'essai qui l'avait fait croire
+  tournait sans suiveuse : le B210 était encore occupé par un script de test.
+
+**Décrochages au début d'un téléchargement.**
+- Reproduits à coup sûr : 4 min de calme, puis iperf3 en descendant (`tools/burst_test.sh`) → les deux radios
+  bloquées 40-100 ms ensemble, underflow, le modem perd un canal de la suiveuse ~10 s.
+- Réfuté par la mesure, une piste après l'autre : priorité des fils libusb, équilibrage NUMA du noyau, ramasse-miettes
+  de la MAC, iperf3 sur le jumeau du CPU des interruptions USB, lecture de l'heure de l'appareil.
+- Instrumentation de chaque étape du chemin d'émission (lignes `!! encodeur`, `!! envoi`, `[MAC] !!`) et du temps
+  d'attente de CPU par fil (`schedstat`) : les deux encodeurs attendaient **le même bloc** 18-25 ms de la MAC ; son
+  fil `tap` tournait 37 ms d'affilée, sans attendre de CPU.
+- **Cause** : au démarrage d'un téléchargement, toute la fenêtre TCP de l'émetteur arrive d'un coup dans le TAP ;
+  chaque lecture revient aussitôt et le fil `tap` traite des centaines de trames en Python sans jamais dormir. Le fil
+  qui construit les blocs TS, qui relâche le GIL à chaque appel C et à chaque sémaphore, ne le récupère qu'aux
+  bascules forcées. En régime établi, les trames arrivent cadencées par les ACK et les lectures attendent : rien.
+- **Correction** : trois mesures contre cette même cause, aucune ne suffisant seule (1-2 blocages par rafale à chaque
+  essai d'une seule) : bascule du GIL toutes les 0,5 ms dans la MAC, pause du fil `tap` toutes les 32 trames lues sans
+  attente, et pause du fil `tap` tant que l'encodeur n'a pas fini de bloc depuis deux durées de bloc. Ensemble :
+  **7 rafales sur 8 sans blocage**, contre 2 blocages à chaque rafale avant.
+
+**Reste.**
+- La correction de fond : sortir le pont TAP du processus MAC, ou construire les blocs TS sans le GIL.
+- De rares retards USB de 14-20 ms sur JN76WAJ (contrôleur du chipset X399), un underflow et une perte de verrou
+  isolés : à essayer sur le contrôleur 43:00.3.
+- 3 + 3 DS, puis 12 DS avec plus de mémoire ; le 10 MHz commun (`--clock-source external`), avec lequel le recalage
+  n'aura plus rien à corriger.
+
+## Un bladeRF 2.0 micro à la place d'un B210 (15/10/2026)
+
+**Pourquoi.** Que d'autres que les possesseurs d'un B210 puissent essayer le CMTS. Le bladeRF 2.0 micro a la même puce
+RF (AD9361). Pilote écrit sans carte dans la nuit (`cmts/sdrdev.py`, libbladeRF appelée directement, sans SoapySDR),
+puis essayé sur la carte.
+
+**Résultat.** 3 DS + 1 US à 61,8 MHz : modem en ligne, 138 Mbit/s en descendant (les 3 canaux pleins), 24,5 en
+montant, ping ~144 ms, MER montant 22 dB.
+
+**Ce qu'il a fallu comprendre.**
+- Le bladeRF ne reçoit qu'à partir de 70 MHz : l'oscillateur de réception y est placé et le DDC ramène le canal
+  montant (61,8 MHz, sous la limite EuroDOCSIS de 65 MHz).
+- Émission et réception ont toujours le même débit sur cette carte : un tick par échantillon, pas de décimation par
+  le FPGA. En 16 bits, l'USB tient 27,8 MS/s dans les deux sens (3 DS), pas 34,8 ni au-delà.
+- Le FPGA 0.16 de la carte est trop récent pour la libbladeRF 2.4.1 de Debian 12 : métadonnées mal lues, réception
+  fausse. Avec le FPGA 0.14 de la même version, tout marche ; le pilote refuse maintenant le mélange.
+- libbladeRF 2.4.1 ignore un gain réglé avant l'activation du module ; la réception doit lire des tampons contigus
+  en demandant l'horodatage suivant ; les compteurs TX et RX sont la même horloge.
+- Le gain de réception à 20 dB faisait arriver le modem trop fort même à sa puissance minimale : ranging jamais
+  terminé. À 14 dB, il converge.
+
+**Fausse piste.** Un B210 témoin, qui comparait chaque canal à la médiane de la bande, ne pouvait pas voir un signal
+large bande : il a fait croire que le bladeRF n'émettait rien et que son gain n'agissait pas. Une porteuse émise par
+`bladeRF-cli`, puis une mesure de puissance absolue, ont montré que tout fonctionnait.
+
+**Suite.** Échantillons 8 bits (libbladeRF ≥ 2.5) pour 55,6 MS/s dans les deux sens, soit 2 US et 4 à 6 DS ;
+tampon d'émission plus court ; un pilote par radio pour mélanger B210 et bladeRF.
+
+## Prêt pour GitHub : pont hors du chemin critique, paquet Debian, service, page d'état (15/10/2026 soir)
+
+**Pont TAP.** La cause des blocages au début d'un téléchargement (T69) était le fil `tap` de la MAC, qui
+traitait en Python des centaines de trames d'affilée et privait du GIL le fil qui construit les blocs TS. Les
+trois rustines de la nuit (bascule du GIL à 0,5 ms, pauses du fil `tap`) sont retirées. Le pont lit maintenant
+les trames par lots en C (`tap_read_batch` : `poll` puis lectures non bloquantes, toutes les trames en attente
+en un appel), les range telles quelles (`bridge.TapFeed`), et c'est le fil des blocs TS qui en fait des PDU,
+un budget d'octets avant chaque bloc. L'heure d'arrivée de chaque trame est gardée pour CoDel et la limite de
+100 ms de la file.
+
+**Ramasse-miettes.** La série de rafales qui a suivi a encore montré un blocage : une collecte complète du
+ramasse-miettes dans la MAC, 22 ms à parcourir 45 554 objets sans en libérer un seul. Ces objets vivent jusqu'à
+la fin (tables, canaux, modems). Ils sont maintenant figés au démarrage (`gc.freeze()`), puis de nouveau après
+toute collecte complète lente. Série suivante : 4 rafales, aucun blocage, aucune pause.
+
+**Exploitation.**
+- Fichiers de banc en TOML (`--config`) : les clés sont les options, `[provisioning]` porte celles de
+  `provision.py`, la ligne de commande l'emporte, une clé mal écrite est refusée.
+- Page d'état (`--status-http`, `cmts/webstatus.py`) : un instantané publié par la boucle d'état toutes les
+  5 s, servi par un fil HTTP qui ne touche jamais au CMTS.
+- Paquet Debian (`packaging/build-deb.sh`) : noyaux C compilés à l'installation pour le CPU, service systemd
+  livré ni activé ni démarré (on vérifie le câblage d'abord).
+- `tests/run.py` et GitHub Actions ; guide `docs/INSTALL.md`.
+
+**Ce que le service a appris.** UHD refuse de démarrer sans `$HOME`. Et `systemctl stop` envoyait SIGINT à
+tous les processus : la radio s'interrompait dans UHD et la MAC l'attendait jusqu'au SIGKILL. Les processus
+radio et montants ignorent maintenant SIGINT : la MAC les arrête dans l'ordre, ce qui corrige aussi Ctrl+C dans
+un terminal (qui signale tout le groupe de processus). L'unité passe en `KillMode=mixed`.
+
+**Fausse alerte au démarrage à deux B210.** À chaque démarrage, la MAC remplissait l'anneau de la suiveuse
+pendant que celle-ci ouvrait son B210 (~0,8 s), d'où « !! 435 blocs jetés ». La suiveuse jetait ces blocs de
+toute façon. Elle n'en reçoit plus avant d'être à l'antenne.

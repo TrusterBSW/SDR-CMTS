@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Multiple Transmit Channel mode (DOCSIS 3.0 upstream bonding), receiver side:
   - queue-depth based request frame (FC 0xC8, 7 bytes) and segment header (8 bytes, HCS);
   - a data grant decoded as a segment (cmts/us_phy.py, seg=True): ATDMA 64-QAM burst filling its

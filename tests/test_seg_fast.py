@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Segment bursts (Multiple Transmit Channel mode) decoded whole in C (us_phy._seg_fast, usdsp.c
 seg_fast) against the Python path (MINI_CMTS_US_FAST=0): same bytes, same timing, same MER, on
 synthetic 64-QAM 5.12 Msym/s bursts with a little echo and noise; full grants, bursts that end

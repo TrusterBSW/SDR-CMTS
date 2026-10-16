@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Two bonded downstream channels as mini_cmts.py --ds-channels 2 builds them (each shaped at 4
 samples per symbol, conjugated like the single channel, shifted to -4 / +4 MHz around the TX
 centre, summed), then each channel taken back alone with the J.83A receiver: every TS packet must

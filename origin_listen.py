@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Long capture of EuroDOCSIS downstream channels (receive only) -> what concerns ONE modem.
 
-Decodes an IQ file recorded by tools/sfr_rx.sh (several minutes, one or more channels in the
+Decodes an IQ file recorded by tools/origin_rx.sh (several minutes, one or more channels in the
 band), slice by overlapping slice, and keeps ONLY:
   - the management messages sent to all modems (SYNC, UCD, MAP, MDD...);
   - every frame addressed to --mac: its unicast management (RNG-RSP, REG-RSP-MP, DBC...) and
@@ -13,8 +15,8 @@ Outputs, per channel: <prefix>_<MHz>.pcap (DLT_DOCSIS, Wireshark), and when seen
 file the modem downloaded by TFTP (<prefix>_<name>), its REG-RSP(-MP) TLVs (<prefix>_regrsp.bin)
 with a readable dump. The raw IQ file holds everyone's traffic: delete it once decoded.
 
-  ./sfr_listen.py cap.sc16 --fs 48e6 --center 298e6 --freq 282e6 --freq 314e6 \\
-      --mac 24:7f:20:a8:38:b8 --out sfr
+  ./origin_listen.py cap.sc16 --fs 48e6 --center 298e6 --freq 282e6 --freq 314e6 \\
+      --mac 24:7f:20:a8:38:b8 --out origin
 """
 import argparse
 import collections
@@ -444,18 +446,18 @@ def channel_job(fq, frames, seg_lines, t0, fs, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("iq", help="IQ file: sc16 (tools/sfr_rx.sh, B210) or s8 (hackrf_transfer)")
+    ap.add_argument("iq", help="IQ file: sc16 (tools/origin_rx.sh, B210) or s8 (hackrf_transfer)")
     ap.add_argument("--fmt", choices=("sc16", "s8"), default="sc16")
     ap.add_argument("--fs", type=float, default=48e6, help="sample rate (Hz)")
     ap.add_argument("--center", type=float, default=298e6, help="capture center frequency (Hz)")
     ap.add_argument("--freq", type=float, action="append", help="channel to decode (Hz), repeatable "
-                    "(default: 282 and 314 MHz, SFR's primary channels on 2026-10-06)")
+                    "(default: 282 and 314 MHz, the origin network's primary channels on 2026-10-06)")
     ap.add_argument("--mac", default="24:7f:20:a8:38:b8", help="the modem whose frames are kept")
     ap.add_argument("--t0", type=float, help="time of the first sample (epoch s); default: <iq>.t0")
     ap.add_argument("--chunk", type=float, default=1.5, help="slice length (s)")
     ap.add_argument("--overlap", type=float, default=0.25, help="slice overlap (s), > equalizer convergence")
     ap.add_argument("--seconds", type=float, help="decode only the first seconds")
-    ap.add_argument("--out", default="sfr", help="output prefix")
+    ap.add_argument("--out", default="origin", help="output prefix")
     ap.add_argument("--jobs", type=int, default=os.cpu_count(),
                     help="decoding processes (~2 GB each); every channel is cut in time segments")
     ap.add_argument("--hard", action="store_true", help="hard RS decoding only (gr-dtv), no erasures")

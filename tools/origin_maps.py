@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""UCD burst profiles and MAP usage per upstream channel, from a pcap of sfr_listen.py
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
+"""UCD burst profiles and MAP usage per upstream channel, from a pcap of origin_listen.py
 (broadcast management only), plus the grants of the SIDs given with --sid (the modem's own,
 read in its REG-RSP-MP TLV 47).
 
-  tools/sfr_maps.py ~/sfrcap/rb1/rb_282.pcap --sid 0x2589 --sid 0x258a
+  tools/origin_maps.py ~/origincap/rb1/rb_282.pcap --sid 0x2589 --sid 0x258a
 """
 import argparse
 import collections
@@ -148,7 +150,7 @@ def main():
             c = collections.Counter((iuc, z) for _, iuc, _, z in ev)
             sz = collections.Counter(n for _, iuc, n, z in ev if iuc in DATA_IUC and not z)
             print(f"   canal {ch} : {len(ev)} IE de {ev[0][0] % 86400 / 3600:.0f}h… "
-                  f"({', '.join(f'IUC {i}{' (en attente)' if z else ''} x{n}' for (i, z), n in sorted(c.items()))}), "
+                  f"({', '.join(f'IUC {i}' + (' (en attente)' if z else '') + f' x{n}' for (i, z), n in sorted(c.items()))}), "
                   f"tailles de grant {sz.most_common(5)}")
     return 0
 

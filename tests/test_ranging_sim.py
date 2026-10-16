@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Closed-loop ranging without hardware: DownstreamMux (real MAP / RNG-RSP bytes) ->
 simulated modem (real RNG-REQ / REQ bursts as IQ) -> UpstreamRx -> CmtsCore -> RNG-RSP."""
 import os, sys

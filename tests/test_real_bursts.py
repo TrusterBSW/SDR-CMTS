@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Regression on real upstream bursts: INIT ranging RNG-REQ of a Sagem F@st 3686 captured by
 the B210 RX2 (3.476 MS/s, 1.28 Msym/s QPSK, mini_cmts.py --save-bursts, 2026-10-08), one of
 them saturated (peak > 1). They fixed the scrambler phase and the LSB-first MAC byte order."""

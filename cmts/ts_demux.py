@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """MPEG-TS -> DOCSIS MAC frames (PID 0x1FFE), and DLT_DOCSIS pcap writer."""
 import struct
 

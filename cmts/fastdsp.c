@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md */
 /* Polyphase complex FIR interpolator, same semantics as numpy.convolve(..., "valid")
  * applied per phase: out[i*sps + p] = sum_k h[p][k] * x[i + ntaps-1 - k] */
 void polyfir(const float *x, int nx, const float *h, int sps, int ntaps, float *out)

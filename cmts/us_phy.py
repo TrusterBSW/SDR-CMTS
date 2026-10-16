@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """DOCSIS TDMA upstream burst PHY (CM-SP-PHYv3.0 6.2, DOCSIS 1.x type-4 burst descriptors).
 
 CM side (used to simulate a modem):

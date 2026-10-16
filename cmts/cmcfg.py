@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """DOCSIS CM configuration file (MULPIv3.0 annex C / D): TLV encoding, CM MIC, CMTS MIC.
 
 Used by provision.py (it generates the file served by TFTP) and by the CMTS (it checks the

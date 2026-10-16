@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Minimal cable modem model for offline tests of the upstream chain (no hardware).
 
 It reads the real MAP and RNG-RSP bytes produced by DownstreamMux, follows the CM ranging

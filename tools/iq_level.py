@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Levels of an IQ capture (sc16: B210 tools; s8: hackrf_transfer): peak and RMS in dBFS, clipped samples, and the
 power of each 8 MHz channel in the band, to set the receive gain before a long capture.
 

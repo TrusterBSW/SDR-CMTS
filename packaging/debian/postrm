@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+# the C kernels compiled by postinst are not in the package's file list
+rm -f /usr/lib/mini-cmts/cmts/_usdsp.so /usr/lib/mini-cmts/cmts/_dsdsp.so /usr/lib/mini-cmts/cmts/_fastdsp.so
+rm -rf /usr/lib/mini-cmts/cmts/__pycache__ /usr/lib/mini-cmts/__pycache__
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+if [ "$1" = purge ]; then
+    rm -rf /var/lib/mini-cmts
+fi
+exit 0

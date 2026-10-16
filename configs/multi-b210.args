@@ -1,11 +1,15 @@
-# Deux B210 (branche multi-b210) : 12 DS (6 par B210) + 2 US
+# Deux B210 (branche multi-b210), validé le 15/10 sur le 2950X : 2 + 2 DS, 189 / 50 Mbit/s
 #   /root/cmts-tools/run_multi.sh <nom> @configs/multi-b210.args
-# Numéros de série : uhd_find_devices (le premier émet les canaux bas ET reçoit le montant).
+# Numéros de série : uhd_find_devices. Le premier est la radio principale : il émet les canaux bas
+# ET reçoit le montant (son RX2). Le second est la suiveuse (émission seule), recalée sur la
+# principale par groupes de 8 paquets (cmts/radio.py) tant qu'il n'y a pas de 10 MHz commun.
 --us-channels 2
 --us-target -20
---ds-channels 12
+"--prov-args=--dns 1.1.1.1"
+--ds-channels 4
 --ds-radios 2
---radio-serials SERIE_B210_1,SERIE_B210_2
-# 10 MHz commun sur les entrées « 10MHz » des deux B210 (ex. CLKOUT du HackRF -> répartiteur) ;
-# sans référence commune : internal (dérive ~1 ms / 10 min entre les deux)
---clock-source external
+--radio-serials 000000367,JN76WAJ
+# 10 MHz commun sur les entrées « 10MHz » des deux B210 : external ; sans : internal
+--clock-source internal
+# 2950X : cœurs du nœud NUMA 0 (toute la mémoire y est), USB sur les CPU 0 et 1
+--cpus 2-7,18-23

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """CMTS ranging (MULPIv3.0 7.1.3 and 10.2.3.7): RNG-REQ -> RNG-RSP, temporary SIDs and
 Station Maintenance polling.
 
@@ -14,7 +16,7 @@ import struct
 import threading
 import time
 
-from . import cmcfg, registration
+from . import cmcfg, modeminfo, registration
 from . import docsis_mac as mac
 from .upstream import TS_RATE
 
@@ -685,6 +687,10 @@ class CmtsCore:
             self.log(f"[REG] {fmt_mac(m.mac)} {name} répété -> même réponse")
             return
         self.log(f"[REG] {fmt_mac(m.mac)} SID {sid:#06x}: {name} ({len(body)} octets, {b.power_db:.1f} dBFS)")
+        try:
+            m.announced = modeminfo.from_regreq(tlvs, mp)          # for the status page
+        except Exception as e:                                     # noqa: BLE001 - never blocks registration
+            self.log(f"[REG] !! capacités de {fmt_mac(m.mac)} illisibles : {e}")
         for line in cmcfg.describe(tlvs):
             self.log(line)
         got = dict(tlvs).get(cmcfg.CMTS_MIC)
@@ -719,6 +725,9 @@ class CmtsCore:
             rsp_tlvs += registration.init_channel_timeout(60)
         if bonded and response == 0:
             rcc, rcp_id = registration.receive_channel_config(tlvs, self.bonding)
+            if len(self.bonding) > 8 or not rcp_id:      # what the modem can receive, to choose a profile
+                for line in registration.describe_rcps(tlvs):
+                    self.log(f"[REG] RCP {line}")
             rsp_tlvs += rcc
             if rcp_id:
                 m.dsid = getattr(m, "dsid", None) or self.next_dsid
@@ -934,5 +943,6 @@ class CmtsCore:
         with self.lock:
             return [dict(mac=fmt_mac(m.mac), sid=m.sid, state=m.state, n_req=m.n_req, **m.last,
                          links={u: (k.sid, k.state) for u, k in m.links.items()} if m.mtc else {},
-                         reasm=dict(m.reasm.stats) if m.reasm else None)
+                         reasm=dict(m.reasm.stats) if m.reasm else None,
+                         announced=getattr(m, "announced", None), devices=dict(getattr(m, "devices", {})))
                     for m in self.modems.values()]

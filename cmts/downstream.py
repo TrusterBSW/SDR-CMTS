@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Downstream multiplexer: schedules SYNC / UCD / MAP into the MPEG-TS stream and
 turns it into baseband samples.
 
@@ -103,7 +105,7 @@ class DownstreamMux:
                  map_lead_ms=4, im_every=5, im_len=48, ds_chan_id=1, us_chan_id=1,
                  ts_start=0, invert=True, scheduler=None, on_grants=None):
         # invert=True mirrors the spectrum (conjugate baseband): this is the orientation
-        # observed on the SFR network with two independent receivers (B210 and HackRF)
+        # observed on the modem's origin network with two independent receivers (B210 and HackRF)
         self.invert = invert
         self.enc = J83AEncoder(qam)
         self.shaper = PulseShaper(sps)
@@ -310,9 +312,10 @@ class DownstreamMux:
         q = self._q
         return len(self.data) + (0 if q is None else (q.shape[0] - self._qi) // 8)
 
-    def send_data(self, frame):
-        """Queue a downstream data PDU (thread-safe: deque append)."""
-        self.data.append((time.perf_counter(), frame))
+    def send_data(self, frame, t=None):
+        """Queue a downstream data PDU (thread-safe: deque append); t: when its frame arrived
+        (perf_counter), now by default: the queue limit and CoDel count from there."""
+        self.data.append((time.perf_counter() if t is None else t, frame))
 
     def _data_batch(self):
         """Take the data frames for the next TS packets (stale ones dropped). True if any."""
@@ -370,8 +373,8 @@ class SecondaryMux:
         self.on_ucast = None
         self.stats = dict(mdd=0, data=0, data_drop=0, null=0, data_max_ms=0.0)
 
-    def send_data(self, frame):
-        self.data.append((time.perf_counter(), frame))
+    def send_data(self, frame, t=None):
+        self.data.append((time.perf_counter() if t is None else t, frame))
 
     def _item(self):
         """As DownstreamMux._item: the MDD, else a data batch, else None (null)."""

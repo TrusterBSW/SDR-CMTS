@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """CMTS side of registration (MULPIv3.0 10.2.6, DOCSIS 1.1 style REG-REQ / REG-RSP / REG-ACK).
 
     CM: REG-REQ (SID, config file TLVs + modem capabilities + CM MIC + CMTS MIC)
@@ -88,7 +90,13 @@ def receive_channel_config(cm_tlvs, channels):
     if best is None:
         return b"", None
     rcp_id, _, rcs, rms = best
-    rm_index = dict(rms[0]).get(1, b"\x01") if rms else b"\x01"
+    first = dict(rms[0]) if rms else {}
+    n_adj = first.get(2)
+    if n_adj and want > n_adj[0]:
+        # more channels than the first receive module's block (e.g. 12 channels, 2 B210s): every
+        # receive module of the profile, MULPIv3.0 C.1.5.3.4-5
+        return _rcc_modules(rcp_id, rms, rcs, channels)
+    rm_index = first.get(1, b"\x01")
     lowest = min(f for _, f in channels)
     body = cmcfg.tlv(1, rcp_id)
     body += cmcfg.tlv(4, cmcfg.tlv(1, rm_index) + cmcfg.tlv(4, struct.pack(">I", int(lowest))))
@@ -100,6 +108,105 @@ def receive_channel_config(cm_tlvs, channels):
             sub += cmcfg.tlv(5, b"\x01")                    # primary downstream channel
         body += cmcfg.tlv(5, sub)
     return cmcfg.tlv(49, body), rcp_id
+
+
+def _bits(index, length):
+    """DOCSIS BITS value with bit `index` set (bit 0 = MSB of the first byte)."""
+    v = bytearray(max(1, length))
+    if index // 8 < len(v):
+        v[index // 8] |= 0x80 >> (index % 8)
+    return bytes(v)
+
+
+def _bits_set(value):
+    """Indexes set in a DOCSIS BITS value."""
+    return {8 * i + j for i, b in enumerate(value) for j in range(8) if b & (0x80 >> j)}
+
+
+def _rcc_modules(rcp_id, rms, rcs, channels, spacing=8_000_000):
+    """RCC over several receive modules: the channels, by frequency, fill the modules in index
+    order, each a block of at most `adjacent` channels from its first channel centre frequency;
+    each channel gets an unused receive channel connected to that module (at its fixed position
+    when the profile gives one), a primary-capable one for the primary channel. (b"", None) if
+    the profile cannot hold them."""
+    mods = []
+    for m in rms:
+        d = dict(m)
+        idx = d.get(1, b"\x01")[0]
+        n = d.get(2, b"\xff")[0]
+        lo = hi = None
+        if 3 in d:
+            rng = dict(cmcfg.parse(d[3]))
+            lo = struct.unpack(">I", rng[1])[0] if 1 in rng else None
+            hi = struct.unpack(">I", rng[2])[0] if 2 in rng else None
+        mods.append(dict(idx=idx, n=n, lo=lo, hi=hi, first=None, chans=[]))
+    mods.sort(key=lambda m: m["idx"])
+    order = sorted(channels, key=lambda c: c[1])
+    k = 0
+    for m in mods:
+        while k < len(order):
+            f = order[k][1]
+            if m["first"] is None:
+                if (m["lo"] is not None and f < m["lo"]) or (m["hi"] is not None and f > m["hi"]):
+                    break
+                m["first"] = f
+            pos = round((f - m["first"]) / spacing)
+            if pos >= m["n"] or (m["hi"] is not None and f > m["hi"]):
+                break
+            m["chans"].append((order[k], pos + 1))
+            k += 1
+    if k < len(order):
+        return b"", None
+    free = []
+    for rc in rcs:
+        d = dict(rc)
+        free.append(dict(idx=d.get(1), conn=_bits_set(d.get(2, b"\x40")), clen=len(d.get(2, b"\x40")),
+                         off=d.get(3, b"\x00")[0] or None, prim=5 in d))
+    primary = channels[0][0]
+    body = cmcfg.tlv(1, rcp_id)
+    rc_body = b""
+    for m in mods:
+        if not m["chans"]:
+            continue
+        body += cmcfg.tlv(4, cmcfg.tlv(1, bytes([m["idx"]])) + cmcfg.tlv(4, struct.pack(">I", int(m["first"]))))
+        for (dcid, freq), pos in m["chans"]:
+            ok = [r for r in free if m["idx"] in r["conn"] and (r["off"] is None or r["off"] == pos)]
+            if not ok:
+                return b"", None
+            ok.sort(key=lambda r: (r["prim"] != (dcid == primary), r["off"] is None))
+            r = ok[0]
+            free.remove(r)
+            sub = cmcfg.tlv(1, r["idx"]) + cmcfg.tlv(2, _bits(m["idx"], r["clen"]))
+            sub += cmcfg.tlv(4, struct.pack(">I", int(freq)))
+            if dcid == primary:
+                sub += cmcfg.tlv(5, b"\x01")
+            rc_body += cmcfg.tlv(5, sub)
+    return cmcfg.tlv(49, body + rc_body), rcp_id
+
+
+def describe_rcps(cm_tlvs):
+    """One line per Receive Channel Profile of a REG-REQ(-MP) (TLV 48), for the log."""
+    out = []
+    for t, v in cm_tlvs:
+        if t != 48:
+            continue
+        sub = cmcfg.parse(v)
+        d = dict(sub)
+        mods = []
+        for s, x in sub:
+            if s == 4:
+                m = dict(cmcfg.parse(x))
+                rng = ""
+                if 3 in m:
+                    r = dict(cmcfg.parse(m[3]))
+                    rng = "@" + "-".join(f"{struct.unpack('>I', r[k])[0] / 1e6:.0f}" for k in (1, 2) if k in r)
+                mods.append(f"M{m.get(1, b'?')[0]}:{m[2][0] if 2 in m else '-'}{rng}")
+        rcs = [dict(cmcfg.parse(x)) for s, x in sub if s == 5]
+        conn = ",".join(f"{r.get(1, b'?')[0]}>{'+'.join(map(str, sorted(_bits_set(r.get(2, b'')))))}"
+                        + ("P" if 5 in r else "") for r in rcs)
+        out.append(f"{d.get(1, b'').hex()} {d.get(2, b'').decode(errors='replace')} : modules {' '.join(mods)} ; "
+                   f"{len(rcs)} canaux ({conn})")
+    return out
 
 
 def dsid_encoding(dsid, dcids, wait_100us=100, warn_100us=50, holdoff_20ms=50):

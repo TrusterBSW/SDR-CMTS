@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """ITU-T J.83 Annex A (= ETSI EN 300 429, DVB-C) downstream encoder.
 
 Chain: MPEG-TS 188 B -> randomizer (PRBS 1+x^14+x^15, groups of 8 packets)

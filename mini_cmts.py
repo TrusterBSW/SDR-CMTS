@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Mini-CMTS, step 3: EuroDOCSIS downstream + upstream ranging on ONE USRP B210.
 
   B210 TX/RX (channel A) : downstream J.83A (as ds_tx.py)
@@ -30,10 +32,13 @@ import atexit
 import collections
 import cProfile
 import glob
+import multiprocessing as mp
 import os
 import subprocess
 import queue
+import re
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -41,12 +46,12 @@ import time
 import numpy as np
 
 from cmts import docsis_mac as mac
-from cmts import cdsp, netpkt
-from cmts.bridge import BondedForwarder, TapBridge, ensure_tap
+from cmts import cdsp, modeminfo, netpkt, tomlconf
+from cmts.bridge import TapFeed, BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
-from cmts.radio import TX_CAL_RX_BW
+from cmts.sdrdev import BLADERF2_RX_MIN_HZ, TX_CAL_RX_BW
 from cmts.usproc import RemoteUpstream, SampleRing
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
@@ -90,33 +95,54 @@ def ds_channels(a):
     return [(j + 1, f) for j, f in enumerate(freqs)]
 
 
+def radio_channels(a):
+    """Downstream channels per B210: the largest share of --ds-channels over --ds-radios."""
+    return -(-a.ds_channels // max(1, int(getattr(a, "ds_radios", 1) or 1)))
+
+
+def radio_groups(chans, nradios):
+    """Bonded channels -> one list of indices into `chans` per B210: blocks of adjacent frequencies
+    (each device synthesizes a band of at most 6 x 8 MHz around its own TX centre)."""
+    order = sorted(range(len(chans)), key=lambda i: chans[i][1])
+    n = -(-len(chans) // nradios)
+    return [order[r * n:(r + 1) * n] for r in range(nradios) if order[r * n:(r + 1) * n]]
+
+
 def build(a, log=print):
     if a.gain is None:                         # same level per channel whatever their number
         # 45 for one channel (~12 dBmV at the Sagem); bonded: +10 log10(N) to keep each channel's
         # level, +2 dB (the 2-channel bench ran at 50 for its best results, 2026-10-10)
-        a.gain = 45 + round(10 * np.log10(max(1, a.ds_channels))) + (2 if a.ds_channels > 1 else 0)
+        a.gain = 45 + round(10 * np.log10(max(1, radio_channels(a)))) + (2 if a.ds_channels > 1 else 0)
+    a.ds_radios = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    if a.ds_channels > 6 * a.ds_radios:
+        sys.exit(f"--ds-channels : 1 à 6 par B210 ({6 * a.ds_radios} avec --ds-radios {a.ds_radios}) ; "
+                 f"au-delà, la bande du B210 et l'USB ne suivent plus")
+    if a.ds_radios > 1 and not a.radio_process:
+        sys.exit("--ds-radios > 1 : avec --radio-process uniquement")
+    nr = radio_channels(a)                     # channels per B210 (the largest share)
     if a.ds_channels > 1:
-        if a.ds_channels > 6:
-            sys.exit("--ds-channels : 1 à 6 (au-delà, la bande du B210 et le processeur ne suivent plus)")
         # N 8 MHz channels side by side, each shaped at `sps` samples per symbol = master clock and
         # shifted around the TX centre.
         # 1-3 channels: 27.808 MS/s (3 channels at -8/0/+8 MHz fill +-12 of the +-13.9 MHz band).
         # 4 channels: 34.760 MS/s (5 per symbol; -12/-4/+4/+12 MHz fill +-16 of +-17.38): online on
         # 4 channels, 156 Mbit/s carried (2026-10-10, Proxmox host, --radio-process).
         # Above 34.76 MHz the Sagem used not to lock: UHD's TX quadrature calibration ran with the
-        # RX filter at the upstream width and failed from 41.712 MHz on (radio.TX_CAL_RX_BW).
+        # RX filter at the upstream width and failed from 41.712 MHz on (sdrdev.TX_CAL_RX_BW).
         # Since that fix it locks at 41.712 and 55.616 MHz; 5-6 channels at 55.616 MS/s run on the
         # Proxmox host with the AVX2 synthesis and 16 KB USB frames (2026-10-11).
-        a.sps = 4 if a.ds_channels <= 3 else (5 if a.ds_channels <= 4 else 8)
-        if a.ds_channels >= 4:
+        a.sps = 4 if nr <= 3 else (5 if nr <= 4 else 8)
+        if nr >= 4:
             # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
             # channels, AVX2: ~0.17 core per channel at 55.6 MS/s). One per channel (6 at 55.6 MS/s)
             # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
             # behind, ping 86-388 ms (2026-10-10)
-            a.synth_threads = max(a.synth_threads, (a.ds_channels + 1) // 2)
+            a.synth_threads = max(a.synth_threads, (nr + 1) // 2)
         if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
+    if getattr(a, "sdr", "b210") == "bladerf":
+        # its TX and RX share one sample rate and its counters count samples: one tick per sample
+        a.mcr_mult = 1
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
@@ -146,7 +172,9 @@ def build(a, log=print):
         rx = UpstreamRx(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, log=log, **rx_kw)
     core.ms_syms = int(round(a.minislot * 6.25e-6 * symrate))
     core.us_bits = {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod]
-    if a.us_channels > 1:
+    if a.us_channels > 1 or getattr(a, "sdr", "b210") == "bladerf":
+        # (the bladeRF also with one channel: no FPGA tuning there, the DDC of the upstream process
+        # takes the channel out of the wideband stream, away from an LO that cannot go below 70 MHz)
         rx, decim = build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log)
         mux.on_grants = lambda g: rx.add_grants(core.mark_grants(g))     # segment grants flagged
     else:
@@ -201,16 +229,30 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     a.us_center = (chans[0][1] + chans[-1][1]) / 2
     width = symrate * 1.25
     span = abs(chans[-1][1] - chans[0][1]) + width
+    if getattr(a, "sdr", "b210") == "bladerf" and a.us_center < BLADERF2_RX_MIN_HZ:
+        # its RX LO stops at 70 MHz: the channels below it, the DDC shifts them back
+        a.us_center = BLADERF2_RX_MIN_HZ
+        reach = max(abs(f - a.us_center) for _, f in chans) + width / 2
+        if reach > 0.42 * mcr:
+            sys.exit(f"bladeRF : réception à partir de 70 MHz seulement ; le canal montant le plus éloigné en est "
+                     f"à {reach / 1e6:.1f} MHz (bord compris), plus que les {0.42 * mcr / 1e6:.1f} MHz utiles à "
+                     f"{mcr / 1e6:.3f} MS/s : un seul canal montant, entre ~59 et 65 MHz (--us-freq 61.8e6)")
+        span = 2 * reach
     if max(f for _, f in chans) + width / 2 > 65e6:
         log(f"!! canal montant au-delà de 65 MHz : hors de la bande montante EuroDOCSIS, le modem refuse "
             f"le TCC (REG-ACK 209, reject-bad-tcc, vu le 2026-10-10 avec 67 MHz)")
-    if span > 0.8 * mcr:
+    if span > 0.8 * mcr and getattr(a, "sdr", "b210") != "bladerf":
         sys.exit(f"--us-channels/--us-spacing : {span / 1e6:.1f} MHz à "
                  f"recevoir, plus que les {0.8 * mcr / 1e6:.1f} MHz utiles à {mcr / 1e6:.3f} MS/s")
     # powers of 2 only: the B210's FPGA decimates by 2 with half-band filters; an odd factor goes
     # through its CIC alone, and 5 DS + 2 US at 55.616 MHz / 3 left the upstream at MER 14 dB
     # instead of 26 (2026-10-10). At /2 the same pair took 333 MB/s of USB: TX late, RX overflows.
-    decim = max(d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d)
+    decim = max((d for d in (1, 2, 4, 8) if span <= 0.8 * mcr / d), default=1)
+    if getattr(a, "sdr", "b210") == "bladerf":
+        decim = 1                               # (no FPGA decimation: the upstream processes decimate)
+        if mcr > 30.72e6:
+            log(f"!! bladeRF : émission ET réception à {mcr / 1e6:.3f} MS/s ({mcr * 8 / 1e6:.0f} Mo/s d'USB) : "
+                f"au-delà de ce que tient un bladeRF 2.0 en 16 bits ; 3 DS au plus (27,808 MS/s)")
     if (mcr + mcr / decim) * 4 > 300e6:
         log(f"!! USB : {(mcr + mcr / decim) * 4 / 1e6:.0f} Mo/s (émission + réception large bande) : au-delà "
             f"d'environ 300 Mo/s, le B210 décroche (essai du 2026-10-10)")
@@ -279,9 +321,48 @@ class LineLimiter:
         return True
 
 
-def start_bridge(a, mux, core, stop):
+RESTART = 75                    # run_split's return code when the status page asked for a restart
+_restart = threading.Event()
+
+
+def web_config(a):
+    """The "Configuration" form of the status page (cmts/webconfig.py), on the bench file of
+    --config; changes from this machine only unless --status-edit on (cmts/webconfig.py)."""
+    from cmts import webconfig
+    import provision
+    path = getattr(a, "config_path", None)
+    why = f"{path} non modifiable par ce processus" if path and not os.access(path, os.W_OK) else ""
+
+    def restart(what):
+        log(f"[WEB] configuration changée depuis la page d'état ({what}) : redémarrage du CMTS")
+        _restart.set()
+    return webconfig.WebConfig(a, os.path.abspath(path) if path else None, getattr(a, "cli_locked", ()),
+                               parse=lambda argv: parser().parse_args(argv),
+                               channels=lambda ns: ([f for _, f in ds_channels(ns)], [f for _, f in us_channels(ns)]),
+                               to_argv=lambda p: tomlconf.to_argv(p, parser(), provision.parser()),
+                               restart=restart, edit=a.status_edit, why=why)
+
+
+def start_status_page(a, info):
+    """The status page (cmts/webstatus.py) on --status-http; None when off or the port is taken."""
+    from cmts import webstatus
+    addr = webstatus.parse_addr(a.status_http)
+    if addr is None:
+        return None
+    board = webstatus.StatusBoard(info)
+    try:
+        webstatus.StatusServer(board, *addr, log=log, config=web_config(a))
+    except OSError as e:
+        log(f"!! page d'état sur {addr[0]}:{addr[1]} impossible ({e.strerror or e}) : le CMTS tourne sans")
+        return None
+    termcolor.listeners.append(board.alert)
+    return board
+
+
+def start_bridge(a, mux, core, stop, batched=False):
     """Modems <-> Linux TAP (a.tap): upstream Packet PDUs out on the TAP, frames from the TAP
-    into downstream Packet PDUs."""
+    into downstream Packet PDUs. batched: the TAP read by batches into a TapFeed (br.feed) that
+    the TS block encoder pumps (run_split); otherwise every frame is queued by the TAP thread."""
     if not a.tap:
         core.on_data = lambda eth, ok, sid: log(f"[PONT] ↑ {netpkt.summary(eth)} (pas de --tap : jetée)")
         return None
@@ -296,6 +377,14 @@ def start_bridge(a, mux, core, stop):
             return
         fwd.learn(eth, sid)                        # which modem this address sits behind
         br.upstream(eth)
+        dh = modeminfo.dhcp_of_frame(eth)          # what the modem and the devices behind it say
+        if dh is not None:
+            m = core.by_sid.get(sid)
+            if m is not None:
+                if not hasattr(m, "devices"):
+                    m.devices = {}
+                info = modeminfo.from_dhcp(dh)
+                m.devices[info["MAC"]] = {**m.devices.get(info["MAC"], {}), **info}
         if flim.ok():
             log(f"[PONT] ↑ {netpkt.summary(eth)}", console=lim.ok())
 
@@ -304,12 +393,13 @@ def start_bridge(a, mux, core, stop):
         fwd.force_ch = int(os.environ["MINI_CMTS_BOND_CH"]) - 1
     mux.per_chan = fwd.per_chan
 
-    def down(eth):
-        fwd.send(eth)
+    def down(eth, t=None):
+        fwd.send(eth, t)
         if flim.ok():
             log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
     core.on_data = up
-    br.start(down, stop)
+    br.feed = TapFeed(down, max_age_s=mux.data_max_ms / 1e3) if batched else None
+    br.start(down, stop, feed=br.feed)
     log(f"[PONT] modems <-> {a.tap} (état {br.link_up()})")
     return br
 
@@ -493,7 +583,9 @@ def raise_priority(prio):
 def tx_cores(a):
     """Cores the transmit side (radio, MAC layer, bridge) needs to itself: 6 DS + 2 US with 3
     was late on the Proxmox host; 4 DS + 2 US with 3 and 6 DS + 1 US with 4 ran (2026-10-11)."""
-    return 4 if a.ds_channels >= 5 else (3 if a.ds_channels == 4 else 2)
+    nr = radio_channels(a)
+    per = 4 if nr >= 5 else (3 if nr == 4 else 2)
+    return per + 3 * (max(1, int(getattr(a, "ds_radios", 1) or 1)) - 1)   # (a further radio: ~2.2 cores + its share of MAC)
 
 
 def _all_tasks(pid):
@@ -825,15 +917,94 @@ def cpu_latency(want):
 
 
 def ds_fill(mux, prev):
-    """Share of the TS packets of each downstream channel that were not null since the last
-    call ("remplissage 97/96/... %"): a channel near 100 % is full. prev: dict kept by the caller."""
+    """Share (%) of the TS packets of each downstream channel that were not null since the last
+    call, None for a channel that sent nothing: a channel near 100 % is full. prev: dict kept by
+    the caller."""
     out = []
     for k, m in enumerate([mux] + list(getattr(mux, "secondary", []))):
         p, nul = m.p, m.stats["null"]
         p0, n0 = prev.get(k, (p, nul))
         prev[k] = (p, nul)
-        out.append(f"{100 * (1 - (nul - n0) / (p - p0)):.0f}" if p > p0 else "-")
-    return "remplissage " + "/".join(out) + " %, "
+        out.append(100 * (1 - (nul - n0) / (p - p0)) if p > p0 else None)
+    return out
+
+
+def fill_text(fill):
+    return "remplissage " + "/".join("-" if v is None else f"{v:.0f}" for v in fill) + " %, "
+
+
+def web_snapshot(a, mux, core, rx, radios, br, fill, prev):
+    """The status page's view of this status line (cmts/webstatus.py): read before status_line()
+    takes the counters it resets. prev: dict kept by the caller (radio counters of the last call)."""
+    rad = []
+    for rp in radios:
+        last = dict(getattr(rp, "last", {}) or {})
+        p = prev.setdefault(rp.name, {})
+        d = {k: last.get(k, 0) - p.get(k, 0) for k in ("U", "L", "O") if k in last}
+        p.update({k: last[k] for k in ("U", "L", "O") if k in last})
+        m = last.get("margin_ms")
+        rad.append(dict(name=rp.name, alive=rp.alive(), U=last.get("U"), L=last.get("L"), O=last.get("O"),
+                        dU=d.get("U", 0), dL=d.get("L", 0), dO=d.get("O", 0), gap_ms=last.get("gap_ms"),
+                        margin_ms=m if m is not None and m < float("inf") else None))
+    ups = []
+    for (ucid, freq), r in zip(us_channels(a), getattr(rx, "all_channels", None) or [rx]):
+        ups.append(dict(ucid=ucid, freq=freq, noise_dbfs=r.noise_dbfs(), lag_ms=r.lag_max_ms,
+                        bursts=r.stats["bursts"], decoded=r.stats["decoded"], fast=r.stats.get("fast", 0)))
+    st = mux.stats
+    fd = getattr(br, "feed", None) if br else None
+    bridge = dict(up=br.stats["up"], down=br.stats["down"]) if br else {}
+    if fd:
+        bridge.update(tap_waiting=fd.waiting(), tap_dropped=fd.stats["dropped"], max_batch=fd.stats["max_batch"])
+    return dict(radios=rad, upstream=ups, bridge=bridge,
+                downstream=dict(fill=fill, queue=len(mux.data), wait_max_ms=st["data_max_ms"], dropped=st["data_drop"]),
+                modems=core.summary(), rng_rsp=core.n_rsp, grants=dict(core.n))
+
+
+def web_info(a, chans, groups=None):
+    """Fixed part of the status page: channels, radios, modulations."""
+    radio_of = {}
+    for r, g in enumerate(groups or [list(range(len(chans)))]):
+        for i in g:
+            radio_of[i] = "radio" if r == 0 else f"radio{r + 1}"
+    return dict(sdr=a.sdr, qam=f"{a.qam}-QAM", us_mode=a.us_mode.upper(), us_mod=a.us_mod.upper(),
+                ds=[dict(dcid=d, freq=f, radio=radio_of.get(i)) for i, (d, f) in enumerate(chans)],
+                us=[dict(ucid=u, freq=f) for u, f in us_channels(a)])
+
+
+def watch_gc(log, slow_ms=15.0):
+    """Logs every pause of Python's garbage collector longer than slow_ms in this (MAC) process:
+    it holds the GIL, so the encoder thread feeding the radios stops too."""
+    import gc
+    t0 = [0.0]
+    stats = dict(n=0, worst=0.0)
+
+    def cb(phase, info):
+        if phase == "start":
+            t0[0] = time.perf_counter()
+            return
+        dt = (time.perf_counter() - t0[0]) * 1e3
+        if dt >= slow_ms:
+            stats["n"] += 1
+            stats["worst"] = max(stats["worst"], dt)
+            if info["generation"] == 2:
+                stats["refreeze"] = True          # done by the status loop (freeze_gc), not in here
+            log(f"[MAC] !! ramasse-miettes Python : {dt:.0f} ms (génération {info['generation']}, "
+                f"{info['collected']} objets libérés, {len(gc.get_objects(info['generation']))} suivis)")
+    gc.callbacks.append(cb)
+    return stats
+
+
+def freeze_gc(log, why):
+    """Moves every object Python's garbage collector tracks to its permanent generation: a full
+    collection no longer walks them. The MAC process keeps nearly all its objects to the end
+    (tables, channels, modems): on the 2950X a full collection walked 45554 of them for 22 ms,
+    freeing none, and held the GIL as long; the encoder thread feeding the radios stopped, both
+    B210s ran dry (2026-10-15). Objects frozen and later dropped are still freed by their
+    reference count; only a cycle among them would stay."""
+    import gc
+    n = len(gc.get_objects())
+    gc.freeze()
+    log(f"[MAC] ramasse-miettes : {n} objets figés ({why}), {gc.get_freeze_count()} en tout")
 
 
 def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center):
@@ -846,35 +1017,82 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     if a.tx_dc_cal:
         log("!! --tx-dc-cal ignoré avec --radio-process")
     span = (max(f for _, f in chans) - min(f for _, f in chans)) + 8e6
-    if a.us_channels > 1:
+    if a.us_channels > 1 or a.sdr == "bladerf":
         rx_target, lo_off = a.us_center, 0.0
         rx_bw = min(56e6, abs(a.us_spacing) * (a.us_channels - 1) + a.us_rate * US_SYM_UNIT * 1.25 + 4e6)
+        if a.sdr == "bladerf":                  # the channels may sit well off its LO (70 MHz minimum)
+            reach = max(abs(f - a.us_center) for _, f in us_channels(a)) + a.us_rate * US_SYM_UNIT * 1.25 / 2
+            rx_bw = min(56e6, max(rx_bw, 2 * reach + 2e6))
     else:
         rx_target, lo_off = a.us_freq, rx_lo_offset(a)
         rx_bw = min(56e6, 2 * (abs(lo_off) + 2e6))
     t_start = 0.5
     blk_ms = a.block * 204 * 8 / (SYMRATE * mux.m) * 1e3
-    params = dict(args=args, mcr=mcr, fs_tx=fs_tx, tx_center=tx_center, tx_bw=min(56e6, max(20e6, 1.5 * span)),
-                  gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
-                  rx_gain=a.us_gain, steps=[2 * np.pi * (f - tx_center) / fs_tx for _, f in chans],
-                  qams=[a.qam] * len(chans), sps=a.sps, invert=mux.invert, scale=a.scale,
-                  synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
-                  tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
-                  pk_shape=(len(chans), a.block, 2))
-    # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
-    radio = RadioProcess(params, rx.ring, len(chans), a.block, 2, log)
-    radio.start()
-    stop = threading.Event()
+    nradios = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    groups = radio_groups(chans, nradios)
+    serials = [s.strip() for s in getattr(a, "radio_serials", "").split(",") if s.strip()]
+    if nradios > 1 and len(serials) < len(groups):
+        log("!! --ds-radios > 1 sans --radio-serials pour chaque B210 : UHD choisira lui-même l'appareil de "
+            "chaque radio (uhd_find_devices donne les numéros de série)")
+    ctx = mp.get_context("spawn")
+    origin = ctx.Value("d", 0.0) if len(groups) > 1 else None
+    # the primary's clock against the host's, for the followers to realign on (cmts/radio.py)
+    clock = ctx.Array("d", 5, lock=False) if len(groups) > 1 else None
+    radios = []
+    for r, g in enumerate(groups):
+        fr = [chans[i][1] for i in g]
+        center = (min(fr) + max(fr)) / 2 if len(groups) > 1 else tx_center
+        span_r = (max(fr) - min(fr)) + 8e6
+        if a.sdr == "bladerf":
+            args_r = f"*:serial={serials[r]}" if r < len(serials) else args
+        else:
+            args_r = args + (f",serial={serials[r]}" if r < len(serials) else "")
+        params = dict(args=args_r, mcr=mcr, fs_tx=fs_tx, tx_center=center, tx_bw=min(56e6, max(20e6, 1.5 * span_r)),
+                      gain=a.gain, decim=decim, rx_target=rx_target, rx_lo_off=lo_off, rx_bw=rx_bw,
+                      rx_gain=a.us_gain, steps=[2 * np.pi * (f - center) / fs_tx for f in fr],
+                      qams=[a.qam] * len(g), sps=a.sps, invert=mux.invert, scale=a.scale,
+                      synth_threads=a.synth_threads, tx_queue=a.tx_queue, tx_frames=a.tx_frames,
+                      tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
+                      pk_shape=(len(g), a.block, 2 if r == 0 else 8), rx=(r == 0), follow=(r > 0),
+                      clock_source=getattr(a, "clock_source", "internal"),
+                      driver="bladerf" if a.sdr == "bladerf" else "uhd",
+                      tag="RADIO" if r == 0 else f"RADIO{r + 1}")
+        # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
+        radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, params["pk_shape"][2], log,
+                                   origin=origin, name="radio" if r == 0 else f"radio{r + 1}", clock=clock))
+        if len(groups) > 1:
+            log(f"[RADIO{r + 1}] {len(g)} canaux " + ", ".join(f"{f / 1e6:.0f}" for f in fr)
+                + f" MHz, centre {center / 1e6:.0f} MHz" + (f", B210 {serials[r]}" if r < len(serials) else ""))
+    radio = radios[0]
+    gc_stats = watch_gc(log)
+    freeze_gc(log, "démarrage")
+    radio.start()                                 # the followers once it is on the air (below):
+    stop = threading.Event()                      # two processes opening "a B210" could swap them
 
     # diagnostic: MINI_CMTS_TSDUMP=<file> writes the TS blocks of every channel (channels x block x
     # 188 bytes per block) for MINI_CMTS_TSDUMP_S seconds once <file>.go exists
     dump = os.environ.get("MINI_CMTS_TSDUMP")
     dump_f, dump_end = None, None
 
+    feed_box = [None]                             # the bridge's TapFeed, once it runs (below)
+
     def encoder():
         nonlocal dump_f, dump_end
+        seq = 0
+        t_slow_log = 0.0
+        # frames from the TAP turned into PDUs here, before each block (cmts/bridge.py TapFeed):
+        # twice what the block carries on every channel, the rest waits for the next blocks
+        budget = 2 * a.block * (1 + len(mux.secondary)) * 183
         while not stop.is_set():
+            t0 = time.perf_counter()
+            if feed_box[0] is not None:
+                feed_box[0].pump(budget)
             pks = [mux.packets(a.block)] + [m2.packets(a.block) for m2 in mux.secondary]
+            t1 = time.perf_counter()
+            if t1 - t0 > 0.010 and t1 - t_slow_log > 1.0:
+                # the blocks of every radio wait for this: one late here starves them all together
+                t_slow_log = t1
+                log(f"[MAC] !! bloc TS produit en {(t1 - t0) * 1e3:.0f} ms (bloc de {blk_ms:.1f} ms à l'antenne)")
             if dump and dump_f is None and dump_end is None and os.path.exists(dump + ".go"):
                 dump_f = open(dump, "wb")
                 dump_end = time.monotonic() + float(os.environ.get("MINI_CMTS_TSDUMP_S", "10"))
@@ -884,44 +1102,88 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                     dump_f.close()
                     dump_f = None
                     log(f"[TS] flux enregistré dans {dump}")
-            if not radio.pk.put(pks, stop):
+            if not radio.pk.put([pks[i] for i in groups[0]], stop, seq):
                 return
+            for rp, g in zip(radios[1:], groups[1:]):
+                # a follower never holds the MAC back: dead or late, its block is dropped (it times
+                # every block from its number, so a gap cannot shift it). Nothing before it is on the
+                # air: it would drop those blocks itself, and the ~0.8 s its B210 takes to open filled
+                # its ring and raised a false "!! 435 blocs jetés" at every start
+                if rp.alive() and not rp.failed and rp.started.is_set():
+                    if rp.pk.put([pks[i] for i in g], stop, seq, wait=False) is None:
+                        rp.dropped += 1
+            seq += 1
+            mux.last_block_t = time.perf_counter()
+            if seq % 4096 == 0:
+                for rp in radios[1:]:
+                    if rp.dropped > rp.dropped_logged:
+                        log(f"[{rp.name.upper()}] !! {rp.dropped - rp.dropped_logged} blocs jetés (anneau plein), "
+                            f"{rp.dropped} au total : trous dans ses canaux descendants")
+                        rp.dropped_logged = rp.dropped
     threading.Thread(target=encoder, name="encoder", daemon=True).start()
     radio.started.wait()
     if radio.failed:
         stop.set()
-        radio.stop()
+        for rp in radios:
+            rp.stop()
         log(f"!! {radio.failed}")
         return 1
+    for rp in radios[1:]:
+        rp.start()
+    for rp in radios[1:]:                         # a follower: on air within a few blocks, or missing
+        if not rp.started.wait(15) or rp.failed:
+            log(f"!! {rp.name} : {rp.failed or 'pas démarrée en 10 s'} ; ses canaux descendants manquent")
     wall0[0] = radio.wall0
     tb.origin += round(t_start * mcr)             # TX sample 0 goes out at tick t_start * mcr
-    br = start_bridge(a, mux, core, stop)
+    br = start_bridge(a, mux, core, stop, batched=True)
+    feed_box[0] = getattr(br, "feed", None)
+    board = start_status_page(a, web_info(a, chans, groups))
     rxs = getattr(rx, "all_channels", None) or [rx]
     for r in rxs:
         r.start()                                 # the time base is final from here on
     log("réception montante dans un processus séparé (cmts/usproc.py)"
-        + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "") + f" ; radio : pid {radio.pid}")
+        + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else "")
+        + f" ; radio : pid {', '.join(str(rp.pid) for rp in radios)}")
     if a.cpus == "auto":
-        log(split_cpus([r.pid for r in rxs], shared_pids=[radio.pid], tx_need=tx_cores(a), mode=a.us_cpus,
-                       prio=a.rt_prio))
-    fill_prev = {}
+        log(split_cpus([r.pid for r in rxs], shared_pids=[rp.pid for rp in radios], tx_need=tx_cores(a),
+                       mode=a.us_cpus, prio=a.rt_prio))
+    fill_prev, web_prev = {}, {}
+    rc = 0
     try:
         while True:
-            time.sleep(5)
+            if _restart.wait(5):
+                rc = RESTART
+                break
             if not radio.alive():
                 log("!! processus radio arrêté")
                 break
+            if gc_stats.pop("refreeze", False):
+                freeze_gc(log, "après une collecte complète lente")
+            for rp in radios[1:]:
+                if not rp.alive() and not getattr(rp, "_dead_logged", False):
+                    rp._dead_logged = True
+                    log(f"!! {rp.name} arrêtée : ses canaux descendants manquent, le reste continue")
             st = mux.stats
             split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
-            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{ds_fill(mux, fill_prev)}file DS "
+            fd = getattr(br, "feed", None) if br else None
+            tapq = f"file TAP {fd.waiting()} (jetées {fd.stats['dropped']}, lot max {fd.stats['max_batch']}), " if fd else ""
+            fill = ds_fill(mux, fill_prev)
+            pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{fill_text(fill)}{tapq}file DS "
                     f"{len(mux.data)}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
+            tx = radio.status() + "".join(f"{rp.name} : {rp.status()}" for rp in radios[1:])
+            if board:
+                board.publish(web_snapshot(a, mux, core, rx, radios, br, fill, web_prev), iface=a.tap)
+            if fd:
+                fd.stats["max_batch"] = 0
             st["data_max_ms"] = 0.0
-            log("\n" + status_line(mux, core, rx, radio.status() + pont))
+            log("\n" + status_line(mux, core, rx, tx + pont))
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)   # the stop sequence runs to its end (_sigint_once)
         stop.set()
-        radio.stop()
+        for rp in radios:
+            rp.stop()
         for r in rxs:
             r.stop()
         if not rx._own_ring:
@@ -931,7 +1193,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             pcap.close()
             log(f"pcap: {pcap.count} trames dans {a.pcap} (wireshark, filtre docsis)"
                 + (f", {pcap.dropped} perdues (file pleine)" if pcap.dropped else ""))
-    return 0
+    return rc
 
 
 def run_usrp(a):
@@ -958,7 +1220,8 @@ def run_usrp(a):
         log(lat)
     # UHD's own one-letter U/L/O prints are replaced by the dated lines of StallWatch
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
-    import uhd
+    if a.sdr != "b210" and not a.radio_process:
+        sys.exit(f"--sdr {a.sdr} : avec --radio-process uniquement")
     mux, core, rx, tb, mcr, decim = build(a, log)
     wall0 = [time.time()]                       # Unix time of DOCSIS timestamp 0, set at start
     pcap = attach_pcap(a.pcap, mux, rx, lambda ts: wall0[0] + ts / TS_RATE) if a.pcap else None
@@ -979,8 +1242,11 @@ def run_usrp(a):
         # same on the receive side: 6 DS + 2 US, RX at 27.8 MS/s, the radio's RX thread went
         # from 24 to 14 % of a core (2026-10-11)
         args += f",recv_frame_size={a.recv_frame_size}"
+    if a.sdr == "bladerf":
+        args = a.sdr_args                       # libbladeRF device identifier ("" = the first one)
     if a.radio_process:
         return run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans, tx_center)
+    import uhd
     usrp = uhd.usrp.MultiUSRP(args)
     usrp.set_tx_rate(fs_tx)
     usrp.set_tx_freq(uhd.types.TuneRequest(tx_center))
@@ -1257,6 +1523,7 @@ def run_usrp(a):
     except KeyboardInterrupt:
         pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)   # the stop sequence runs to its end (_sigint_once)
         stop.set()
         rx_stream.issue_stream_cmd(uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont))
         md.end_of_burst = True
@@ -1281,6 +1548,12 @@ class _ArgsFileParser(argparse.ArgumentParser):
     """`mini_cmts.py @configs/lab.args [more options]`: the options of a file, several per line
     if wanted, `#` comments; options given after the file override it (the last one wins)."""
 
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        # "--us-spacing -7e6": argparse takes -7, -0.5 for values but -7e6 for an option (its
+        # pattern for negative numbers knows no exponent); the README examples write it this way
+        self._negative_number_matcher = re.compile(r"^-(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$")
+
     def convert_arg_line_to_args(self, line):
         return shlex.split(line, comments=True)
 
@@ -1288,6 +1561,10 @@ class _ArgsFileParser(argparse.ArgumentParser):
 def parser():
     ap = _ArgsFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                          fromfile_prefix_chars="@")
+    ap.add_argument("--config", metavar="BANC.toml",
+                    help="bench description in TOML (configs/*.toml, cmts/tomlconf.py): sections [radio], "
+                         "[downstream], [upstream], [host]... with the option names as keys, [provisioning] "
+                         "for provision.py; options given on the command line win")
     g = ap.add_argument_group("downstream (comme ds_tx.py)")
     g.add_argument("--freq", type=float, default=306e6,
                    help="primary downstream channel (Hz), on the 8 MHz European raster (114 + 8 n: the Sagem "
@@ -1323,6 +1600,11 @@ def parser():
     g.add_argument("--recv-frame-size", type=int, default=16360,
                    help="UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX "
                         "stream; 0 = UHD's")
+    g.add_argument("--sdr", choices=("b210", "bladerf"), default="b210",
+                   help="the SDR: b210 (Ettus, UHD) or bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at "
+                        "the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream)")
+    g.add_argument("--sdr-args", default="",
+                   help="--sdr bladerf: libbladeRF device identifier (\"\" = the first one, \"*:serial=...\")")
     g.add_argument("--args", default="type=b200", help="UHD device args")
     g.add_argument("--rt-prio", type=int, default=50,
                    help="real-time priority (SCHED_RR 1-99) of the whole process, 0 = normal")
@@ -1341,7 +1623,7 @@ def parser():
     g = ap.add_argument_group("upstream")
     g.add_argument("--us-freq", type=float, default=60e6,
                    help="upstream center frequency (UCD); 53-64 MHz keeps the B210 LO >= 50 MHz with a "
-                        "small offset (SFR uses 60.4 MHz)")
+                        "small offset (the modem's origin network uses 60.4 MHz)")
     g.add_argument("--us-rate", type=int, default=32,
                    help="symbol rate in 160 ksym/s units (16 = 2.56 Msym/s, 3.2 MHz; 8 = 1.28 Msym/s)")
     g.add_argument("--us-channels", type=int, default=1,
@@ -1402,6 +1684,15 @@ def parser():
                    help="Linux TAP interface bridged to the modems (created with sudo if missing); none = no bridge")
     g.add_argument("--all-in-one", action="store_true",
                    help="also run provision.py (DHCP, TFTP + generated config file, ToD) on the TAP, through sudo")
+    g.add_argument("--status-http", metavar="[ADDR:]PORT", default="127.0.0.1:8090",
+                   help="status page (channels, radios, modems, throughput, alerts) on this address; "
+                        "none to turn it off; 0.0.0.0:8090 to reach it from the network (closed lab only: "
+                        "it shows the modems' MAC addresses)")
+    g.add_argument("--status-edit", choices=("auto", "on", "off"), default="auto",
+                   help="the Configuration form of the status page writes the --config file and restarts the "
+                        "CMTS: auto = from this machine only (its browser, or ssh -L 8090:127.0.0.1:8090), read-only "
+                        "from the network; on = from wherever the page is reachable (anyone there could make the "
+                        "radio transmit elsewhere); off = read-only")
     g.add_argument("--prov-args", default="", help="extra arguments for provision.py, e.g. \"--config my.cfg\"")
     g.add_argument("--shared-secret", default="docsis-lab", help="CMTS MIC shared secret (same as in the config file)")
     g.add_argument("--strict-mic", action="store_true", help="refuse a REG-REQ whose CMTS MIC is wrong")
@@ -1411,9 +1702,18 @@ def parser():
     g.add_argument("--ds-queue-ms", type=float, default=100.0,
                    help="downstream data frames waiting longer than this are dropped (bounded latency)")
     g.add_argument("--ds-channels", type=int, default=6,
-                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1-6 (5-6: master clock "
-                        "55.616 MHz; 6 with --ds-layout around: 234-258 / 21 Mbit/s on the Proxmox host, "
-                        "2026-10-11)")
+                   help="bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1-6 per B210 (5-6: master "
+                        "clock 55.616 MHz; 6 with --ds-layout around: 234-258 / 21 Mbit/s on the Proxmox host, "
+                        "2026-10-11); up to 6 x --ds-radios")
+    g.add_argument("--ds-radios", type=int, default=1,
+                   help="B210s sharing the downstream channels (2: up to 12 channels, 6 per device, each "
+                        "device a block of adjacent channels; the first one also receives the upstream). "
+                        "Use --radio-serials and, for no drift between them, --clock-source external")
+    g.add_argument("--radio-serials", default="",
+                   help="serial numbers of the B210s, comma separated, in --ds-radios order (uhd_find_devices)")
+    g.add_argument("--clock-source", default="internal", choices=("internal", "external", "gpsdo"),
+                   help="reference of every B210: external = their 10 MHz inputs (one common source, e.g. a "
+                        "HackRF CLKOUT through a splitter: no drift between the devices)")
     g.add_argument("--synth-threads", type=int, default=2,
                    help="threads sharing the shaping of 3+ bonded downstream channels")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=True,
@@ -1456,8 +1756,32 @@ def parser():
     return ap
 
 
-def main():
-    a = parser().parse_args()
+def _sigint_once(signum, frame):
+    """Ctrl+C / systemctl stop: KeyboardInterrupt once, the next ones ignored. `timeout` signals the
+    process and then its group, an impatient user presses twice: a second KeyboardInterrupt landed
+    in the stop sequence and left the radios and the shared memory behind (2026-10-15)."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def main(argv=None):
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _sigint_once)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    path, rest = tomlconf.split_config(argv)
+    ap = parser()
+    if path:                                      # a TOML bench file: its options first, ours win
+        import provision
+        try:
+            argv = tomlconf.to_argv(path, ap, provision.parser()) + rest
+        except (OSError, ValueError) as e:
+            sys.exit(f"--config : {e}")
+        except Exception as e:                    # noqa: BLE001 - tomllib.TOMLDecodeError
+            sys.exit(f"--config {path} : {e}")
+    a = ap.parse_args(argv)
+    a.config_path = path
+    opt_dest = {o: act.dest for act in ap._actions for o in act.option_strings}
+    a.cli_locked = {opt_dest[t.split("=", 1)[0]] for t in rest if t.split("=", 1)[0] in opt_dest}
     termcolor.setup(a.color)
     termcolor.set_verbosity(a.verbose)
     if a.us_mod == "64qam" and a.us_mode != "atdma":
@@ -1484,7 +1808,12 @@ def main():
     if a.sim:
         res = run_sim(a, log)
         return 0 if res["state"] == "ranged" else 1
-    return run_usrp(a)
+    rc = run_usrp(a)
+    if rc == RESTART:                             # asked by the status page: the same command again
+        atexit._run_exitfuncs()                   # provision.py, latency holder: stopped first
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+    return rc
 
 
 if __name__ == "__main__":

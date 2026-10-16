@@ -1,5 +1,7 @@
+/* SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md */
 /* Reed-Solomon errors-and-erasures decoding with soft reliabilities, for weak downstream captures
- * (sfr_listen.py: a HackRF tops out at ~25 dB MER, where hard decoding of 256-QAM loses ~27 % of
+ * (origin_listen.py: a HackRF tops out at ~25 dB MER, where hard decoding of 256-QAM loses ~27 % of
  * the MPEG packets). GF(256), p = 0x11D, roots alpha^fcr .. alpha^(fcr+nsym-1) (J.83 annex A:
  * fcr 0, nsym 16; the same code as the upstream's, cmts/usdsp.c).
  *

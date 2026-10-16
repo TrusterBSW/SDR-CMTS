@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Burst attribution when a unicast grant lies inside the Initial Maintenance slack (--im-slack-us).
 
 Seen on the Sagem 3686 on 2026-10-09: the MAP put the Station Maintenance grant 2 ms after the

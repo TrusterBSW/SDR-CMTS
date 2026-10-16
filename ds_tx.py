@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """EuroDOCSIS downstream test transmitter (J.83 Annex A + SYNC/UCD/MAP) for a USRP B210.
 
 Goal: make a real cable modem lock on the downstream and start ranging
@@ -134,7 +136,7 @@ def main():
     ap.add_argument("--minislot", type=int, default=4, help="minislot size in 6.25 us ticks")
     ap.add_argument("--mac", default="02:00:00:ca:fe:01", help="CMTS MAC address")
     ap.add_argument("--no-invert", action="store_true",
-                    help="do not mirror the spectrum (default mirrors it, like the SFR network)")
+                    help="do not mirror the spectrum (default mirrors it, like the modem's origin network)")
     ap.add_argument("--args", default="type=b200", help="UHD device args")
     ap.add_argument("--bench", action="store_true")
     ap.add_argument("--out", help="write samples to this file instead of transmitting")

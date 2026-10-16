@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Reed-Solomon over GF(256), p(x) = x^8+x^4+x^3+x^2+1, generator roots
 alpha^fcr .. alpha^(fcr+2T-1). DOCSIS upstream uses fcr = 0 (PHYv3.0 6.2.4.1).
 Shortened codes are handled implicitly (leading zeros are never transmitted)."""

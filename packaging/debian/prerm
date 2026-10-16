@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = upgrade ] || [ "$1" = deconfigure ]; then
+    if [ -d /run/systemd/system ]; then
+        deb-systemd-invoke stop mini-cmts.service >/dev/null 2>&1 || systemctl stop mini-cmts.service || true
+    fi
+fi
+exit 0

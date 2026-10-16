@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+LIB=/usr/lib/mini-cmts/cmts
+
+build() {
+    # C kernels for this CPU (-march=native: AVX2 where there is), as cmts/cdsp.py would on first
+    # use; a failure leaves the Python fallbacks (much slower), said here rather than at run time
+    for n in usdsp dsdsp fastdsp; do
+        extra=""
+        [ "$n" = fastdsp ] && extra="-ffast-math"
+        if cc -O3 -march=native $extra -shared -fPIC -o "$LIB/_$n.so.tmp" "$LIB/$n.c" -lm; then
+            mv -f "$LIB/_$n.so.tmp" "$LIB/_$n.so"
+        else
+            rm -f "$LIB/_$n.so.tmp"
+            echo "mini-cmts: !! $n.c not compiled: Python fallback, far too slow for the radios" >&2
+        fi
+    done
+}
+
+case "$1" in
+    configure|reconfigure)
+        build
+        getent group usrp >/dev/null || addgroup --system usrp
+        cat <<'MSG'
+mini-cmts installed. Not started: check the cabling (closed coax, attenuators) first.
+  bench:        /etc/mini-cmts/mini-cmts.toml   (examples: /usr/share/mini-cmts/configs/)
+  try it:       sudo mini-cmts --config /etc/mini-cmts/mini-cmts.toml
+  as a service: sudo systemctl enable --now mini-cmts ; journalctl -u mini-cmts -f
+  status page:  http://127.0.0.1:8090/
+  B210 FPGA images, once: sudo uhd_images_downloader -t b2xx
+MSG
+        ;;
+esac
+exit 0

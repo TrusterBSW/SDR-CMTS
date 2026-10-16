@@ -1,13 +1,15 @@
 #!/bin/bash
-# One SFR downstream channel captured with the HackRF (RECEIVE ONLY) while the modem is power-cycled
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
+# One downstream channel of the modem's origin network captured with the HackRF (RECEIVE ONLY) while the modem is power-cycled
 # through its Home Assistant plug, with a tcpdump of the modem's Ethernet side for the timeline.
-#   hackrf_reboot_cap.sh [SECONDS] [FREQ]     -> ~/sfrcap/rb_HHMMSS.s8 (+ .t0, .eth.pcap, .cycle)
+#   hackrf_reboot_cap.sh [SECONDS] [FREQ]     -> ~/origincap/rb_HHMMSS.s8 (+ .t0, .eth.pcap, .cycle)
 # Amplifier ON (allowed by the user 2026-10-12: modem bursts measured at ~-21 dBm, ~-18 dBm while
 # ranging, at the HackRF's splitter port, limit -5 dBm), LNA 32 VGA 16, 15 MHz filter: MER ~25 dB.
 set -u
 secs=${1:-170}
 freq=${2:-282e6}
-DIR=${DIR:-$HOME/sfrcap}
+DIR=${DIR:-$HOME/origincap}
 HERE=$(cd "$(dirname "$0")" && pwd)
 out=$DIR/rb_$(date +%H%M%S)
 hz=$(python3 -c "print(int(float('$freq')))")

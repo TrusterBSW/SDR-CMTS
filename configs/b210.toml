@@ -1,0 +1,26 @@
+# One B210: 6 downstream channels + 2 upstream channels, the reference configuration
+# (283 Mbit/s down, ~52 up through a Sagem F@st 3686, 6-core i5-9500).
+#   python3 mini_cmts.py --all-in-one --config configs/b210.toml
+# Keys: the options of mini_cmts.py (python3 mini_cmts.py --help); the sections only group them.
+
+[radio]
+sdr = "b210"
+args = "type=b200"          # UHD device arguments (add ",serial=..." to pick one)
+
+[downstream]
+freq = 306e6                # primary channel (European grid 114 + 8n MHz)
+ds_channels = 6
+ds_layout = "around"        # the others on both sides of the primary
+qam = 256
+
+[upstream]
+us_channels = 2             # 60 and 53 MHz, DOCSIS 3.0 upstream bonding
+us_target = -20             # dBFS of the ranged bursts
+
+[provisioning]              # provision.py: DHCP, TFTP, ToD on the cmts0 bridge
+dns = "1.1.1.1"             # DNS given to the devices behind the modems
+max_cpe = 16
+us_buffer = 131072          # modem upstream buffer (TLV 24.35): ping during an upload 237 -> 93 ms
+
+[host]
+cpus = "auto"               # all CPUs but the one taking the B210's USB interrupts

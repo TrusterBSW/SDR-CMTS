@@ -12,7 +12,7 @@ ref/
 # receive-only tools for an operator's network: kept out of the public repository by default
 count_modems.py
 network_load.py
-sfr_capture.py
+origin_capture.py
 upstream_analysis.py
 # build products
 __pycache__/
@@ -25,3 +25,7 @@ cmts/_*.so
 
 # per-file backups made before an edit
 *_pre_*
+
+# Debian packages built by packaging/build-deb.sh
+dist/
+*.deb

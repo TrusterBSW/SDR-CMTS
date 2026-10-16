@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Upstream receiver: RX samples + the MAP schedule -> decoded bursts with ranging measurements.
 
 Time base: the B210 transmits the downstream and receives the upstream with ONE master clock.
@@ -22,6 +24,7 @@ from .j83a import PulseShaper
 from .us_phy import BurstDemod, profiles
 
 TS_RATE = 10.24e6
+FLOOR_MIN = 1e-13             # -130 dBFS: below any real noise floor (sc16 quantization ~-90 dBFS)
 SYMRATE_DS = 6_952_000
 DATA_IUCS = (mac.IUC_SHORT_DATA, mac.IUC_LONG_DATA, mac.IUC_ADV_SHORT, mac.IUC_ADV_LONG, mac.IUC_ADV_UGS)
 
@@ -89,8 +92,13 @@ class UpstreamRx:
         self.buf = np.zeros(int(history_s * fs), dtype=np.complex64) if buf is None else buf
         self.rx_tick0 = None        # device tick of absolute RX sample 0
         self.written = 0            # absolute index of the next sample to come
+        # first absolute sample holding real data: an upstream process that starts behind skips
+        # part of the stream (cmts/usproc.py ddc_loop), its buffer keeps zeros there
+        self.valid_from = 0
         self.windows = collections.deque()
         self.floor = None           # noise power per sample (linear)
+        self._floor_odd = 0         # broadcast windows in a row far above the floor (stuck floor)
+        self._floor_odd_min = None
         self.burst_level = None     # power of the decoded unicast data bursts (linear, running mean)
         self.save_dir = save_dir
         self.ko_dir = ko_dir        # data bursts that fail to decode are always kept here (debug)
@@ -148,7 +156,7 @@ class UpstreamRx:
 
     def _read(self, n0, n1):
         L = self.buf.size
-        if n0 < 0 or n0 < self.written - L or n1 > self.written:
+        if n0 < max(0, self.valid_from) or n0 < self.written - L or n1 > self.written:
             return None
         i = n0 % L
         if i + (n1 - n0) <= L:
@@ -261,10 +269,25 @@ class UpstreamRx:
         if not self.floor:
             # never from zero-filled samples (an RX gap, or the part of the stream an upstream
             # process skips at its start): a floor of 0 made every block "hot" and every window
-            # a full preamble search, for good (2026-10-10, 2 upstream channels: 100 % CPU)
-            self.floor = lowest or None
-            if self.floor is None:
+            # a full preamble search, for good (2026-10-10, 2 upstream channels: 100 % CPU).
+            # Nor from the near-zero tail of the DDC filter at the edge of such a gap: a floor
+            # of 1e-27 (-270 dBFS) did the same and never recovered, as it is only updated in
+            # quiet windows; that channel then decoded nothing (2026-10-15, 2 B210: the modem
+            # ranging on it unanswered, half of the starts)
+            if lowest < FLOOR_MIN:
                 return
+            self.floor = lowest
+        elif sid == mac.SID_BROADCAST and lowest > self.floor * 1e3:
+            # contention / initial maintenance windows are mostly empty: 20 in a row 30 dB above
+            # the floor means the floor is wrong (a data window full of burst is not counted)
+            self._floor_odd += 1
+            self._floor_odd_min = lowest if self._floor_odd_min is None else min(self._floor_odd_min, lowest)
+            if self._floor_odd >= 20:
+                self.log(f"[US] !! seuil de bruit {10 * np.log10(self.floor):.1f} dBFS aberrant, "
+                         f"repris à {10 * np.log10(self._floor_odd_min):.1f} dBFS")
+                self.floor, self._floor_odd, self._floor_odd_min = self._floor_odd_min, 0, None
+        elif sid == mac.SID_BROADCAST:
+            self._floor_odd, self._floor_odd_min = 0, None
         thr = max(self.floor, 1e-12) * self.gate
         hot = np.nonzero(p > thr)[0]
         unicast = sid != mac.SID_BROADCAST
@@ -373,7 +396,7 @@ class UpstreamRx:
                 np.savez(os.path.join(self.ko_dir, f"nopre_{time.strftime('%H%M%S')}_{start_ts}.npz"),
                          iq=x, fs=self.fs, iuc=iuc, sid=sid, t=-1.0, start_sample=s0 - a,
                          grant_syms=(s1 - s0) / self.demod.sps, frame=np.zeros(0, np.uint8))
-        elif not hot.size:   # quiet window: track the noise floor
+        elif not hot.size and lowest >= FLOOR_MIN:   # quiet window: track the noise floor
             self.floor = 0.9 * self.floor + 0.1 * lowest
         if not found and unicast:
             self.on_burst(BurstEvent(iuc, sid, start_ts))

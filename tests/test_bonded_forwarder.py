@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Downstream unicast with two bonded modems (cmts/bridge.py BondedForwarder): each frame carries
 the DSID of the modem its destination sits behind (the modem itself, or a CPE learned from the
 upstream), its own sequence numbers per DSID, only on the channels that modem acquired;
@@ -24,7 +26,7 @@ class Chan:
     def __init__(self):
         self.data = []
 
-    def send_data(self, pdu):
+    def send_data(self, pdu, t=None):
         self.data.append(pdu)
 
     def backlog(self):

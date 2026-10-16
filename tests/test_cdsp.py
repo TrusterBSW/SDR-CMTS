@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """C kernels of the upstream receiver (cmts/usdsp.c) against the Python references:
 Reed-Solomon (T 3..16, any length, 0..T+2 errors), band-limited interpolation, decision-directed
 tracking (QPSK and a 64-QAM grid, for the ATDMA step), and their speed."""

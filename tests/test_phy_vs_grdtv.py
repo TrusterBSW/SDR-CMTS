@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Cross-check randomizer + RS(204,188) + interleaver against GNU Radio gr-dtv
 (DVB-T outer coding is identical to DVB-C / J.83 Annex A)."""
 import sys, os

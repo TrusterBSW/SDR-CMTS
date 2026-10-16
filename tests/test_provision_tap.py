@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """provision.py through the Linux TAP, without radio: this script plays the modem on cmts0
 (as mini_cmts.py would hand its frames over) and runs DHCP DISCOVER/OFFER/REQUEST/ACK, ARP,
 TFTP of the config file (its MICs checked) and Time of Day.
@@ -72,6 +74,7 @@ def is_udp(eth, sport=None, dport=None):
     return (sport is None or sp == sport) and (dport is None or dp == dport)
 
 
+existed = os.path.exists(f"/sys/class/net/{IFACE}")
 if not ensure_tap(IFACE, print):
     sys.exit("cmts0 impossible à créer")
 br = TapBridge(IFACE, print)                    # carrier up before the servers start
@@ -121,5 +124,9 @@ finally:
     out = prov.communicate(timeout=5)[0]
     print("--- provision.py :")
     print("\n".join("    " + l for l in out.splitlines() if l.startswith("[")))
+if not existed:
+    # (a cmts0 left with 10.10.0.1 on this PC took the traffic meant for the CMTS behind the modem
+    # once, 2026-10-15: every iperf3 / ping to 10.10.0.1 answered locally)
+    subprocess.run(["sudo", "-n", "ip", "link", "del", IFACE], capture_output=True)
 print("PASS" if ok_all else "FAIL")
 sys.exit(0 if ok_all else 1)

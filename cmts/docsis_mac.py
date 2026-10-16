@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """DOCSIS MAC downstream management messages (SYNC, UCD, MAP) and MPEG-TS packing."""
 import struct
 import zlib
@@ -120,7 +122,7 @@ BURST_PROFILES = {
 
 
 _TDMA_PROFILES = {k: dict(v) for k, v in BURST_PROFILES.items()}
-# DOCSIS 2.0 ATDMA (UCD type 29, burst descriptors type 5), laid out like the SFR network's UCD 29
+# DOCSIS 2.0 ATDMA (UCD type 29, burst descriptors type 5), laid out like the UCD 29 of the modem's origin network
 # (capture of 2026-10-06: 5.12 Msym/s, 16-QAM data in IUC 9/10, R-S interleaver off). The preamble
 # is always QPSK (type 1 = QPSK0), whatever the data modulation.
 _ATDMA_DATA = dict(preamble_len=104, preamble_off=192, guard=8, last_cw_short=True, atdma=True)
@@ -547,7 +549,7 @@ def mdd_msg(sa, ccc, current_dcid, ds_channels, us_channel_ids, ip_mode=0, eae=F
     status_events: CM-STATUS event types to enable (TLV 11, one Event Control Encoding each, and
     the upstream bits of TLV 7.2): without TLV 11 the CM never sends a CM-STATUS (MULPIv3.0
     10.4.3.1), whatever the bitmasks say. Only in the MDD of a primary-capable channel.
-    TLV 1 is laid out as in the MDD of the SFR network (Cadant CMTS, capture of 2026-10-06)."""
+    TLV 1 is laid out as in the MDD of the modem's origin network (Cadant CMTS, capture of 2026-10-06)."""
     body = struct.pack(">BBBB", ccc & 0xFF, 1, 1, current_dcid)
     for cid, freq, qam, primary in ds_channels:
         sub = tlv(1, bytes([cid])) + tlv(2, struct.pack(">I", int(freq)))

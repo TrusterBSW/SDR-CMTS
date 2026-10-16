@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Data path and registration without hardware:
   1. a long data burst (IUC 6, a whole DHCP DISCOVER) demodulated and decoded to Ethernet;
   2. REG-REQ -> REG-RSP (SFID, SID, capabilities, CMTS MIC) -> REG-ACK -> online, the REG-RSP

@@ -1,0 +1,30 @@
+# The bench of the mini-cmts service (systemctl enable --now mini-cmts).
+# Keys: the options of the CMTS (mini-cmts --help), --ds-channels -> ds_channels; the sections only
+# group them, except [provisioning] (DHCP / TFTP / ToD: the options of provision.py). An option
+# given on the command line wins over this file. Examples: /usr/share/mini-cmts/configs/
+#
+# Closed coax lab only, with attenuators: NEVER connect this to an operator's network.
+
+[radio]
+sdr = "b210"                # or "bladerf" (bladeRF 2.0 micro: 3 DS + 1 US, see bladerf.toml)
+args = "type=b200"          # UHD device arguments (add ",serial=..." to pick one)
+
+[downstream]
+freq = 306e6                # primary channel (European grid 114 + 8n MHz)
+ds_channels = 4             # 6 with a strong CPU (283 Mbit/s on a 6-core i5-9500): b210.toml
+ds_layout = "around"        # the others on both sides of the primary
+qam = 256
+
+[upstream]
+us_channels = 1             # 2: DOCSIS 3.0 upstream bonding (60 and 53 MHz)
+us_target = -20             # dBFS of the ranged bursts
+
+[provisioning]              # DHCP, TFTP, ToD on the cmts0 bridge
+dns = "1.1.1.1"             # DNS given to the devices behind the modems
+max_cpe = 16
+us_buffer = 131072          # modem upstream buffer (TLV 24.35): shorter ping during an upload
+
+[host]
+all_in_one = true           # the provisioning server too (DHCP / TFTP / ToD on cmts0)
+cpus = "auto"               # all CPUs but the one taking the B210's USB interrupts
+status_http = "127.0.0.1:8090"   # status page; "0.0.0.0:8090" to reach it from the lab network
