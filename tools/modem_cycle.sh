@@ -5,8 +5,8 @@
 # online (DHCP lease on the laptop's modem NIC + ping 9.9.9.9 through it). Prints a timeline.
 #   modem_cycle.sh [off_seconds]
 set -u
-HA=${HA:-http://10.5.1.203:8123}
-PLUG=${PLUG:-switch.0x70b3d52b600443a8}
+HA=${HA:?HA=http://<home-assistant>:8123 : adresse de Home Assistant}
+PLUG=${PLUG:?PLUG=switch.<prise> : la prise connectée du modem}
 NIC=${NIC:-enp0s20f0u4}
 CON=${CON:-origin-lab}        # NetworkManager connection of the PC behind the modem on its origin network
 off=${1:-10}

@@ -58,7 +58,7 @@ sudo apt install python3-numpy python3-scipy python3-uhd uhd-host gcc iproute2
 # Arch Linux
 sudo pacman -S python-numpy python-scipy libuhd gcc iproute2
 sudo uhd_images_downloader -t b2xx
-git clone <this repository> && cd sdr-cmts
+git clone https://github.com/TrusterBSW/SDR-CMTS.git && cd SDR-CMTS
 python3 tests/run.py                # every test that needs no radio (a few minutes)
 ```
 

@@ -1,6 +1,6 @@
 # sdr-cmts — un CMTS EuroDOCSIS logiciel sur USRP B210 (ou bladeRF)
 
-*[English version: README.md](README.md)*
+*[English version: README.md](README.md)* · https://github.com/TrusterBSW/SDR-CMTS
 
 Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C. Il pilote un ou plusieurs
 **USRP B210** Ettus/NI (ou un **bladeRF 2.0 micro** de Nuand) et met **en ligne** un vrai modem câble, non modifié, dans un labo fermé :

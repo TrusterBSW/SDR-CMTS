@@ -13,7 +13,7 @@ sdr-cmts is **dual-licensed**:
    modifications private while offering it as a service, or any other arrangement. Terms on request.
 
 Copyright © 2026 BILLY Rémi. To ask for a commercial licence, open an issue titled
-"Commercial licence" on the project's repository, or contact the author through their GitHub profile.
+"Commercial licence" on https://github.com/TrusterBSW/SDR-CMTS/issues, or contact the author through their GitHub profile.
 
 Dependencies keep their own licences and are not included in this repository: UHD (GPL-3.0),
 libbladeRF (LGPL-2.1 / GPL-2.0 parts), NumPy and SciPy (BSD-3-Clause), GNU Radio for some tests
@@ -36,7 +36,7 @@ sdr-cmts est sous **double licence** :
    Conditions sur demande.
 
 Copyright © 2026 BILLY Rémi. Pour une licence commerciale : ouvrir une issue intitulée
-« Commercial licence » sur le dépôt du projet, ou contacter l'auteur par son profil GitHub.
+« Commercial licence » sur https://github.com/TrusterBSW/SDR-CMTS/issues, ou contacter l'auteur par son profil GitHub.
 
 Les dépendances gardent leurs propres licences et ne sont pas incluses dans ce dépôt : UHD
 (GPL-3.0), libbladeRF (LGPL-2.1 / parties GPL-2.0), NumPy et SciPy (BSD-3-Clause), GNU Radio pour

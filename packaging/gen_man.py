@@ -150,7 +150,7 @@ def main():
         w(f".TP\n.B {esc(cmd)}\n{esc(what)}\n")
     w('.SH "SEE ALSO"\n.BR uhd_find_devices (1),\n.BR uhd_usrp_probe (1),\n.BR bladeRF\\-cli (1),\n'
       ".BR systemctl (1),\n.BR journalctl (1)\n.PP\n"
-      + esc("/usr/share/doc/sdr-cmts/docs/INSTALL.md, BLADERF.md") + "\n")
+      + esc("/usr/share/doc/sdr-cmts/docs/INSTALL.md, BLADERF.md; https://github.com/TrusterBSW/SDR-CMTS") + "\n")
     w(".SH LICENSE\n" + esc("GNU Affero General Public License v3.0 only, or a commercial licence from the "
                             "copyright holder: see /usr/share/doc/sdr-cmts/COMMERCIAL.md. DOCSIS and EuroDOCSIS "
                             "are trademarks of CableLabs; this project is not affiliated with or endorsed by "

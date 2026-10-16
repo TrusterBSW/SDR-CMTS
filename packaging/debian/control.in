@@ -4,6 +4,7 @@ Architecture: all
 Maintainer: BILLY Rémi <byhoster.association@gmail.com>
 Section: hamradio
 Priority: optional
+Homepage: https://github.com/TrusterBSW/SDR-CMTS
 Depends: python3 (>= 3.11), python3-numpy, python3-scipy, gcc, libc6-dev, iproute2, sudo, adduser
 Recommends: python3-uhd, uhd-host
 Suggests: bladerf, libbladerf2, bladerf-fpga-hostedxa4, tshark, iperf3

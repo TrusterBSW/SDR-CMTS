@@ -293,7 +293,8 @@ form input, form select { font:inherit; padding:3px 6px; border:1px solid var(--
   <div id="cfgmsg" class="msg"></div></div></section>
 </main>
 <footer class="muted" style="padding:0 16px 16px;font-size:12px">sdr-cmts @VERSION@ · GNU AGPL v3.0
-  (ou licence commerciale) · <a href="source.tar.gz" style="color:inherit">code source</a></footer>
+  (ou licence commerciale) · <a href="source.tar.gz" style="color:inherit">code source</a> ·
+  <a href="https://github.com/TrusterBSW/SDR-CMTS" style="color:inherit">projet</a></footer>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
