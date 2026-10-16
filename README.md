@@ -12,7 +12,8 @@ runs as a systemd service, with a status page in the browser.
 As far as we know there was no open-source CMTS able to do this with a low-cost SDR: this project
 exists to learn DOCSIS hands-on and to let others do the same.
 
-**Status: experimental lab tool.** Validated with one modem (Sagem F@st 3686, DOCSIS 3.0).
+**Status: experimental lab tool.** Validated with one modem: a Sagem F@st 3686 (DOCSIS 3.0) running
+the SFR operator firmware (FAST3686_SFR-PC20_3.649.0); every measurement below was made with it.
 
 ## Results (Sagem F@st 3686 modem; one B210: 6-core i5-9500 host, 2026-10-12)
 

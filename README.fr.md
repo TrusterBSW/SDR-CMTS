@@ -12,7 +12,8 @@ Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C.
 À notre connaissance, aucun CMTS libre ne faisait cela avec un SDR bon marché. Le projet sert à
 apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
 
-**État : outil de labo expérimental.** Validé avec un modem (Sagem F@st 3686, DOCSIS 3.0).
+**État : outil de labo expérimental.** Validé avec un seul modem : un Sagem F@st 3686 (DOCSIS 3.0)
+sous firmware de l'opérateur SFR (FAST3686_SFR-PC20_3.649.0) ; toutes les mesures ci-dessous ont été faites avec lui.
 
 ## Résultats (modem Sagem F@st 3686 ; un B210 : hôte i5-9500 6 cœurs, 12/10/2026)
 
