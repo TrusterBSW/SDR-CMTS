@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-# Builds the Debian package of mini-cmts (needs only dpkg-deb): ./packaging/build-deb.sh [out dir]
+# Builds the Debian package of mini-cmts (needs dpkg-deb, python3 and NumPy for the manual page):
+#   ./packaging/build-deb.sh [out dir]
 #   -> mini-cmts_<VERSION>_all.deb
 #   sudo apt install ./mini-cmts_<VERSION>_all.deb      (pulls the dependencies)
 # Architecture all: Python and C sources; the C kernels are compiled by postinst for the CPU of
@@ -34,6 +35,9 @@ install -m 644 docs/*.md "$ROOT/usr/share/doc/mini-cmts/docs/"
   printf 'Files: *\nCopyright: 2026 BILLY Rémi\nLicense: AGPL-3.0-only\n'
   sed -e 's/^$/./' -e 's/^/ /' LICENSE; } > "$ROOT/usr/share/doc/mini-cmts/copyright"
 install -m 644 COMMERCIAL.md CONTRIBUTING.md "$ROOT/usr/share/doc/mini-cmts/"
+# man mini-cmts: written from the option parsers (packaging/gen_man.py), so never out of date
+install -d "$ROOT/usr/share/man/man1"
+python3 packaging/gen_man.py | gzip -9n > "$ROOT/usr/share/man/man1/mini-cmts.1.gz"
 # no per-file backups or build products in the package
 find "$ROOT" \( -name '*_pre_*' -o -name '*.so' -o -name '__pycache__' \) -prune -exec rm -rf {} +
 

@@ -30,7 +30,7 @@ uniquement.
 ## 2a. Le paquet Debian
 
 ```bash
-./packaging/build-deb.sh            # -> mini-cmts_<version>_all.deb (demande seulement dpkg-deb)
+./packaging/build-deb.sh            # -> mini-cmts_<version>_all.deb (demande dpkg-deb, python3, NumPy)
 sudo apt install ./mini-cmts_*_all.deb
 sudo uhd_images_downloader -t b2xx  # images FPGA du B210, une fois (uhd-host)
 ```
@@ -44,7 +44,7 @@ Ce qu'il installe :
 
 | Chemin | Quoi |
 |---|---|
-| `/usr/bin/mini-cmts` | le CMTS (`mini_cmts.py`), mêmes options |
+| `/usr/bin/mini-cmts` | le CMTS (`mini_cmts.py`), mêmes options ; `man mini-cmts` les décrit toutes |
 | `/usr/lib/mini-cmts/` | le code, `tools/bladerf_check.py`, `tools/clock_drift.py` |
 | `/etc/mini-cmts/mini-cmts.toml` | le banc du service (gardé lors des mises à jour) |
 | `/usr/share/mini-cmts/configs/` | exemples : `b210.toml` (6 DS + 2 US), `2xb210.toml`, `bladerf.toml` |

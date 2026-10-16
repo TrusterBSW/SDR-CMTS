@@ -1561,7 +1561,7 @@ class _ArgsFileParser(argparse.ArgumentParser):
 def parser():
     ap = _ArgsFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
                          fromfile_prefix_chars="@")
-    ap.add_argument("--config", metavar="BANC.toml",
+    ap.add_argument("--config", metavar="BENCH.toml",
                     help="bench description in TOML (configs/*.toml, cmts/tomlconf.py): sections [radio], "
                          "[downstream], [upstream], [host]... with the option names as keys, [provisioning] "
                          "for provision.py; options given on the command line win")

@@ -27,7 +27,7 @@ the cabling: read the **Safety** part of the README first. Closed coax only.
 ## 2a. The Debian package
 
 ```bash
-./packaging/build-deb.sh            # -> mini-cmts_<version>_all.deb (needs only dpkg-deb)
+./packaging/build-deb.sh            # -> mini-cmts_<version>_all.deb (needs dpkg-deb, python3, NumPy)
 sudo apt install ./mini-cmts_*_all.deb
 sudo uhd_images_downloader -t b2xx  # B210 FPGA images, once (uhd-host)
 ```
@@ -40,7 +40,7 @@ What it installs:
 
 | Path | What |
 |---|---|
-| `/usr/bin/mini-cmts` | the CMTS (`mini_cmts.py`), same options |
+| `/usr/bin/mini-cmts` | the CMTS (`mini_cmts.py`), same options; `man mini-cmts` describes them all |
 | `/usr/lib/mini-cmts/` | the code, `tools/bladerf_check.py`, `tools/clock_drift.py` |
 | `/etc/mini-cmts/mini-cmts.toml` | the bench of the service (kept on upgrade) |
 | `/usr/share/mini-cmts/configs/` | examples: `b210.toml` (6 DS + 2 US), `2xb210.toml`, `bladerf.toml` |
