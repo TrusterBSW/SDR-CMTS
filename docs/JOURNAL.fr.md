@@ -841,3 +841,12 @@ un terminal (qui signale tout le groupe de processus). L'unité passe en `KillMo
 **Fausse alerte au démarrage à deux B210.** À chaque démarrage, la MAC remplissait l'anneau de la suiveuse
 pendant que celle-ci ouvrait son B210 (~0,8 s), d'où « !! 435 blocs jetés ». La suiveuse jetait ces blocs de
 toute façon. Elle n'en reçoit plus avant d'être à l'antenne.
+
+## Speedtest par Internet : les interruptions réseau sur un cœur du CMTS (16/10/2026)
+
+Les iperf contre 10.10.0.1 ne passent pas par la carte réseau de l'hôte. Un speedtest par Internet, si : NAT,
+interruptions de la carte, traitement de réception du noyau (softirq NET_RX), qui passe avant tout fil temps réel.
+Sur le 9500, tout ce travail tombait sur un cœur du CMTS : blocage d'émission de 72 ms et 3 canaux perdus.
+`--irq-herd` envoyait les interruptions vers le jumeau hyperthread du cœur USB, et l'i5-9500 n'en a pas : rien
+n'était déplacé, avec un message trompeur. Sans hyperthreading, elles vont maintenant sur le cœur USB lui-même,
+que `--cpus auto` laisse déjà libre : plus aucun incident pendant les speedtests.

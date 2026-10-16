@@ -781,6 +781,17 @@ def herd_irqs(irq_cpus):
     return f"interruptions : {moved} déplacées sur les CPU {target}, {failed} non déplaçables (gérées par le noyau)"
 
 
+def irq_target():
+    """Where the other interrupts go (--irq-herd): the other hyperthread of the core taking the
+    B210's USB interrupts (on that CPU itself the network card's interrupts would compete with the
+    B210's); without SMT, that CPU itself, which --cpus auto leaves free anyway. Left where the
+    kernel put them, the network card's interrupts and their receive work (NET_RX softirq, run
+    before any real-time thread) landed on a CMTS core: on the i5-9500 (no SMT) a speedtest from the
+    Internet stalled the radio 72 ms and the modem lost 3 channels (2026-10-16); on CPU 0: none."""
+    usb = usb_irq_cpus(siblings=False)
+    return (usb_irq_cpus() - usb) or usb
+
+
 def usb_irq_cpus(siblings=True):
     """CPUs that serve the USB host controllers' interrupts, with their SMT siblings."""
     cpus = set()
@@ -1204,9 +1215,7 @@ def run_usrp(a):
         start_provision(a)
     log(pin_cpus(a.cpus))
     if a.cpus == "auto" and a.irq_herd:
-        # onto the USB core's other hyperthread only: on the USB CPU itself, the network card's
-        # interrupts (fast.com traffic) would compete with the B210's
-        log(herd_irqs(usb_irq_cpus() - usb_irq_cpus(siblings=False)))
+        log(herd_irqs(irq_target()))
     log(cdsp.status())
     log(raise_priority(a.rt_prio))
     bat = on_battery()
