@@ -129,7 +129,8 @@ def main():
     w(".PP\n" + esc("Other SDR_CMTS_* variables are diagnostics described where the code reads them.") + "\n")
     w(".SH \"EXIT STATUS\"\n")
     for code, what in (("0", "stopped normally (Ctrl+C, systemctl stop)"),
-                       ("1", "could not start (no SDR found, TAP interface, bench file refused...)"),
+                       ("1", "could not start (no SDR found, TAP interface, bench file refused, /dev/shm too "
+                              "small for the rings between the processes: docker run --shm-size=1g...)"),
                        ("2", "command line options refused"),
                        ("3", "the radio was lost while running (SDR unplugged): the service starts it again 15 s later")):
         w(f".TP\n.B {code}\n{esc(what)}\n")

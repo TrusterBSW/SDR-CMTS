@@ -61,6 +61,11 @@ def main():
         print(f"{verdict} {name:34s} {dt:6.1f} s" + (f"  ({why})" if why else ""), flush=True)
         if a.verbose or verdict == "FAIL":
             print("     " + out.strip().replace("\n", "\n     "), flush=True)
+        if verdict == "FAIL" and os.environ.get("GITHUB_ACTIONS"):
+            # an annotation: readable on the run's page and through the API without the logs
+            tail = "\n".join(out.strip().splitlines()[-25:])
+            tail = tail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+            print(f"::error title={name}::{tail}", flush=True)
     print(f"\n{len(res['PASS'])} réussis, {len(res['FAIL'])} en échec, {len(res['SKIP'])} sautés "
           f"en {time.monotonic() - t_all:.0f} s" + (f" ; échecs : {', '.join(res['FAIL'])}" if res["FAIL"] else ""))
     return 1 if res["FAIL"] else 0

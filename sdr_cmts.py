@@ -53,7 +53,7 @@ from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
 from cmts.pcap import PcapWriter
 from cmts.sdrdev import BLADERF2_RX_MIN_HZ, TX_CAL_RX_BW
-from cmts.usproc import RemoteUpstream, SampleRing
+from cmts.usproc import RemoteUpstream, SampleRing, ShmError
 from cmts.stallwatch import StallWatch
 from cmts import termcolor
 from cmts.ranging import CmtsCore
@@ -1842,7 +1842,11 @@ def main(argv=None):
     if a.sim:
         res = run_sim(a, log)
         return 0 if res["state"] == "ranged" else 1
-    rc = run_usrp(a)
+    try:
+        rc = run_usrp(a)
+    except ShmError as e:
+        log(f"!! {e}")
+        return 1
     if rc == RESTART:                             # asked by the status page: the same command again
         atexit._run_exitfuncs()                   # provision.py, latency holder: stopped first
         sys.stdout.flush()

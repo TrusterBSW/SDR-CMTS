@@ -49,7 +49,7 @@ from multiprocessing import shared_memory
 
 import numpy as np
 
-from cmts.usproc import attach_shm
+from cmts.usproc import attach_shm, create_shm
 
 TS_LEN = 188
 GROUP = 8                     # TS packets per J.83-A randomization cycle (and 8 x 204 = 136 x 12 bytes)
@@ -133,8 +133,8 @@ class PacketRing:
         size = slots * nch * block * TS_LEN
         if attach is None:
             ctx = ctx or mp.get_context("spawn")
-            self.shm = shared_memory.SharedMemory(create=True, size=size)
-            self.seq_shm = shared_memory.SharedMemory(create=True, size=8 * slots)
+            self.shm = create_shm(size, "l'anneau des blocs TS d'une radio")
+            self.seq_shm = create_shm(8 * slots, "l'anneau des blocs TS d'une radio")
             self.free, self.full = ctx.Semaphore(slots), ctx.Semaphore(0)
             self._own = True
         else:

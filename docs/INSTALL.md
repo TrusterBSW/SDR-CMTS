@@ -21,6 +21,9 @@ only (8 MHz channels; North American DOCSIS is not implemented).
   50 by default). The Debian package allows it to the `usrp` group (`/etc/security/limits.d/99-sdr-cmts.conf`)
   and to the service; from the sources: `sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40` in the
   shell that starts it, or the same limits.d lines.
+- **Shared memory**: the rings between the processes take a few hundred MB of `/dev/shm`
+  (~110 MB for the upstream ring alone). A normal Linux gives half the RAM; a Docker container
+  only 64 MB: `docker run --shm-size=1g`. Too small, the CMTS says so at start (exit code 1).
 - `sudo` without a password for the user that starts it, or run it as root: it creates the TAP
   `cmts0`, moves interrupts away from the B210's USB core, sets the CPU governor, runs
   `provision.py` (DHCP, TFTP, ToD on privileged ports).

@@ -24,6 +24,10 @@ implémenté).
   (`/etc/security/limits.d/99-sdr-cmts.conf`) et au service ; depuis les sources :
   `sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40` dans le shell qui le lance, ou les mêmes
   lignes dans limits.d.
+- **Mémoire partagée** : les anneaux entre les processus prennent quelques centaines de Mo de
+  `/dev/shm` (~110 Mo pour le seul anneau montant). Un Linux normal en donne la moitié de la RAM ;
+  un conteneur Docker seulement 64 Mo : `docker run --shm-size=1g`. Trop petit, le CMTS le dit au
+  démarrage (code 1).
 - `sudo` sans mot de passe pour l'utilisateur qui le lance, ou le lancer en root : il crée le TAP
   `cmts0`, éloigne les interruptions du cœur de l'USB du B210, règle le gouverneur du processeur,
   lance `provision.py` (DHCP, TFTP, ToD sur des ports privilégiés).

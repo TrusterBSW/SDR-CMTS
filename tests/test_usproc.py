@@ -36,7 +36,8 @@ if __name__ == "__main__":
         if ev.burst is not None:
             ev_done.set()
     logs = []
-    rx = RemoteUpstream(fs, decim, 5.12e6, tb, 256, on_burst, "atdma", 6, log=logs.append)
+    # 0.15 s of history: the test pushes 0.04 s; the rings then fit a container's 64 MB /dev/shm
+    rx = RemoteUpstream(fs, decim, 5.12e6, tb, 256, on_burst, "atdma", 6, history_s=0.15, log=logs.append)
     rx.start()
     z = np.load(os.path.join(os.path.dirname(__file__), "data", "sagem3686", "atdma64_5m12_long_1.npz"))
     rng = np.random.default_rng(0)
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     for wmcr, wdec, up_p, up_q, factor in ((mcr, 1, 2, 1, 2), (55.616e6, 3, 4, 3, 1), (48.664e6, 2, 7, 4, 2)):
         wfs = wmcr / wdec
         wtb = Timebase(wmcr, 0, 8)
-        ring = SampleRing(wfs, wdec, history_s=1.0)
+        ring = SampleRing(wfs, wdec, history_s=0.15)
         got2 = {1: [], 2: []}
         done2 = {1: threading.Event(), 2: threading.Event()}
 

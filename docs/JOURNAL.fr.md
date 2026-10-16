@@ -880,3 +880,12 @@ dans les README avec la mention d'usage. Le projet est **EuroDOCSIS uniquement**
 l'annexe B du DOCSIS nord-américain n'a jamais été écrite. Les deux PVE sont passés de `mini-cmts` à `sdr-cmts`
 (banc et journaux du service repris). Évolutions souhaitées notées dans la feuille de route des README : SDR CM,
 ZeroMQ entre le CMTS et le SDR CM, CMTS réparti sur plusieurs PC.
+
+## Publication et première CI (16/10/2026)
+
+Le projet est sur https://github.com/TrusterBSW/SDR-CMTS (historique complet). La première CI a échoué sans qu'on
+puisse lire ses journaux (droits d'administrateur requis). Rejouée dans un conteneur Ubuntu 24.04, elle a montré un
+vrai défaut : la radio mourait d'un SIGBUS en écrivant l'anneau montant, plus grand que le `/dev/shm` de 64 Mo de
+Docker. Un tmpfs n'échoue pas à la création d'un segment trop grand, seulement à la première écriture au-delà de la
+place. Les mémoires partagées sont maintenant réservées dès leur création : le manque de place est dit au démarrage.
+Les tests en échec sur GitHub laissent la fin de leur sortie en annotation, lisible par tous.

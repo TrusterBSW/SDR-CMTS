@@ -43,6 +43,9 @@ with tempfile.TemporaryDirectory() as d:
         out, _ = p.communicate()
         check("le CMTS s'arrête seul", False, "toujours là 60 s après (bloqué)")
 dt = time.monotonic() - t0
+if "/dev/shm trop petit" in out:               # a container with a small /dev/shm: nothing to test
+    print("SKIP (/dev/shm trop petit pour les anneaux : --shm-size=1g)")
+    sys.exit(0)
 check("le CMTS s'arrête seul après la perte de la radio", p.returncode is not None and dt < 45, f"{dt:.0f} s")
 check("code de sortie 3 (radio perdue) : systemd le relance", p.returncode == 3, f"code {p.returncode}")
 check("débranchement vu et arrêt journalisé", "[SIM] débranchement" in out and "processus radio arrêté" in out

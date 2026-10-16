@@ -37,6 +37,34 @@ _GRING = 1 << 16                     # MAP intervals in flight (start, end, IUC,
 DDC_TAPS = 63
 
 
+class ShmError(RuntimeError):
+    """Not enough room in /dev/shm for the shared rings (said at start, instead of a SIGBUS later)."""
+
+
+def create_shm(size, what):
+    """A new shared memory segment of `size` bytes with its pages reserved now (posix_fallocate):
+    /dev/shm is a tmpfs, and a segment created larger than the room left there only fails when a
+    page beyond it is first written. The radio process then died of a SIGBUS without a word
+    (Docker's default /dev/shm is 64 MB; the upstream ring alone is ~110 MB; 2026-10-16)."""
+    import os
+    import shutil
+    shm = shared_memory.SharedMemory(create=True, size=size)
+    try:
+        os.posix_fallocate(shm._fd, 0, size)
+    except (OSError, AttributeError) as e:
+        if isinstance(e, AttributeError):        # no file descriptor to reserve on: as before
+            return shm
+        shm.close()
+        shm.unlink()
+        try:
+            free = shutil.disk_usage("/dev/shm").free / 1e6
+        except OSError:
+            free = 0
+        raise ShmError(f"/dev/shm trop petit : {size / 1e6:.0f} Mo nécessaires pour {what}, {free:.0f} Mo libres "
+                       f"(dans Docker : --shm-size=1g ; ailleurs : agrandir le tmpfs /dev/shm)") from e
+    return shm
+
+
 def attach_shm(name):
     """Attach to a segment another process created, without registering it with the resource
     tracker, which would unlink it when this process exits. track=False is Python 3.13+; before
@@ -62,8 +90,8 @@ class SampleRing:
         self.fs, self.decim = fs, decim
         if attach is None:
             n = int(history_s * fs)
-            self.shm = shared_memory.SharedMemory(create=True, size=n * 8)
-            self.ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 2)
+            self.shm = create_shm(n * 8, "l'anneau d'échantillons montants")
+            self.ctl_shm = create_shm(8 * 2, "l'anneau d'échantillons montants")
         else:
             name, ctl_name, n = attach
             self.shm = attach_shm(name)
@@ -148,8 +176,8 @@ class RemoteUpstream:
         self.fs, self.decim, self.tb = fs, decim, timebase
         self.on_burst = on_burst
         self.log = log
-        self._ctl_shm = shared_memory.SharedMemory(create=True, size=8 * 5)
-        self._g_shm = shared_memory.SharedMemory(create=True, size=8 * 4 * _GRING)
+        self._ctl_shm = create_shm(8 * 5, "un récepteur montant")
+        self._g_shm = create_shm(8 * 4 * _GRING, "un récepteur montant")
         self.ctl = np.ndarray(5, np.int64, self._ctl_shm.buf)
         self.ctl[:] = (0, -1, 0, 0, 0)
         self.gring = np.ndarray((_GRING, 4), np.int64, self._g_shm.buf)
