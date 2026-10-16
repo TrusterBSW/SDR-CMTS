@@ -5,7 +5,7 @@
 Contributions are welcome: bug reports with the CMTS log (`captures/cmts_*.log`), tests, fixes,
 support for other radios or modems.
 
-Because mini-cmts is also offered under a commercial licence (see `COMMERCIAL.md`), the copyright
+Because sdr-cmts is also offered under a commercial licence (see `COMMERCIAL.md`), the copyright
 holder needs the right to relicense every part of it. By submitting a contribution (pull request,
 patch or code in an issue), you agree that:
 
@@ -26,7 +26,7 @@ network.
 Les contributions sont les bienvenues : rapports de bogue avec le journal du CMTS
 (`captures/cmts_*.log`), tests, corrections, prise en charge d'autres radios ou modems.
 
-mini-cmts étant aussi proposé sous licence commerciale (voir `COMMERCIAL.md`), le titulaire des
+sdr-cmts étant aussi proposé sous licence commerciale (voir `COMMERCIAL.md`), le titulaire des
 droits doit pouvoir en relicencier chaque partie. En proposant une contribution (pull request,
 correctif ou code dans une issue), vous acceptez que :
 

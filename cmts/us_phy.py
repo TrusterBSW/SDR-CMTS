@@ -356,8 +356,8 @@ class BurstDemod:
         self.prof = profiles()
         self.invert_first = False
         # segment bursts of a modem with a cached equalizer: decoded whole in C (_seg_fast);
-        # MINI_CMTS_US_FAST=0 keeps the Python path for every burst. n_fast: outcomes by status
-        self.fast = cdsp.AVAILABLE and os.environ.get("MINI_CMTS_US_FAST", "1") != "0"
+        # SDR_CMTS_US_FAST=0 keeps the Python path for every burst. n_fast: outcomes by status
+        self.fast = cdsp.AVAILABLE and os.environ.get("SDR_CMTS_US_FAST", "1") != "0"
         self.n_fast = {}
         self._fast_tabs = {}
         # Equalizer per modem (detect(eq_key=SID)): the coax channel is static, so the taps

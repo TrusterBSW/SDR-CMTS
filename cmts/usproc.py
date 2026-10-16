@@ -3,11 +3,11 @@
 """Upstream receiver in a process of its own.
 
 The upstream worker (MAP windows, preamble search, equalizer, decoding) used to be a thread of
-mini_cmts.py. Under load it needed ~0.8 core of Python and shared the GIL with the downstream
+sdr_cmts.py. Under load it needed ~0.8 core of Python and shared the GIL with the downstream
 encoder, shaper and bridge threads: on 2026-10-09 it fell up to 1 s behind (the RX buffer
 length), which delayed every upstream frame and pushed the loaded latency to 1.1 s.
 
-RemoteUpstream has the interface mini_cmts.py uses of cmts.upstream.UpstreamRx, but:
+RemoteUpstream has the interface sdr_cmts.py uses of cmts.upstream.UpstreamRx, but:
   - push() (RX thread) writes the samples into a shared-memory ring;
   - add_grants() (downstream thread) writes the MAP intervals into a shared ring;
   - a spawned process runs the real UpstreamRx on that ring and sends back its BurstEvents,
@@ -312,9 +312,9 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
                              log=lambda s: q_out.put(("log", s)), buf=buf, **p["rx_kwargs"])
     ctl[_ALIVE] = 1
     t_stats = time.monotonic() + 0.5
-    debug = bool(os.environ.get("MINI_CMTS_US_DEBUG"))     # diagnostic: ring/window positions every 2 s
+    debug = bool(os.environ.get("SDR_CMTS_US_DEBUG"))     # diagnostic: ring/window positions every 2 s
     t_debug = 0.0
-    # garbage collector pauses, per generation, in the timing statistics (MINI_CMTS_TIMING)
+    # garbage collector pauses, per generation, in the timing statistics (SDR_CMTS_TIMING)
     import gc
     gc_t0 = [0.0]
 
@@ -328,8 +328,8 @@ def _worker_main(ring_name, rctl_name, ctl_name, g_name, q_in, q_out, p):
             m = rx.timing.setdefault(f"gc{info['generation']}_max", [1, 0.0])
             m[1] = max(m[1], time.perf_counter() - gc_t0[0])
     gc.callbacks.append(gc_cb)
-    # diagnostic: MINI_CMTS_PROFILE_US=<file> profiles this process (pstats <file>.<pid>, every 20 s)
-    prof_path = os.environ.get("MINI_CMTS_PROFILE_US")
+    # diagnostic: SDR_CMTS_PROFILE_US=<file> profiles this process (pstats <file>.<pid>, every 20 s)
+    prof_path = os.environ.get("SDR_CMTS_PROFILE_US")
     prof = None
     if prof_path:
         import cProfile

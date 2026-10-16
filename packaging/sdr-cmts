@@ -1,0 +1,6 @@
+#!/bin/sh
+# sdr-cmts: the CMTS (sdr_cmts.py) installed by the Debian package; same options.
+#   sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml
+#   sdr-cmts --help
+# The logs and captures go to ./captures (the service: /var/lib/sdr-cmts/captures).
+exec python3 /usr/lib/sdr-cmts/sdr_cmts.py "$@"

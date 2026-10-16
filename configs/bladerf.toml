@@ -1,6 +1,6 @@
 # A Nuand bladeRF 2.0 micro instead of the B210: 3 DS + 1 US (138 / 24.5 Mbit/s), docs/BLADERF.md.
 # TX1 to the modem, RX1 for the upstream. Check the board first: python3 tools/bladerf_check.py --loop
-#   python3 mini_cmts.py --all-in-one --config configs/bladerf.toml
+#   python3 sdr_cmts.py --all-in-one --config configs/bladerf.toml
 
 [radio]
 sdr = "bladerf"

@@ -20,7 +20,7 @@ Debian 12, libbladeRF 2.4.1, FPGA du bladeRF 0.14.0.
 
 ```bash
 python3 tools/bladerf_check.py --loop        # carte, versions, USB 3, gains, 10 s TX+RX, retard TX->RX
-python3 mini_cmts.py --all-in-one @configs/bladerf.args
+python3 sdr_cmts.py --all-in-one @configs/bladerf.args
 ```
 Câblage : **TX1** vers le coax du modem (comme la TX/RX du B210), **RX1** pour le montant (comme
 son RX2), par les mêmes coupleurs et le même atténuateur.
@@ -62,7 +62,7 @@ son RX2), par les mêmes coupleurs et le même atténuateur.
   `bladeRF-cli -l /usr/share/Nuand/bladeRF/hostedxA4.rbf` (ou installer libbladeRF ≥ 2.6).
 - **L'énumération `bladerf_format` a changé** : `SC16_Q11_META` vaut 1 jusqu'à libbladeRF 2.5 et 2
   à partir de 2.6 (`SC16_Q11_PACKED` inséré avant). Choisi d'après `bladerf_version()` ;
-  `MINI_CMTS_BLADERF_META_FORMAT` le force.
+  `SDR_CMTS_BLADERF_META_FORMAT` le force.
 - **Un gain réglé avant l'activation du module est ignoré** (libbladeRF 2.4.1 répond « succès ») :
   réglé de nouveau une fois les modules actifs ; le journal affiche les gains réellement en place.
 - **Lire avec `RX_NOW` à chaque fois** rendait les quelques échantillons déjà arrivés (~50 par

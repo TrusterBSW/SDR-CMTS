@@ -10,7 +10,7 @@
 # Run on the PC behind the modem. CMTS_HOST: the CMTS host (ssh root), CLIENT_IP: this PC's
 # address behind the modem; iperf3 -s must listen on 10.10.0.1 on the CMTS host. LOG: the CMTS log
 # on that host (default: the one named in /root/cmts-tools/<run>.out; the Debian package's service
-# writes /var/lib/mini-cmts/captures/cmts_<date>_<time>.log).
+# writes /var/lib/sdr-cmts/captures/cmts_<date>_<time>.log).
 run=${1:?usage: tools/burst_test.sh <nom du run> [N] [IDLE]}; n=${2:-3}; idle=${3:-240}
 host=${CMTS_HOST:-10.5.1.3}; client=${CLIENT_IP:-10.10.0.11}
 L=${LOG:-$(ssh root@$host "echo /root/mini-cmts-multi/\$(head -1 /root/cmts-tools/$run.out | awk '{print \$2}')")}

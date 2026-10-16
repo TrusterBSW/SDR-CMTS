@@ -1,4 +1,4 @@
-# Passation — mini-CMTS (état au 12/10/2026 au soir)
+# Passation — sdr-cmts (état au 12/10/2026 au soir)
 
 ## 1. Où on en est
 
@@ -76,7 +76,7 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
 
 - **Fichiers de configuration** (`configs/*.args`) : une ou plusieurs options par ligne, avec des commentaires `#`.
   - On peut ajouter d'autres options après le fichier, et la dernière l'emporte : `run.sh essai3 @configs/defaut.args --us-channels 1`.
-  - Ne pas mettre `stop.sh` et le démarrage dans une même commande `ssh '…'` qui contient « mini_cmts » : `stop.sh` tuerait la session ssh.
+  - Ne pas mettre `stop.sh` et le démarrage dans une même commande `ssh '…'` qui contient « sdr_cmts » : `stop.sh` tuerait la session ssh.
 - **Journal court** (lignes d'état toutes les 5 s, enregistrements, alertes) : `/root/cmts-tools/<nom>.out`.
   - Suivi : `tail -f /root/cmts-tools/essai1.out`.
   - Dans la ligne d'état :
@@ -170,7 +170,7 @@ setsid -f /root/cmts-tools/run_multi.sh essai2 @configs/multi-b210.args  # branc
     echo 0 > /proc/irq/97/smp_affinity_list
     echo 1 > /proc/irq/106/smp_affinity_list
     ```
-- **« US: bruit −303 dBFS »** dans la ligne d'état : avant le 15/10, c'était un seuil de bruit bloqué près de zéro, et ce canal ne décodait plus rien. C'est corrigé ; s'il réapparaît, `MINI_CMTS_US_DEBUG=1` affiche les positions de l'anneau toutes les 2 s.
+- **« US: bruit −303 dBFS »** dans la ligne d'état : avant le 15/10, c'était un seuil de bruit bloqué près de zéro, et ce canal ne décodait plus rien. C'est corrigé ; s'il réapparaît, `SDR_CMTS_US_DEBUG=1` affiche les positions de l'anneau toutes les 2 s.
 - **`tests/test_provision_tap.py`** crée `cmts0` en 10.10.0.1 sur la machine qui le lance. Sur le portable, cette interface captait tout le trafic destiné au vrai CMTS. Le test la supprime maintenant s'il l'a créée.
 - **Page d'état du modem** (192.168.100.1, accès par le bouton WPS) : niveau et SNR de chaque canal, et puissance montante. C'est le meilleur outil pour régler les niveaux.
 

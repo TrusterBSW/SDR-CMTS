@@ -1,6 +1,0 @@
-#!/bin/sh
-# mini-cmts: the CMTS (mini_cmts.py) installed by the Debian package; same options.
-#   mini-cmts --config /etc/mini-cmts/mini-cmts.toml
-#   mini-cmts --help
-# The logs and captures go to ./captures (the service: /var/lib/mini-cmts/captures).
-exec python3 /usr/lib/mini-cmts/mini_cmts.py "$@"

@@ -4,7 +4,7 @@
 simulated modem (real RNG-REQ / REQ bursts as IQ) -> UpstreamRx -> CmtsCore -> RNG-RSP."""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import mini_cmts
+import sdr_cmts
 
 CASES = [
     ("nominal", []),
@@ -17,8 +17,8 @@ CASES = [
 ]
 ok_all = True
 for name, extra in CASES:
-    a = mini_cmts.parser().parse_args(["--sim", "2.5"] + extra)
-    r = mini_cmts.run_sim(a, log=lambda *x: None)
+    a = sdr_cmts.parser().parse_args(["--sim", "2.5"] + extra)
+    r = sdr_cmts.run_sim(a, log=lambda *x: None)
     ok = (r["state"] == "ranged" and abs(r["residual_us"]) < 0.1 and abs(r["power"] - a.us_target) < 1
           and abs(r["freq"]) < 100 and r["t3"] == 0 and r["reqs"] == r["tx"]["REQ"] > 0
           and max(r["rsp_delays"]) < 200)

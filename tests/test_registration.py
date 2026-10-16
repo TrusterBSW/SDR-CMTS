@@ -8,7 +8,7 @@
 """
 import os, struct, subprocess, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import mini_cmts
+import sdr_cmts
 from cmts import cmcfg, netpkt
 from cmts import docsis_mac as mac
 from cmts.pcap import PcapWriter
@@ -36,14 +36,14 @@ def dhcp_discover():
 
 
 # the DOCSIS 1.1 / TDMA single-channel configuration this test checks (defaults changed on 2026-10-10)
-a = mini_cmts.parser().parse_args(["--sim", "1", "--us-mode", "tdma", "--us-mod", "16qam", "--us-rate", "16", "--ds-channels", "1",
+a = sdr_cmts.parser().parse_args(["--sim", "1", "--us-mode", "tdma", "--us-mod", "16qam", "--us-rate", "16", "--ds-channels", "1",
                                      "--no-grant-ahead-hold", "--grant-ahead-every", "1", "--grant-ahead-scale", "1"])
-mux, core, rx, tb, mcr, decim = mini_cmts.build(a, log=lambda *x: None)
+mux, core, rx, tb, mcr, decim = sdr_cmts.build(a, log=lambda *x: None)
 
 # ---- 1. long data burst
 events = []
 rx.on_burst = events.append
-rx.push(0, mini_cmts.np.zeros(0, mini_cmts.np.complex64))
+rx.push(0, sdr_cmts.np.zeros(0, sdr_cmts.np.complex64))
 eth = dhcp_discover()
 frame = mac.data_pdu(eth)
 t0 = int(0.2 * TS_RATE) // mux.ms_counts * mux.ms_counts
@@ -142,15 +142,15 @@ while i < len(d):
 check("REG-REQ réel présent dans le pcap", seen)
 
 # ---- 5. a concatenated burst (ARP + DHCP DISCOVER + REQ) through the receiver and the core
-a2 = mini_cmts.parser().parse_args(["--sim", "1", "--us-mode", "tdma", "--us-mod", "16qam", "--us-rate", "16", "--ds-channels", "1",
+a2 = sdr_cmts.parser().parse_args(["--sim", "1", "--us-mode", "tdma", "--us-mod", "16qam", "--us-rate", "16", "--ds-channels", "1",
                                      "--no-grant-ahead-hold", "--grant-ahead-every", "1", "--grant-ahead-scale", "1"])
-mux2, core2, rx2, _, _, _ = mini_cmts.build(a2, log=lambda *x: None)
+mux2, core2, rx2, _, _, _ = sdr_cmts.build(a2, log=lambda *x: None)
 m2 = Modem(CM, 1)
 m2.state = "online"
 core2.modems[CM], core2.by_sid[1] = m2, m2
 got_eth = []
 core2.on_data = lambda eth, ok, sid: got_eth.append((eth, ok))
-rx2.push(0, mini_cmts.np.zeros(0, mini_cmts.np.complex64))
+rx2.push(0, sdr_cmts.np.zeros(0, sdr_cmts.np.complex64))
 arp = b"\xff" * 6 + CM + b"\x08\x06" + struct.pack(">HHBBH", 1, 0x0800, 6, 4, 1) + CM + bytes(4) + bytes(6) + bytes([10, 10, 0, 1])
 burst = mac.concat_frame([mac.data_pdu(arp.ljust(60, b"\0")), mac.data_pdu(dhcp_discover()), mac.req_frame(1, 20)])
 t1 = int(0.3 * TS_RATE) // mux2.ms_counts * mux2.ms_counts

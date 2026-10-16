@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""bladeRF check before running the CMTS on it (mini_cmts.py --sdr bladerf): through the same
+"""bladeRF check before running the CMTS on it (sdr_cmts.py --sdr bladerf): through the same
 code as the radio process (cmts/sdrdev.py BladeRFRadio, libbladeRF called directly).
 
   tools/bladerf_check.py [--id "*:serial=..."] [--seconds 10] [--loop]

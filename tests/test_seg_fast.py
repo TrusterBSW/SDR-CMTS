@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """Segment bursts (Multiple Transmit Channel mode) decoded whole in C (us_phy._seg_fast, usdsp.c
-seg_fast) against the Python path (MINI_CMTS_US_FAST=0): same bytes, same timing, same MER, on
+seg_fast) against the Python path (SDR_CMTS_US_FAST=0): same bytes, same timing, same MER, on
 synthetic 64-QAM 5.12 Msym/s bursts with a little echo and noise; full grants, bursts that end
 early (shortened last codeword), padding segments, a burst with a corrupted middle; and the time
 each path takes."""
@@ -71,7 +71,7 @@ def burst(seq, gsym, nbytes, rng, pad=False, snr_db=33.0, corrupt=False):
 
 
 def run(fast, cases, warm):
-    os.environ["MINI_CMTS_US_FAST"] = "1" if fast else "0"
+    os.environ["SDR_CMTS_US_FAST"] = "1" if fast else "0"
     d = us_phy.BurstDemod(FS, SYMRATE)
     xw, sw, gw = warm
     d.detect(xw, IUC, sw - 4, sw + 4, max_frame=int(gw * bps / 8) + 64, grant_syms=gw, eq_key=1, seg=True)

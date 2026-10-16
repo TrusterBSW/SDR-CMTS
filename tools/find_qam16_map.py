@@ -5,7 +5,7 @@
 
     python3 tools/find_qam16_map.py captures/bursts_ko/*.npz
 
-The bursts (IUC 5/6, 16-QAM, saved by mini_cmts.py when they fail to decode) are demodulated
+The bursts (IUC 5/6, 16-QAM, saved by sdr_cmts.py when they fail to decode) are demodulated
 down to grid decisions (I level, Q level); then every plausible mapping is tried: per-axis Gray
 or natural codes on any bit positions, and quadrant-based codes (2 bits select the quadrant, 2
 select the point inside it, the other quadrants obtained by rotation or by mirroring). The right

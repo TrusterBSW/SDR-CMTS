@@ -8,7 +8,7 @@ against the IM, the CMTS sent a +2000 us "correction" and the modem was lost.
 """
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import mini_cmts
+import sdr_cmts
 from cmts import docsis_mac as mac
 from cmts.sim_modem import SimModem
 from cmts.upstream import TS_RATE
@@ -18,11 +18,11 @@ US = 1e-6 * TS_RATE
 
 
 def run(grants, burst_at_us, sid, iuc):
-    a = mini_cmts.parser().parse_args(["--sim", "1"])
-    mux, core, rx, tb, mcr, decim = mini_cmts.build(a, log=lambda *x: None)
+    a = sdr_cmts.parser().parse_args(["--sim", "1"])
+    mux, core, rx, tb, mcr, decim = sdr_cmts.build(a, log=lambda *x: None)
     events = []
     rx.on_burst = events.append
-    rx.push(0, mini_cmts.np.zeros(0, mini_cmts.np.complex64))
+    rx.push(0, sdr_cmts.np.zeros(0, sdr_cmts.np.complex64))
     t0 = int(0.2 * TS_RATE) // mux.ms_counts * mux.ms_counts
     rx.add_grants([(t0 + int(s * US), t0 + int(e * US), i, g) for s, e, i, g in grants])
     cm = SimModem(MODEM, rx, delay_us=0, power_db=-20, freq_hz=250, snr_db=30, symrate=a.us_rate * 160e3,

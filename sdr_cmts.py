@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Mini-CMTS, step 3: EuroDOCSIS downstream + upstream ranging on ONE USRP B210.
+"""sdr-cmts: a EuroDOCSIS 3.0 CMTS on software radios (USRP B210, several B210s, bladeRF 2.0 micro).
 
-  B210 TX/RX (channel A) : downstream J.83A (as ds_tx.py)
-  B210 RX2   (channel A) : upstream bursts (TDMA QPSK, 1.28 Msym/s, 60 MHz by default)
+  radio TX (B210 TX/RX) : downstream, J.83 annex A, up to 6 bonded 8 MHz channels per B210
+  radio RX (B210 RX2)   : upstream bursts, TDMA / ATDMA up to 64-QAM, 1-4 channels (5-65 MHz)
 
-Both directions share the B210 master clock, so every DOCSIS timestamp maps to an exact RX
+EuroDOCSIS only: North American DOCSIS (J.83 annex B, 6 MHz channels) is not implemented.
+Both directions share the radio's master clock, so every DOCSIS timestamp maps to an exact RX
 sample: the receiver knows where each MAP interval lands and measures the modem's timing
 error to a few ns. The modem is taken through initial ranging (RNG-REQ -> RNG-RSP with a
 temporary SID), unicast Station Maintenance until "success", then periodic maintenance.
@@ -15,11 +16,11 @@ bridged to a Linux TAP (cmts0) and back, and registration is handled (REG-REQ ->
 SFIDs/SIDs -> REG-ACK: online). DHCP, TFTP and ToD come from provision.py (--all-in-one starts it)
 or from any server on cmts0.
 
-  ./mini_cmts.py --all-in-one             # everything: CMTS + DHCP/TFTP/ToD (provision.py, sudo)
-  ./mini_cmts.py                          # CMTS only, bench defaults (306 MHz, gain 49, US gain 20)
-  ./mini_cmts.py --no-rsp                 # listen only: decode the RNG-REQ
-  ./mini_cmts.py --save-bursts captures/bursts
-  ./mini_cmts.py --sim 3                  # full loop with a simulated modem
+  ./sdr_cmts.py --all-in-one             # everything: CMTS + DHCP/TFTP/ToD (provision.py, sudo)
+  ./sdr_cmts.py                          # CMTS only, bench defaults (306 MHz, gain 49, US gain 20)
+  ./sdr_cmts.py --no-rsp                 # listen only: decode the RNG-REQ
+  ./sdr_cmts.py --save-bursts captures/bursts
+  ./sdr_cmts.py --sim 3                  # full loop with a simulated modem
 
 Every hardware run writes captures/cmts_<date>_<time>.log (the console, without colours);
 --log none to skip it. --pcap adds captures/cmts_<date>_<time>.pcap (decoded upstream frames
@@ -89,8 +90,8 @@ def ds_channels(a):
         # channels within ~6.7 MHz of them into the upstream channels; 306-346 sat on the 6th
         k = (a.ds_channels - 1) // 2
     freqs = [a.freq + (j - k) * a.ds_spacing for j in range(a.ds_channels)]
-    if os.environ.get("MINI_CMTS_PRIMARY_IDX"):     # diagnostic: the k-th frequency is the primary
-        k = int(os.environ["MINI_CMTS_PRIMARY_IDX"])
+    if os.environ.get("SDR_CMTS_PRIMARY_IDX"):     # diagnostic: the k-th frequency is the primary
+        k = int(os.environ["SDR_CMTS_PRIMARY_IDX"])
     freqs = [freqs[k]] + freqs[:k] + freqs[k + 1:]
     return [(j + 1, f) for j, f in enumerate(freqs)]
 
@@ -137,16 +138,16 @@ def build(a, log=print):
             # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
             # behind, ping 86-388 ms (2026-10-10)
             a.synth_threads = max(a.synth_threads, (nr + 1) // 2)
-        if os.environ.get("MINI_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
-            a.sps = int(os.environ["MINI_CMTS_DS_SPS"])
-        a.mcr_mult, a.docsis30 = int(os.environ.get("MINI_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
+        if os.environ.get("SDR_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
+            a.sps = int(os.environ["SDR_CMTS_DS_SPS"])
+        a.mcr_mult, a.docsis30 = int(os.environ.get("SDR_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
     if getattr(a, "sdr", "b210") == "bladerf":
         # its TX and RX share one sample rate and its counters count samples: one tick per sample
         a.mcr_mult = 1
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
-                        map_lead_ms=float(os.environ.get("MINI_CMTS_MAP_LEAD_MS", 4)),   # (diagnostic override)
+                        map_lead_ms=float(os.environ.get("SDR_CMTS_MAP_LEAD_MS", 4)),   # (diagnostic override)
                         minislot_ticks=a.minislot, cmts_mac=a.mac, invert=not a.no_invert)
     core = CmtsCore(mux, target_db=a.us_target, sm_period=a.sm_period, respond=not a.no_rsp, log=log,
                     secret=a.shared_secret, strict_mic=a.strict_mic, grant_ahead_s=a.grant_ahead_ms / 1e3,
@@ -160,8 +161,8 @@ def build(a, log=print):
     # lowest RX rate with >= 2.5 samples per symbol; any integer decimation (41.712 MHz / 3 and
     # 55.616 / 4 give the same 13.904 MS/s as 27.808 / 2)
     decim = max(1, int(mcr // (2.5 * symrate)))
-    if os.environ.get("MINI_CMTS_DECIM"):          # diagnostic: force the RX decimation
-        decim = int(os.environ["MINI_CMTS_DECIM"])
+    if os.environ.get("SDR_CMTS_DECIM"):          # diagnostic: force the RX decimation
+        decim = int(os.environ["SDR_CMTS_DECIM"])
     tb = Timebase(mcr, 0, a.sps)
     rx_kw = dict(gate_db=a.gate_db, save_dir=a.save_bursts, im_slack_us=a.im_slack_us,
                  ko_dir=None if a.sim else "captures/bursts_ko")
@@ -193,8 +194,8 @@ def build(a, log=print):
     if a.docsis30:                             # MAC Domain Descriptor: the modem runs in DOCSIS 3.0 mode
         chans = ds_channels(a)
         plan = [(cid, f, a.qam, cid == 1) for cid, f in chans]
-        if os.environ.get("MINI_CMTS_MDD_MAX"):   # diagnostic: only the first k channels in the MDD
-            plan = plan[:int(os.environ["MINI_CMTS_MDD_MAX"])]
+        if os.environ.get("SDR_CMTS_MDD_MAX"):   # diagnostic: only the first k channels in the MDD
+            plan = plan[:int(os.environ["SDR_CMTS_MDD_MAX"])]
         ucids = [u for u, _ in us_channels(a)]
         # several upstream channels: ranging only on the first one (ambiguity resolution list),
         # transmit power reporting on (without it no CM may get more than one upstream channel)
@@ -211,8 +212,8 @@ def build(a, log=print):
             mux.secondary.append(m2)
         if len(chans) > 1:
             core.bonding = chans
-            if os.environ.get("MINI_CMTS_RCC_MAX"):   # diagnostic: only the first k bonded (all transmitted)
-                core.bonding = chans[:int(os.environ["MINI_CMTS_RCC_MAX"])]
+            if os.environ.get("SDR_CMTS_RCC_MAX"):   # diagnostic: only the first k bonded (all transmitted)
+                core.bonding = chans[:int(os.environ["SDR_CMTS_RCC_MAX"])]
     return mux, core, rx, tb, mcr, decim
 
 
@@ -256,8 +257,8 @@ def build_us_bonding(a, mux, core, tb, mcr, symrate, rx_kw, log):
     if (mcr + mcr / decim) * 4 > 300e6:
         log(f"!! USB : {(mcr + mcr / decim) * 4 / 1e6:.0f} Mo/s (émission + réception large bande) : au-delà "
             f"d'environ 300 Mo/s, le B210 décroche (essai du 2026-10-10)")
-    if os.environ.get("MINI_CMTS_DECIM"):          # diagnostic: force the RX decimation
-        decim = int(os.environ["MINI_CMTS_DECIM"])
+    if os.environ.get("SDR_CMTS_DECIM"):          # diagnostic: force the RX decimation
+        decim = int(os.environ["SDR_CMTS_DECIM"])
     fs = mcr / decim
     ring = SampleRing(fs, decim, history_s=0.5)
     # decimated before demodulation down to >= 2.3 samples per symbol (5.12 Msym/s occupies 6.4 MHz):
@@ -390,8 +391,8 @@ def start_bridge(a, mux, core, stop, batched=False):
             log(f"[PONT] ↑ {netpkt.summary(eth)}", console=lim.ok())
 
     fwd = BondedForwarder([mux] + list(getattr(mux, "secondary", [])), core, mac)
-    if os.environ.get("MINI_CMTS_BOND_CH"):         # diagnostic: MINI_CMTS_BOND_CH=2 -> channel 2 only
-        fwd.force_ch = int(os.environ["MINI_CMTS_BOND_CH"]) - 1
+    if os.environ.get("SDR_CMTS_BOND_CH"):         # diagnostic: SDR_CMTS_BOND_CH=2 -> channel 2 only
+        fwd.force_ch = int(os.environ["SDR_CMTS_BOND_CH"]) - 1
     mux.per_chan = fwd.per_chan
 
     def down(eth, t=None):
@@ -446,7 +447,7 @@ _mtc_t = [time.monotonic()]
 
 
 def mtc_line(core):
-    """Diagnostic (MINI_CMTS_TIMING): Multiple Transmit Channel mode upstream since the last
+    """Diagnostic (SDR_CMTS_TIMING): Multiple Transmit Channel mode upstream since the last
     line, per second: grants (asked / in advance, mini-slots -> raw bytes at the data profile),
     bytes carried by the segments, padding, queue-depth requests, reassembly waits."""
     now = time.monotonic()
@@ -481,7 +482,7 @@ def status_line(mux, core, rx, extra=""):
                      + (f" [segments {m['reasm']['segments']}, trames {m['reasm']['frames']}, perdus {m['reasm']['lost']}]"
                         if m.get('reasm') else "") for m in core.summary()) or "aucun modem"
     lag, rx.lag_max_ms = rx.lag_max_ms, 0.0
-    if os.environ.get("MINI_CMTS_TIMING") and rx.timing:   # diagnostic: worker time per window type
+    if os.environ.get("SDR_CMTS_TIMING") and rx.timing:   # diagnostic: worker time per window type
         log("[TEMPS] " + ", ".join(f"{k}: {v[0]} × {v[1] * 1e3 / max(v[0], 1):.2f} ms = {v[1]:.2f} s"
                                    for k, v in sorted(rx.timing.items())))
         rx.timing.clear()
@@ -625,8 +626,8 @@ def split_cpus(child_pids, shared_pids=(), tx_need=2, mode="auto", prio=0):
         take = cores[-len(child_pids):]
     else:
         take = cores[-2:] if len(child_pids) > 2 and len(cores) >= 3 else cores[-1:]
-    if os.environ.get("MINI_CMTS_US_CORES"):      # diagnostic: physical cores for the upstream processes
-        take = cores[-int(os.environ["MINI_CMTS_US_CORES"]):]
+    if os.environ.get("SDR_CMTS_US_CORES"):      # diagnostic: physical cores for the upstream processes
+        take = cores[-int(os.environ["SDR_CMTS_US_CORES"]):]
     mine = {c for c in allowed if core(c) in take}
     rest = set(allowed) - mine
     try:
@@ -1086,9 +1087,9 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     radio.start()                                 # the followers once it is on the air (below):
     stop = threading.Event()                      # two processes opening "a B210" could swap them
 
-    # diagnostic: MINI_CMTS_TSDUMP=<file> writes the TS blocks of every channel (channels x block x
-    # 188 bytes per block) for MINI_CMTS_TSDUMP_S seconds once <file>.go exists
-    dump = os.environ.get("MINI_CMTS_TSDUMP")
+    # diagnostic: SDR_CMTS_TSDUMP=<file> writes the TS blocks of every channel (channels x block x
+    # 188 bytes per block) for SDR_CMTS_TSDUMP_S seconds once <file>.go exists
+    dump = os.environ.get("SDR_CMTS_TSDUMP")
     dump_f, dump_end = None, None
 
     feed_box = [None]                             # the bridge's TapFeed, once it runs (below)
@@ -1112,7 +1113,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                 log(f"[MAC] !! bloc TS produit en {(t1 - t0) * 1e3:.0f} ms (bloc de {blk_ms:.1f} ms à l'antenne)")
             if dump and dump_f is None and dump_end is None and os.path.exists(dump + ".go"):
                 dump_f = open(dump, "wb")
-                dump_end = time.monotonic() + float(os.environ.get("MINI_CMTS_TSDUMP_S", "10"))
+                dump_end = time.monotonic() + float(os.environ.get("SDR_CMTS_TSDUMP_S", "10"))
             if dump_f is not None:
                 dump_f.write(np.stack(pks).tobytes())
                 if time.monotonic() > dump_end:
@@ -1396,8 +1397,8 @@ def run_usrp(a):
                 time.sleep(0.002)
 
     def worker():
-        # diagnostic: MINI_CMTS_PROFILE=<file> profiles this thread (pstats, rewritten every 20 s)
-        prof_path = os.environ.get("MINI_CMTS_PROFILE")
+        # diagnostic: SDR_CMTS_PROFILE=<file> profiles this thread (pstats, rewritten every 20 s)
+        prof_path = os.environ.get("SDR_CMTS_PROFILE")
         prof = cProfile.Profile() if prof_path else None
         t_dump = time.monotonic() + 20
         if prof:
@@ -1449,7 +1450,7 @@ def run_usrp(a):
             + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else ""))
         if a.cpus == "auto":
             log(split_cpus([r.pid for r in rxs], tx_need=tx_cores(a), mode=a.us_cpus, prio=a.rt_prio))
-    workers = [rx_loop] + ([] if remote else [worker_timed if os.environ.get("MINI_CMTS_TIMING") else worker])
+    workers = [rx_loop] + ([] if remote else [worker_timed if os.environ.get("SDR_CMTS_TIMING") else worker])
     for f in workers:
         threading.Thread(target=f, daemon=True).start()
     md = uhd.types.TXMetadata()
@@ -1565,7 +1566,7 @@ def run_usrp(a):
 
 
 class _ArgsFileParser(argparse.ArgumentParser):
-    """`mini_cmts.py @configs/lab.args [more options]`: the options of a file, several per line
+    """`sdr_cmts.py @configs/lab.args [more options]`: the options of a file, several per line
     if wanted, `#` comments; options given after the file override it (the last one wins)."""
 
     def __init__(self, *args, **kw):
@@ -1579,8 +1580,9 @@ class _ArgsFileParser(argparse.ArgumentParser):
 
 
 def parser():
+    installed = os.path.dirname(os.path.abspath(__file__)) == "/usr/lib/sdr-cmts"     # the Debian package
     ap = _ArgsFileParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-                         fromfile_prefix_chars="@")
+                         fromfile_prefix_chars="@", prog="sdr-cmts" if installed else None)
     ap.add_argument("--config", metavar="BENCH.toml",
                     help="bench description in TOML (configs/*.toml, cmts/tomlconf.py): sections [radio], "
                          "[downstream], [upstream], [host]... with the option names as keys, [provisioning] "

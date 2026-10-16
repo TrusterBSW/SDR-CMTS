@@ -8,7 +8,7 @@ written here BEFORE any change, and set back to the KERNEL'S DEFAULTS (the boot 
 firmware's energy preference, /proc/irq/default_smp_affinity; the values found at the start only
 when a default cannot be found):
   - when it stops (atexit);
-  - by `mini-cmts --restore-host`, which the systemd service runs after every stop (ExecStopPost),
+  - by `sdr-cmts --restore-host`, which the systemd service runs after every stop (ExecStopPost),
     a SIGKILL or a crash included;
   - at the next start, if a run killed before its own restore left them.
 (The deep C-state block, /dev/cpu_dma_latency, needs nothing: the kernel drops it with the process
@@ -27,8 +27,8 @@ import subprocess
 
 def path():
     if os.access("/run", os.W_OK):
-        return "/run/mini-cmts-host-state.json"
-    return os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"mini-cmts-host-state-{os.getuid()}.json")
+        return "/run/sdr-cmts-host-state.json"
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"sdr-cmts-host-state-{os.getuid()}.json")
 
 
 def _boot_id():

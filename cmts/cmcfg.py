@@ -10,7 +10,7 @@ zero padding to a multiple of 4 bytes.
 
 The CMTS MIC order below is the one of MULPIv3.0 D.3.1 as far as this lab needs it. A file
 made by another tool with TLVs outside this list may give a different digest: the CMTS then
-only warns (see mini_cmts.py --strict-mic).
+only warns (see sdr_cmts.py --strict-mic).
 """
 import hashlib
 import hmac

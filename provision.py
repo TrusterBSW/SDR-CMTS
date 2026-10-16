@@ -5,15 +5,15 @@
 on the CMTS bridge interface (cmts0). They replace, for a lab, what a DOCSIS head end runs on
 separate machines (a DHCP server, a TFTP server and an RFC 868 time server):
 
-    modem --DOCSIS--> mini_cmts.py (bridge) --> cmts0 (10.10.0.1) <-- provision.py
+    modem --DOCSIS--> sdr_cmts.py (bridge) --> cmts0 (10.10.0.1) <-- provision.py
 
     sudo python3 provision.py                       # on cmts0, generated config file
     sudo python3 provision.py --config my.cfg       # serve your own config file
     python3 provision.py --make-config cm.cfg       # only write the generated file (no root)
     python3 provision.py --show-config my.cfg       # print a config file and check its MICs
 
-mini_cmts.py --all-in-one starts it (through sudo) with the same shared secret. To use other
-servers instead (dnsmasq, ISC DHCP, tftpd...), run mini_cmts.py without --all-in-one and give
+sdr_cmts.py --all-in-one starts it (through sudo) with the same shared secret. To use other
+servers instead (dnsmasq, ISC DHCP, tftpd...), run sdr_cmts.py without --all-in-one and give
 cmts0 an address yourself, or bridge it to a real network.
 
 Needs root: ports 67/69/37 and SO_BINDTODEVICE. Serves cmts0 only; never on an operator's network.
@@ -268,12 +268,12 @@ def main():
     if os.geteuid() != 0:
         log("!! provision.py doit tourner en root (ports 67, 69, 37) : sudo python3 provision.py ...")
         return 1
-    for _ in range(50):                                  # mini_cmts.py may still be creating it
+    for _ in range(50):                                  # sdr_cmts.py may still be creating it
         if os.path.exists(f"/sys/class/net/{a.iface}"):
             break
         time.sleep(0.1)
     else:
-        log(f"!! interface {a.iface} absente : lance d'abord mini_cmts.py (il la crée)")
+        log(f"!! interface {a.iface} absente : lance d'abord sdr_cmts.py (il la crée)")
         return 1
     net = ipaddress.IPv4Interface(a.server_ip).network
     if not a.no_ip:

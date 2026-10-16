@@ -1,4 +1,4 @@
-Package: mini-cmts
+Package: sdr-cmts
 Version: @VERSION@
 Architecture: all
 Maintainer: BILLY Rémi <byhoster.association@gmail.com>
@@ -8,7 +8,7 @@ Depends: python3 (>= 3.11), python3-numpy, python3-scipy, gcc, libc6-dev, iprout
 Recommends: python3-uhd, uhd-host
 Suggests: bladerf, libbladerf2, bladerf-fpga-hostedxa4, tshark, iperf3
 Installed-Size: @SIZE@
-Description: DOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
+Description: EuroDOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
  A cable modem termination system written in Python and C for a closed coax
  lab: EuroDOCSIS downstream (J.83 annex A, 64/256-QAM, channel bonding up to
  6 channels per B210, several B210s) and upstream (TDMA / ATDMA up to 64-QAM,
@@ -17,8 +17,9 @@ Description: DOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
  .
  License: AGPL-3.0-only, or a commercial licence (COMMERCIAL.md).
  .
- Tested with a Sagem F@st 3686 (DOCSIS 3.0). Never connect it to an
+ EuroDOCSIS only (8 MHz channels, J.83 annex A): North American DOCSIS (annex
+ B) is not implemented. Tested with a Sagem F@st 3686 (DOCSIS 3.0). Never connect it to an
  operator's network: closed lab, with attenuators.
  .
  The C kernels are compiled at installation for the CPU of this machine
- (dpkg-reconfigure mini-cmts after moving the disk to another CPU).
+ (dpkg-reconfigure sdr-cmts after moving the disk to another CPU).

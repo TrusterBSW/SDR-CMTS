@@ -338,7 +338,7 @@ def main():
     ap.add_argument("--witness-serial", default="JN76WAJ")
     ap.add_argument("--witness-gain", type=float, default=30)
     ap.add_argument("--gain", type=float, default=49, help="TX gain of the CMTS in every case but 'gain'")
-    ap.add_argument("--cmts", default="/usr/lib/mini-cmts/mini_cmts.py")
+    ap.add_argument("--cmts", default="/usr/lib/sdr-cmts/sdr_cmts.py")
     ap.add_argument("--cpus", default="2-7,18-23")
     ap.add_argument("--only", nargs="*", help="cases whose name contains one of these words")
     a = ap.parse_args()

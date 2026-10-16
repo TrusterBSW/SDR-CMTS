@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The SDR unplugged under a running CMTS, with the simulated radio (cmts/sdrdev.py SimRadio,
-MINI_CMTS_SDR_SIM): the radio process aborts as UHD did on 2026-10-16; the MAC must stop on its
-own within seconds, log its stop line and leave with code 3 (mini_cmts.RADIO_LOST, for systemd to
+SDR_CMTS_SDR_SIM): the radio process aborts as UHD did on 2026-10-16; the MAC must stop on its
+own within seconds, log its stop line and leave with code 3 (sdr_cmts.RADIO_LOST, for systemd to
 start it again), with no process and no shared memory left behind. The MAC used to hang in
 RadioProcess.stop(): multiprocessing.Event.set() waits for a sleeper that had died."""
 import os
@@ -29,10 +29,10 @@ def shm():
 
 
 before = shm()
-env = dict(os.environ, MINI_CMTS_SDR_SIM="1", MINI_CMTS_SIM_UNPLUG_S="8")
+env = dict(os.environ, SDR_CMTS_SDR_SIM="1", SDR_CMTS_SIM_UNPLUG_S="8")
 with tempfile.TemporaryDirectory() as d:
     t0 = time.monotonic()
-    p = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "mini_cmts.py"), "--ds-channels", "1",
+    p = subprocess.Popen([sys.executable, os.path.join(HERE, "..", "sdr_cmts.py"), "--ds-channels", "1",
                           "--tap", "none", "--status-http", "none", "--no-performance", "--no-irq-herd",
                           "--rt-prio", "0", "--color", "never", "--log", "none"],
                          cwd=d, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

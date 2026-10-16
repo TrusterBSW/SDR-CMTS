@@ -41,8 +41,8 @@ TX_CAL_RX_BW = 56e6
 
 def open_radio(p, has_rx):
     """The device of the radio parameters p (p["driver"]: "uhd", the default, or "bladerf");
-    MINI_CMTS_SDR_SIM=1: SimRadio, no hardware (tests)."""
-    if os.environ.get("MINI_CMTS_SDR_SIM"):
+    SDR_CMTS_SDR_SIM=1: SimRadio, no hardware (tests)."""
+    if os.environ.get("SDR_CMTS_SDR_SIM"):
         return SimRadio(p, has_rx)
     drv = p.get("driver", "uhd")
     if drv == "uhd":
@@ -56,7 +56,7 @@ class SimRadio:
     """A radio without hardware, for the tests of the whole chain (MAC, radio and upstream
     processes, bridge, stop sequence): it takes the transmit blocks and gives receive samples (low
     noise) at the pace of real time, on a device clock of its own, as a B210 would.
-    MINI_CMTS_SIM_UNPLUG_S=N: N seconds after opening, the process aborts in the middle of a
+    SDR_CMTS_SIM_UNPLUG_S=N: N seconds after opening, the process aborts in the middle of a
     transfer, as UHD did when the B210 was unplugged (2026-10-16: "terminate called after
     throwing an instance of 'uhd::usb_error'", LIBUSB_ERROR_NO_DEVICE)."""
     name = "radio simulée"
@@ -71,7 +71,7 @@ class SimRadio:
         self._tx_end = None
         self._events = []
         self.tx_spp = self.rx_spp = 0
-        unplug = float(os.environ.get("MINI_CMTS_SIM_UNPLUG_S", "0") or 0)
+        unplug = float(os.environ.get("SDR_CMTS_SIM_UNPLUG_S", "0") or 0)
         self._unplug_at = self._t0 + unplug if unplug > 0 else None
         self._rng = np.random.default_rng(1)
 
@@ -82,7 +82,7 @@ class SimRadio:
             os.abort()
 
     def describe(self):
-        return (f"radio simulée (MINI_CMTS_SDR_SIM) : TX {self.fs_tx / 1e6:.3f} MS/s"
+        return (f"radio simulée (SDR_CMTS_SDR_SIM) : TX {self.fs_tx / 1e6:.3f} MS/s"
                 + (f", RX {self.mcr / self.decim / 1e6:.3f} MS/s" if self.has_rx else ", émission seule")
                 + ", aucun matériel")
 
@@ -364,8 +364,8 @@ def bladerf_meta_format(version):
     """BLADERF_FORMAT_SC16_Q11_META: 1 up to libbladeRF 2.5 (Debian 12: 2.4.1), 2 from 2.6, where
     BLADERF_FORMAT_SC16_Q11_PACKED was inserted before it (the enum has no fixed values)."""
     import os
-    if os.environ.get("MINI_CMTS_BLADERF_META_FORMAT"):      # diagnostic override
-        return int(os.environ["MINI_CMTS_BLADERF_META_FORMAT"])
+    if os.environ.get("SDR_CMTS_BLADERF_META_FORMAT"):      # diagnostic override
+        return int(os.environ["SDR_CMTS_BLADERF_META_FORMAT"])
     return 2 if tuple(version[:2]) >= (2, 6) else 1
 
 

@@ -1,7 +1,7 @@
-# Mini-CMTS SDR : downstream EuroDOCSIS (étape 2) et ranging upstream (étape 3)
+# sdr-cmts SDR : downstream EuroDOCSIS (étape 2) et ranging upstream (étape 3)
 
-> **Étape 3 (upstream) :** voir la section [Étape 3](#étape-3--upstream-et-ranging-mini_cmtspy) plus bas.
-> `ds_tx.py` reste l'émetteur downstream seul ; `mini_cmts.py` fait downstream + upstream sur le même B210.
+> **Étape 3 (upstream) :** voir la section [Étape 3](#étape-3--upstream-et-ranging-sdr_cmtspy) plus bas.
+> `ds_tx.py` reste l'émetteur downstream seul ; `sdr_cmts.py` fait downstream + upstream sur le même B210.
 
 Ce programme émet un downstream EuroDOCSIS (ITU-T J.83 Annex A, 64 ou 256-QAM, 6,952 Msym/s)
 avec un USRP B210. Le flux transporte les messages MAC nécessaires pour qu'un vrai modem :
@@ -27,7 +27,7 @@ attendu à cette étape.
 | `cmts/downstream.py` | Ordonnanceur et base de temps : l'horodatage 10,24 MHz est dérivé du compteur de symboles |
 | `cmts/ts_demux.py` | TS → trames MAC DOCSIS → pcap Wireshark (servira aussi à la phase 1, l'écoute du réseau d'origine du modem) |
 | `tests/` | Comparaison avec GNU Radio gr-dtv et test de bouclage complet |
-| `mini_cmts.py` | **Étape 3** : downstream + réception upstream + ranging sur un seul B210 ; `--sim` sans matériel |
+| `sdr_cmts.py` | **Étape 3** : downstream + réception upstream + ranging sur un seul B210 ; `--sim` sans matériel |
 | `cmts/us_phy.py` | Couche physique montante TDMA : RS, embrouilleur x^15+x^14+1, QPSK, RRC α=0,25 ; démodulateur de rafales |
 | `cmts/upstream.py` | Base de temps commune TX/RX et découpage des intervalles des MAP dans le flux RX |
 | `cmts/ranging.py` | RNG-REQ → RNG-RSP, SID temporaires, Station Maintenance |
@@ -98,7 +98,7 @@ de 8 MHz, par exemple 474 MHz, 306 MHz ou 330 MHz.
 - **Pas de MDD :** un modem DOCSIS 3.0 devrait se rabattre en mode 2.0.
 - **Bouclage du compteur :** le timestamp 32 bits boucle toutes les 419 s. Le comportement des
   minislots à ce moment-là n'a pas encore été vérifié avec un vrai modem.
-- **Upstream** : le ranging est fait par `mini_cmts.py` (étape 3). Les grants de données, DHCP,
+- **Upstream** : le ranging est fait par `sdr_cmts.py` (étape 3). Les grants de données, DHCP,
   TFTP et l'enregistrement restent à faire.
 
 ## Phase 1 : écoute du downstream du réseau d'origine (réception seule)
@@ -147,7 +147,7 @@ python3 upstream_analysis.py --count 10     # canaux montants : UCD + utilisatio
 | Descendant | 32 × 256-QAM = 1 605 Mbit/s ; données 3,7 Mbit/s en moyenne (0,2 %) ; signalisation 26 Mbit/s |
 | Montant | 4 segments × 5 canaux (34,8 / 41,2 / 47,6 / 54,0 / 60,4 MHz), 5,12 Msym/s, 16-QAM : 102 Mbit/s bruts par segment ; utilisation d'environ 0,1 % |
 
-## Étape 3 : upstream et ranging (`mini_cmts.py`)
+## Étape 3 : upstream et ranging (`sdr_cmts.py`)
 
 ### Choix du matériel : le même B210 pour les deux sens
 
@@ -193,7 +193,7 @@ B210 TX/RX ── coupleur A [entrée] ──┬── sortie 1 ── modem
   Les limites Ettus sont −15 dBm conseillé et 0 dBm au maximum. Un 3e coupleur en cascade devant RX2 ajoute 3,5 dB de marge.
 - **Ne mets pas le modem sur l'entrée du coupleur A :** la rafale n'y perdrait que 15 dB, soit −6 dBm sur RX2.
 - **Laisse tous les ports occupés** (ou bouchon 75 Ω) : un port en l'air dégrade l'isolation.
-- **Ordre :** lance `mini_cmts.py`, puis allume le modem. Pour arrêter, éteins le modem d'abord, puis Ctrl-C.
+- **Ordre :** lance `sdr_cmts.py`, puis allume le modem. Pour arrêter, éteins le modem d'abord, puis Ctrl-C.
 - Le 2e B210 (`lab_monitor.py`) peut remplacer le HackRF sur le coupleur B.
 
 ### Ce que fait le programme
@@ -223,16 +223,16 @@ Les blocs arrivés trop tard sont jetés et comptés en `L`. `--tx-untimed` rét
 ```bash
 python3 tests/test_upstream_phy.py          # couche physique seule (bruit, fréquence, timing)
 python3 tests/test_ranging_sim.py           # boucle complète avec modem simulé, 6 scénarios
-python3 mini_cmts.py --sim 3                # idem, avec le journal détaillé
+python3 sdr_cmts.py --sim 3                # idem, avec le journal détaillé
 
-python3 mini_cmts.py --freq 306e6 --gain 49 --us-gain 10 --no-rsp --save-bursts captures/bursts   # écoute seule
-python3 mini_cmts.py --freq 306e6 --gain 49 --us-gain <réglé en T15>                            # ranging
+python3 sdr_cmts.py --freq 306e6 --gain 49 --us-gain 10 --no-rsp --save-bursts captures/bursts   # écoute seule
+python3 sdr_cmts.py --freq 306e6 --gain 49 --us-gain <réglé en T15>                            # ranging
 ```
 
 Réglages utiles : `--us-gain` (gain RX, 30 par défaut), `--us-target` (puissance visée en dBFS, −20),
 `--us-freq`, `--sm-period`, `--tx-queue` (tampon downstream, 6 blocs par défaut depuis le 2026-10-09).
 
-**Priorité temps réel.** `mini_cmts.py` passe tout le processus en `SCHED_RR 50` (`--rt-prio`, 0 pour désactiver),
+**Priorité temps réel.** `sdr_cmts.py` passe tout le processus en `SCHED_RR 50` (`--rt-prio`, 0 pour désactiver),
 pour que l'activité du PC ne retarde plus l'alimentation du B210. Il faut l'autoriser une fois, puis se reconnecter :
 ```bash
 sudo mkdir -p /etc/security/limits.d        # absent par défaut sur Arch
@@ -252,7 +252,7 @@ USB et hors de son jumeau hyperthread (CPU 0 et 4 ici) ; `--cpus all` désactive
 `--performance` passe tous les CPU dans le gouverneur `performance` le temps du lancement (via sudo), puis restaure
 le gouverneur et la préférence d'énergie d'origine à l'arrêt. Sans cette option, le programme signale un gouverneur autre que `performance`.
 
-**Défauts du banc.** `python3 mini_cmts.py` sans option équivaut à `--freq 306e6 --gain 49 --us-gain 20 --performance
+**Défauts du banc.** `python3 sdr_cmts.py` sans option équivaut à `--freq 306e6 --gain 49 --us-gain 20 --performance
 --cpus auto --tx-frames 256`. Chaque lancement sur le matériel écrit `captures/cmts_<date>_<heure>.log` (la console sans
 couleurs) : plus besoin de `tee` (`--log none` pour s'en passer). Le pcap reste à la demande : `--pcap` seul écrit
 `captures/cmts_<date>_<heure>.pcap`, `--pcap FICHIER` choisit le nom. `--no-performance` garde le gouverneur actuel.
@@ -300,19 +300,19 @@ Les rafales déjà enregistrées avec `--save-bursts` se convertissent avec
 
 ## Étape 4 : bande montante, provisionnement et enregistrement
 
-`mini_cmts.py` se comporte maintenant en CMTS « ponté » : il accorde la bande demandée par le modem, fait passer ses trames
+`sdr_cmts.py` se comporte maintenant en CMTS « ponté » : il accorde la bande demandée par le modem, fait passer ses trames
 Ethernet vers une interface Linux `cmts0`, et gère l'enregistrement DOCSIS. Les serveurs de provisionnement (DHCP, TFTP,
 heure) sont à part, comme dans une tête de réseau classique.
 
 ```
-modem ──DOCSIS──> mini_cmts.py ──pont L2──> cmts0 (10.10.0.1) <── provision.py (DHCP, TFTP, ToD)
+modem ──DOCSIS──> sdr_cmts.py ──pont L2──> cmts0 (10.10.0.1) <── provision.py (DHCP, TFTP, ToD)
                   │ grants, REG-REQ/RSP/ACK                     <── ou tes propres serveurs (dnsmasq, ISC…)
 ```
 
 ### Deux façons de lancer
 ```bash
-python3 mini_cmts.py --all-in-one     # tout en un : lance aussi provision.py (sudo) sur cmts0
-python3 mini_cmts.py                  # CMTS seul : à toi de servir DHCP/TFTP/ToD sur cmts0
+python3 sdr_cmts.py --all-in-one     # tout en un : lance aussi provision.py (sudo) sur cmts0
+python3 sdr_cmts.py                  # CMTS seul : à toi de servir DHCP/TFTP/ToD sur cmts0
 ```
 `cmts0` est créée au premier lancement (sudo : `ip tuntap add … user <toi>`, lien activé, ignorée par NetworkManager) et dure
 jusqu'au redémarrage. `--tap none` désactive le pont. Avec tes propres serveurs, donne une adresse à `cmts0`
@@ -329,7 +329,7 @@ python3 provision.py --show-config mon.cfg         # affiche un fichier de confi
 ```
 Le fichier généré (100 octets) : accès réseau, 4 CPE max, pas de chiffrement (BPI), un flux montant « best effort » à 1 Mbit/s
 et un flux descendant à 20 Mbit/s, CM MIC et CMTS MIC. `--ds-rate`, `--us-rate`, `--max-cpe` le règlent ; `--prov-args`
-de `mini_cmts.py` les transmet (`--prov-args "--config mon.cfg"`).
+de `sdr_cmts.py` les transmet (`--prov-args "--config mon.cfg"`).
 
 ### Secret partagé (CMTS MIC)
 Le CMTS vérifie le CMTS MIC de chaque REG-REQ avec `--shared-secret` (par défaut `docsis-lab`, le même que `provision.py`).
@@ -456,12 +456,12 @@ côté câble.
 ## Multicanal : agrégation de deux canaux descendants (DOCSIS 3.0, nuit du 2026-10-09)
 
 ```bash
-python3 mini_cmts.py --all-in-one --ds-channels 2      # 306 + 314 MHz, gain 48 automatiquement
+python3 sdr_cmts.py --all-in-one --ds-channels 2      # 306 + 314 MHz, gain 48 automatiquement
 ```
 
 **Mesuré sur le Sagem 3686 :** enregistrement DOCSIS 3.0 avec deux canaux, données réparties sur les deux, **91,8 Mbit/s
 descendants acheminés sans perte** (U 0 L 0, file à 9 ms au plus, ping 16/16 pendant la charge), soit près du double d'un
-canal 256-QAM. Avec toutes les trames forcées sur le canal 2 (`MINI_CMTS_BOND_CH=2`, diagnostic), le modem répond à 20 pings
+canal 256-QAM. Avec toutes les trames forcées sur le canal 2 (`SDR_CMTS_BOND_CH=2`, diagnostic), le modem répond à 20 pings
 sur 20 : il reçoit et resséquence bien le second canal.
 
 **Ce que fait le CMTS :**
@@ -490,9 +490,9 @@ USB du B210) et provoquer des pertes « côté USB ». Avec des pauses, plus auc
 ## Upstream ATDMA (DOCSIS 2.0) : 64-QAM à 5,12 Msym/s (nuit du 2026-10-09)
 
 ```bash
-python3 mini_cmts.py --all-in-one --us-mode atdma --us-mod 64qam --us-rate 32
+python3 sdr_cmts.py --all-in-one --us-mode atdma --us-mod 64qam --us-rate 32
 # configuration maximale testée (2 canaux descendants + ATDMA), débits du cm.cfg relevés :
-python3 mini_cmts.py --all-in-one --ds-channels 2 --us-mode atdma --us-mod 64qam --us-rate 32 \
+python3 sdr_cmts.py --all-in-one --ds-channels 2 --us-mode atdma --us-mod 64qam --us-rate 32 \
     --prov-args "--ds-rate 100000000 --us-rate 20000000"
 ```
 
@@ -543,13 +543,13 @@ Le descendant n'est pas limité par ce CMTS.
 
 **Limites connues :** en mode deux canaux descendants, le bruit montant monte de −64 à −48,5 dBFS (MER brute 23,8 dB,
 l'égaliseur compense) ; le débit montant réel n'a pas été mesuré faute de source de trafic montant sur le banc (à faire
-avec un test d'envoi depuis le PC derrière la box). Diagnostic CPU : `MINI_CMTS_PROFILE=fichier` profile le thread de
+avec un test d'envoi depuis le PC derrière la box). Diagnostic CPU : `SDR_CMTS_PROFILE=fichier` profile le thread de
 réception montante (pstats réécrit toutes les 20 s).
 
 ## Débit maximal : 93 Mbit/s descendant, 22 Mbit/s montant (nuit du 9 au 10/10/2026)
 
 ```bash
-python3 mini_cmts.py --all-in-one --us-process --grant-ahead-hold --grant-ahead-every 3 --grant-ahead-scale 4 \
+python3 sdr_cmts.py --all-in-one --us-process --grant-ahead-hold --grant-ahead-every 3 --grant-ahead-scale 4 \
     --ds-channels 2 --gain 50 --us-mode atdma --us-mod 64qam --us-rate 32 --us-target -14 \
     --prov-args "--ds-rate 200000000 --us-rate 200000000 --us-burst 64000"
 ```
@@ -571,13 +571,13 @@ plafonds physiques (2 canaux 256-QAM ; 1 canal ATDMA 64-QAM 5,12 Msym/s ≈ 25 M
 sous charge. Le cycle demande → grant (~60 ms, contre 5-8 ms sur le réseau d'origine d'après les captures) est la limite structurelle
 d'un SDR qui prépare le signal 36 ms à l'avance.
 
-**Diagnostics ajoutés :** ligne d'état `retard max` (traitement montant), `RX écart max`, `MINI_CMTS_TIMING=1` (temps
+**Diagnostics ajoutés :** ligne d'état `retard max` (traitement montant), `RX écart max`, `SDR_CMTS_TIMING=1` (temps
 par type de fenêtre), `kill -USR1` sur le processus montant (piles dans `/tmp/usproc_<pid>.stack`).
 
 ## Agrégation montante DOCSIS 3.0 : 2 canaux montants (nuit du 9 au 10/10/2026)
 
 ```bash
-python3 mini_cmts.py --all-in-one --us-channels 2          # + --ds-channels 3 possible
+python3 sdr_cmts.py --all-in-one --us-channels 2          # + --ds-channels 3 possible
 ```
 
 **Résultat :** le Sagem F@st 3686 passe en mode multi-canal montant (MTC). Il range sur le second canal, répond REG-ACK
@@ -617,7 +617,7 @@ entre les deux canaux de 6,4 MHz) :
 |---|---|
 | Processus montants à 100 % de CPU | au démarrage, chaque processus saute le retard accumulé : fenêtres lues dans des zéros, bruit mesuré à 0, recherche de préambule partout → plancher de bruit jamais pris sur des zéros |
 | REG-ACK 209 (reject-bad-tcc) avec le canal 2 à 67 MHz | au-delà de 65 MHz, haut de la bande montante EuroDOCSIS → `--us-spacing -7e6` (canal 2 à 53 MHz) |
-| REG-ACK 209 toujours | le TCC de fenêtre de dynamique (46.9, canal 0), en « no action » comme après le TLV 14 des RNG-RSP. Trouvé en faisant varier le TCC à chaque tentative du modem (`MINI_CMTS_TCC_VARIANTS`) : sans lui, en ligne du premier coup |
+| REG-ACK 209 toujours | le TCC de fenêtre de dynamique (46.9, canal 0), en « no action » comme après le TLV 14 des RNG-RSP. Trouvé en faisant varier le TCC à chaque tentative du modem (`SDR_CMTS_TCC_VARIANTS`) : sans lui, en ligne du premier coup |
 | Grants en avance sans fin | le modem remplit chaque grant d'un segment de bourrage (PFI 0, 0xFF) ; ces segments ne prolongent plus les grants |
 
 **Observations :**
@@ -655,7 +655,7 @@ contient que 3 canaux de 8 MHz. Voie possible : un second B210 sur la même réf
   - `--us-target -20` fait passer le modem de 52,5 à 46,5 dBmV : sous la Phi de 51 dBmV à 3-4 canaux, et de la marge
     pour l'ADC quand les 4 rafales se superposent ; MER 27,9 dB.
 - **3 DS + 4 US.** Avec 2 cœurs pour le montant, l'émission n'a plus qu'un cœur : 3 millions de paquets TX en retard.
-  Avec `MINI_CMTS_US_CORES=1` (les 4 processus montants sur un cœur) : en ligne avec les 3 DS et les 4 US une fois ;
+  Avec `SDR_CMTS_US_CORES=1` (les 4 processus montants sur un cœur) : en ligne avec les 3 DS et les 4 US une fois ;
   montant à ~150 ms de retard, ping 40/40 à 258 ms. C'est la limite de ce portable.
 
 ## Écoute d'un vrai CMTS, puis agrégation montante utile (12/10/2026)
@@ -857,17 +857,26 @@ que `--cpus auto` laisse déjà libre : plus aucun incident pendant les speedtes
 voit, entre dans sa séquence d'arrêt… et n'en sort plus. Le `systemctl stop` suivant est ignoré (SIGINT n'est pris
 qu'une fois, l'arrêt était déjà en cours), systemd tue tout au bout de 30 s, et rien n'est rétabli sur l'hôte.
 
-**La cause**, trouvée sans matériel avec une radio simulée (`MINI_CMTS_SDR_SIM`, débranchement simulé par
-`MINI_CMTS_SIM_UNPLUG_S`) et `kill -USR1` sur la MAC : le signal d'arrêt de la radio était un
+**La cause**, trouvée sans matériel avec une radio simulée (`SDR_CMTS_SDR_SIM`, débranchement simulé par
+`SDR_CMTS_SIM_UNPLUG_S`) et `kill -USR1` sur la MAC : le signal d'arrêt de la radio était un
 `multiprocessing.Event`. Son `set()` attend que chaque processus en attente accuse son réveil ; la radio, morte en
 attente, ne l'accuse jamais. C'est maintenant un octet en mémoire partagée, lu toutes les 100 ms par la radio.
 
 **Ensuite.** Une radio perdue arrête le CMTS avec le code 3, et le service le relance toutes les 15 s jusqu'au
 retour du SDR. Ce que le CMTS change sur l'hôte (gouverneur, préférence d'énergie, affinité des interruptions) est
 noté dans /run avant tout changement et remis aux valeurs par défaut du noyau à l'arrêt, par
-`ExecStopPost=mini-cmts --restore-host` après tout arrêt (même tué), et au lancement suivant. Avant, une exécution
+`ExecStopPost=sdr-cmts --restore-host` après tout arrêt (même tué), et au lancement suivant. Avant, une exécution
 tuée laissait `performance`, que la suivante prenait pour l'original.
 
 **Le 9500 en `performance`** : ce n'est pas le CMTS, c'est le noyau Proxmox (`CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE`).
 Au repos il consomme ~10 W et ses cœurs dorment ~95 % du temps (C6-C10) : `performance` ne fixe que la fréquence
 pendant le travail, il n'empêche pas la veille.
+
+## Le projet s'appelle sdr-cmts (16/10/2026)
+
+Nom retenu pour la publication : **sdr-cmts** (paquet, commande, service, `/etc/sdr-cmts`, page `man`, variables
+`SDR_CMTS_*` ; le programme est `sdr_cmts.py`). Pas de « DOCSIS » dans le nom : c'est une marque de CableLabs, citée
+dans les README avec la mention d'usage. Le projet est **EuroDOCSIS uniquement** (J.83 annexe A, canaux de 8 MHz) :
+l'annexe B du DOCSIS nord-américain n'a jamais été écrite. Les deux PVE sont passés de `mini-cmts` à `sdr-cmts`
+(banc et journaux du service repris). Évolutions souhaitées notées dans la feuille de route des README : SDR CM,
+ZeroMQ entre le CMTS et le SDR CM, CMTS réparti sur plusieurs PC.

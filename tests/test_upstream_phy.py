@@ -8,7 +8,7 @@ import numpy as np
 from cmts import docsis_mac as mac
 from cmts import us_phy
 
-FS = 27.808e6 / 8         # B210 rx rate used by mini_cmts.py (master clock / 8)
+FS = 27.808e6 / 8         # B210 rx rate used by sdr_cmts.py (master clock / 8)
 SYMRATE = 1.28e6
 CMTS = bytes.fromhex("0200 00ca fe01".replace(" ", ""))
 CM = bytes.fromhex("0024d1123456")

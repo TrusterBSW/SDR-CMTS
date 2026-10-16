@@ -1,7 +1,7 @@
 # One B210: 6 downstream channels + 2 upstream channels, the reference configuration
 # (283 Mbit/s down, ~52 up through a Sagem F@st 3686, 6-core i5-9500).
-#   python3 mini_cmts.py --all-in-one --config configs/b210.toml
-# Keys: the options of mini_cmts.py (python3 mini_cmts.py --help); the sections only group them.
+#   python3 sdr_cmts.py --all-in-one --config configs/b210.toml
+# Keys: the options of sdr_cmts.py (python3 sdr_cmts.py --help); the sections only group them.
 
 [radio]
 sdr = "b210"

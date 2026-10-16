@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Bench descriptions in TOML (mini_cmts.py --config bench.toml).
+"""Bench descriptions in TOML (sdr_cmts.py --config bench.toml).
 
 A TOML file groups the options in sections for reading; the keys are the option names of
-mini_cmts.py (--ds-channels -> ds_channels or ds-channels), the sections are free (radio,
+sdr_cmts.py (--ds-channels -> ds_channels or ds-channels), the sections are free (radio,
 downstream, upstream, host...), except [provisioning], whose keys are the options of provision.py
 and become --prov-args. Values: numbers, strings, true / false (--x / --no-x), lists (joined by
 commas). The options of the command line come after those of the file, so they win:
@@ -23,7 +23,7 @@ commas). The options of the command line come after those of the file, so they w
     [provisioning]
     dns = "1.1.1.1"
 
-    mini_cmts.py --config configs/2xb210.toml --us-target -18
+    sdr_cmts.py --config configs/2xb210.toml --us-target -18
 
 An unknown key is refused with the nearest names (a typo would otherwise silently keep a default).
 """
@@ -70,7 +70,7 @@ def _argv(key, val, opts, where):
 
 
 def to_argv(path, ap, prov_ap=None):
-    """The options of a TOML bench file as command line arguments for `ap` (mini_cmts.py), the
+    """The options of a TOML bench file as command line arguments for `ap` (sdr_cmts.py), the
     [provisioning] section as one --prov-args for `prov_ap` (provision.py)."""
     if tomllib is None:
         raise ValueError("--config : Python 3.11 ou plus (tomllib) ; sinon les fichiers @configs/*.args")

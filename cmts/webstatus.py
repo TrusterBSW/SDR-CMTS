@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Status page of the CMTS over HTTP (mini_cmts.py --status-http, 127.0.0.1:8090 by default).
+"""Status page of the CMTS over HTTP (sdr_cmts.py --status-http, 127.0.0.1:8090 by default).
 
-The status loop of mini_cmts.py publishes a snapshot every 5 s (a dict: channels, radios,
+The status loop of sdr_cmts.py publishes a snapshot every 5 s (a dict: channels, radios,
 upstream receivers, bridge, modems); this module serves it, without touching the CMTS itself:
 
     GET /             the page (HTML + a script polling /status.json)
@@ -23,7 +23,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # mini_cmts.py and cmts/ live here
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # sdr_cmts.py and cmts/ live here
 SOURCE_GLOBS = ("*.py", "VERSION", "LICENSE", "COMMERCIAL.md", "cmts/*.py", "cmts/*.c", "tools/*.py", "tools/*.sh",
                 "configs/*.toml", "packaging/*", "packaging/debian/*")
 HISTORY = 360                       # snapshots kept for the throughput charts (30 min at 5 s)
@@ -108,7 +108,7 @@ def source_archive():
             for pat in SOURCE_GLOBS:
                 for f in sorted(glob.glob(os.path.join(ROOT, pat))):
                     if os.path.isfile(f) and not f.endswith((".so", ".pyc")):
-                        tar.add(f, arcname="mini-cmts/" + os.path.relpath(f, ROOT))
+                        tar.add(f, arcname="sdr-cmts/" + os.path.relpath(f, ROOT))
         _source.append(buf.getvalue())
     return _source[0]
 
@@ -178,7 +178,7 @@ class StatusServer:
                     self.send_response(200)
                     body = source_archive()
                     self.send_header("Content-Type", "application/gzip")
-                    self.send_header("Content-Disposition", 'attachment; filename="mini-cmts-source.tar.gz"')
+                    self.send_header("Content-Disposition", 'attachment; filename="sdr-cmts-source.tar.gz"')
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -227,7 +227,7 @@ class StatusServer:
 PAGE = r"""<!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mini-cmts</title>
+<title>sdr-cmts</title>
 <style>
 :root { --bg:#f6f7f9; --card:#fff; --fg:#1d2330; --muted:#677084; --line:#dde1e8;
         --ok:#1f8a4c; --warn:#b7791f; --bad:#c53030; --ds:#2b6cb0; --us:#b83280; }
@@ -272,7 +272,7 @@ form input, form select { font:inherit; padding:3px 6px; border:1px solid var(--
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle }
 </style></head>
 <body>
-<header><h1>mini-cmts</h1><span id="sum" class="muted">…</span><span id="age" class="muted"></span></header>
+<header><h1>sdr-cmts</h1><span id="sum" class="muted">…</span><span id="age" class="muted"></span></header>
 <main>
 <section><h2>Débit (pont TAP)</h2>
   <div class="kpis"><div><span>Descendant</span><b class="big" id="dn" style="color:var(--ds)">–</b> Mbit/s</div>
@@ -292,7 +292,7 @@ form input, form select { font:inherit; padding:3px 6px; border:1px solid var(--
   <span class="muted">le modem se réenregistre en une minute environ</span></div>
   <div id="cfgmsg" class="msg"></div></div></section>
 </main>
-<footer class="muted" style="padding:0 16px 16px;font-size:12px">mini-cmts @VERSION@ · GNU AGPL v3.0
+<footer class="muted" style="padding:0 16px 16px;font-size:12px">sdr-cmts @VERSION@ · GNU AGPL v3.0
   (ou licence commerciale) · <a href="source.tar.gz" style="color:inherit">code source</a></footer>
 <script>
 const $ = id => document.getElementById(id);

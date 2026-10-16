@@ -12,7 +12,7 @@ CENTER=${CENTER:-298e6}
 RATE=${RATE:-48e6}
 DIR=${DIR:-/root/origincap}
 CODE=${CODE:-/root/mini-cmts}
-if pgrep -f "python3 mini_cmts" >/dev/null; then
+if pgrep -f "python3 sdr_cmts" >/dev/null; then
   echo "!! le CMTS tourne (il émet) : /root/cmts-tools/stop.sh d'abord"; exit 1
 fi
 mkdir -p "$DIR"

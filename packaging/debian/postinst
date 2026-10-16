@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-LIB=/usr/lib/mini-cmts/cmts
+LIB=/usr/lib/sdr-cmts/cmts
 
 build() {
     # C kernels for this CPU (-march=native: AVX2 where there is), as cmts/cdsp.py would on first
@@ -12,7 +12,7 @@ build() {
             mv -f "$LIB/_$n.so.tmp" "$LIB/_$n.so"
         else
             rm -f "$LIB/_$n.so.tmp"
-            echo "mini-cmts: !! $n.c not compiled: Python fallback, far too slow for the radios" >&2
+            echo "sdr-cmts: !! $n.c not compiled: Python fallback, far too slow for the radios" >&2
         fi
     done
 }
@@ -24,10 +24,10 @@ case "$1" in
         # the unit may have changed (upgrade): systemd reads it again, without starting anything
         [ -d /run/systemd/system ] && systemctl daemon-reload || true
         cat <<'MSG'
-mini-cmts installed. Not started: check the cabling (closed coax, attenuators) first.
-  bench:        /etc/mini-cmts/mini-cmts.toml   (examples: /usr/share/mini-cmts/configs/)
-  try it:       sudo mini-cmts --config /etc/mini-cmts/mini-cmts.toml
-  as a service: sudo systemctl enable --now mini-cmts ; journalctl -u mini-cmts -f
+sdr-cmts installed. Not started: check the cabling (closed coax, attenuators) first.
+  bench:        /etc/sdr-cmts/sdr-cmts.toml   (examples: /usr/share/sdr-cmts/configs/)
+  try it:       sudo sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml
+  as a service: sudo systemctl enable --now sdr-cmts ; journalctl -u sdr-cmts -f
   status page:  http://127.0.0.1:8090/
   B210 FPGA images, once: sudo uhd_images_downloader -t b2xx
 MSG

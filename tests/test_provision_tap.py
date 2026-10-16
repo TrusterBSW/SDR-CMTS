@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """provision.py through the Linux TAP, without radio: this script plays the modem on cmts0
-(as mini_cmts.py would hand its frames over) and runs DHCP DISCOVER/OFFER/REQUEST/ACK, ARP,
+(as sdr_cmts.py would hand its frames over) and runs DHCP DISCOVER/OFFER/REQUEST/ACK, ARP,
 TFTP of the config file (its MICs checked) and Time of Day.
 
 Needs sudo (creates cmts0 if missing, runs provision.py as root)."""

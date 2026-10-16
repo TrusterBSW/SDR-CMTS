@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""ANSI colours for the mini-CMTS console. Each line is coloured from its content, so the
+"""ANSI colours for the sdr-cmts console. Each line is coloured from its content, so the
 modules that produce the messages (ranging.py, upstream.py) stay unchanged:
 
   rouge gras   !! problèmes, modem oublié, compteurs U/L/O non nuls

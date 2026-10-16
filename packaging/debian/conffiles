@@ -1,2 +1,2 @@
-/etc/mini-cmts/mini-cmts.toml
-/etc/security/limits.d/99-mini-cmts.conf
+/etc/sdr-cmts/sdr-cmts.toml
+/etc/security/limits.d/99-sdr-cmts.conf

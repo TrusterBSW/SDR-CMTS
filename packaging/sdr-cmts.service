@@ -1,17 +1,17 @@
 [Unit]
-Description=mini-cmts, DOCSIS 3.0 CMTS on a software radio (USRP B210 / bladeRF)
-Documentation=file:///usr/share/doc/mini-cmts/README.md http://127.0.0.1:8090/
+Description=sdr-cmts, EuroDOCSIS 3.0 CMTS on a software radio (USRP B210 / bladeRF)
+Documentation=file:///usr/share/doc/sdr-cmts/README.md http://127.0.0.1:8090/
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# the bench: /etc/mini-cmts/mini-cmts.toml (radio, channels, provisioning, status page)
-ExecStart=/usr/bin/mini-cmts --config /etc/mini-cmts/mini-cmts.toml --color never
-WorkingDirectory=/var/lib/mini-cmts
+# the bench: /etc/sdr-cmts/sdr-cmts.toml (radio, channels, provisioning, status page)
+ExecStart=/usr/bin/sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml --color never
+WorkingDirectory=/var/lib/sdr-cmts
 # UHD reads root's ~/.config/uhd.conf (e.g. the FPGA image of a B210 clone) and fails without $HOME
 Environment=HOME=/root
-StateDirectory=mini-cmts
+StateDirectory=sdr-cmts
 # Ctrl+C for the CMTS process only (mixed): it stops its radio and upstream processes in order
 # (end of burst), provision.py and the pcap; whatever is left after the timeout gets SIGKILL
 KillSignal=SIGINT
@@ -19,7 +19,7 @@ KillMode=mixed
 TimeoutStopSec=30
 # the host settings the run changed (CPU governor, interrupts) set back to the kernel's defaults
 # after every stop, a SIGKILL or a crash included (the CMTS does it itself on a clean stop)
-ExecStopPost=/usr/bin/mini-cmts --restore-host
+ExecStopPost=/usr/bin/sdr-cmts --restore-host
 # a radio lost (SDR unplugged: exit code 3) or any failure: started again 15 s later, until the
 # SDR is back
 Restart=on-failure

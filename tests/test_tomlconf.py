@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Bench files in TOML (mini_cmts.py --config, cmts/tomlconf.py): the example files of configs/ give
+"""Bench files in TOML (sdr_cmts.py --config, cmts/tomlconf.py): the example files of configs/ give
 the options they say; true / false become --x / --no-x; a list is joined with commas; the
 [provisioning] section becomes one --prov-args for provision.py; the command line wins over the
 file; an unknown key is refused with the nearest names."""
@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import mini_cmts  # noqa: E402
+import sdr_cmts  # noqa: E402
 import provision  # noqa: E402
 from cmts import tomlconf  # noqa: E402
 
@@ -28,8 +28,8 @@ def parse(text, cli=()):
     with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
         f.write(text)
     try:
-        argv = tomlconf.to_argv(f.name, mini_cmts.parser(), provision.parser())
-        return mini_cmts.parser().parse_args(argv + list(cli))
+        argv = tomlconf.to_argv(f.name, sdr_cmts.parser(), provision.parser())
+        return sdr_cmts.parser().parse_args(argv + list(cli))
     finally:
         os.unlink(f.name)
 
@@ -39,7 +39,7 @@ files = sorted(glob.glob(os.path.join(here, "configs", "*.toml")) + glob.glob(os
 bad = []
 for path in files:
     try:
-        mini_cmts.parser().parse_args(tomlconf.to_argv(path, mini_cmts.parser(), provision.parser()))
+        sdr_cmts.parser().parse_args(tomlconf.to_argv(path, sdr_cmts.parser(), provision.parser()))
     except (ValueError, SystemExit) as e:
         bad.append(f"{os.path.basename(path)}: {e}")
 check("les fichiers d'exemple (configs/, packaging/) se lisent", files and not bad, f"{len(files)} fichiers {bad}")
@@ -65,7 +65,7 @@ check("[provisioning] : un seul --prov-args pour provision.py",
       and provision.parser().parse_args(shlex.split(a.prov_args)).us_buffer == 65536, a.prov_args)
 a = parse("[downstream]\nds_channels = 4\n", cli=["--ds-channels", "2"])
 check("la ligne de commande l'emporte sur le fichier", a.ds_channels == 2)
-a = mini_cmts.parser().parse_args(["--us-spacing", "-7e6", "--us-freq", "6.0e7", "--ds-spacing", "-8e6"])
+a = sdr_cmts.parser().parse_args(["--us-spacing", "-7e6", "--us-freq", "6.0e7", "--ds-spacing", "-8e6"])
 check("nombre négatif en notation scientifique pris pour une valeur", a.us_spacing == -7e6 and a.ds_spacing == -8e6)
 path, rest = tomlconf.split_config(["--config", "x.toml", "--freq", "314e6", "--config=y.toml"])
 check("--config retiré des arguments (le dernier compte)", path == "y.toml" and rest == ["--freq", "314e6"])

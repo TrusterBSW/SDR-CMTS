@@ -101,7 +101,7 @@ Les mesures sont maintenant faites avec 4, 8 et 16 flux. Avec 4 flux, TCP ne rem
 - **CoDel** (`--ds-aqm MS`, désactivé par défaut) : pas d'effet mesurable sur le débit, ping en
   téléchargement 88 → 55-64 ms.
 - **Chemin C des segments** (`usdsp.c seg_fast`, `us_phy._seg_fast`, actif par défaut ;
-  `MINI_CMTS_US_FAST=0` pour revenir au Python) : il décode d'un seul appel une rafale de segment
+  `SDR_CMTS_US_FAST=0` pour revenir au Python) : il décode d'un seul appel une rafale de segment
   avec l'égaliseur en cache (filtre, préambule, symboles, égaliseur, débrouillage, RS). Le recalcul de
   l'égaliseur se fait aussi en C. Résultat identique au Python (`tests/test_seg_fast.py`).
   70-78 % des rafales passent par le C.

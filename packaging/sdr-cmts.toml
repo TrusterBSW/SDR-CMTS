@@ -1,7 +1,7 @@
-# The bench of the mini-cmts service (systemctl enable --now mini-cmts).
-# Keys: the options of the CMTS (mini-cmts --help), --ds-channels -> ds_channels; the sections only
+# The bench of the sdr-cmts service (systemctl enable --now sdr-cmts).
+# Keys: the options of the CMTS (sdr-cmts --help), --ds-channels -> ds_channels; the sections only
 # group them, except [provisioning] (DHCP / TFTP / ToD: the options of provision.py). An option
-# given on the command line wins over this file. Examples: /usr/share/mini-cmts/configs/
+# given on the command line wins over this file. Examples: /usr/share/sdr-cmts/configs/
 #
 # Closed coax lab only, with attenuators: NEVER connect this to an operator's network.
 

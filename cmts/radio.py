@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""The B210 in a process of its own (mini_cmts.py --radio-process).
+"""The B210 in a process of its own (sdr_cmts.py --radio-process).
 
 With every thread in one process, the transmit chain (J.83 encoding, shaping, timed send) and the
 RX reads shared the GIL with the MAC layer, the bridge and the upstream event threads. On the
@@ -20,7 +20,7 @@ Split:
 The DOCSIS time base is the same: TX sample 0 goes out at tick t_start * master clock, the radio
 process starts both streams exactly as the single-process loop did.
 
-Several B210s (mini_cmts.py --ds-radios 2): one radio process per device, each with its own ring
+Several B210s (sdr_cmts.py --ds-radios 2): one radio process per device, each with its own ring
 of TS blocks (its share of the bonded channels, adjacent in frequency). The first one (primary)
 also receives the upstream and publishes `origin`, the host time of its device time 0; the others
 (p["follow"]) transmit only, set their device time on that origin and send block k with the same
@@ -266,7 +266,7 @@ class RadioProcess:
         """TX part of the status line (as the single-process loop prints it), since the last call."""
         with self._lock:
             agg, self._agg = self._agg, {}
-        self.last = dict(agg)                  # for the status page (mini_cmts.py web_snapshot)
+        self.last = dict(agg)                  # for the status page (sdr_cmts.py web_snapshot)
         if "U" not in agg:
             return "radio: pas encore d'état | "
         m = agg.get("margin_ms", float("inf"))
@@ -346,7 +346,7 @@ class TxChain:
 
 
 def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
-    """The radio process: see the module docstring. p: dict built by mini_cmts.py. origin: shared
+    """The radio process: see the module docstring. p: dict built by sdr_cmts.py. origin: shared
     Value (host time of the primary device's time 0), set by the primary, read by a follower.
     clock: shared Array (host ref, device time, rate, valid, samples of the primary's block 0 past
     seq * block), the primary's ClockFit model, published by the primary, read by a follower."""
@@ -556,7 +556,7 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
                 n_sent[0] = seq * n_nom + a_k
             elif clock is not None:
                 p_off = n_sent[0] - seq * n_nom
-            # local catch-up with hysteresis, as in the single-process loop (mini_cmts.py)
+            # local catch-up with hysteresis, as in the single-process loop (sdr_cmts.py)
             if sync[0] > 0 and not p["tx_untimed"]:
                 ahead = t_start + n_sent[0] / fs_tx - (sync[1] + time.perf_counter() - sync[0])
                 if ahead < -1e-3:

@@ -4,7 +4,7 @@
 """Drift between the clocks of several B210s (no common 10 MHz): every device's time is read
 against the host's monotonic clock; a straight line per device gives its rate against the host,
 the differences between devices their relative drift, i.e. how fast the downstream channels of a
-follower radio slide against the primary's (mini_cmts --ds-radios 2).
+follower radio slide against the primary's (sdr_cmts --ds-radios 2).
 
   tools/clock_drift.py SERIAL1,SERIAL2 [--seconds 600] [--mcr 27.808e6] [--every 0.5]
 

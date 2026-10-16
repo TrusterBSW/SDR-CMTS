@@ -112,13 +112,13 @@ class CmtsCore:
         # receiver could not keep up with ~490 bursts/s (2026-10-09).
         self.grant_ahead_every = max(1, int(grant_ahead_every))
         self.grant_ahead_scale = grant_ahead_scale
-        # diagnostic: MINI_CMTS_AHEAD_ALL=1 gives an MTC flow its grants in advance on every channel
+        # diagnostic: SDR_CMTS_AHEAD_ALL=1 gives an MTC flow its grants in advance on every channel
         # at once instead of in turn
-        self.ahead_all = bool(os.environ.get("MINI_CMTS_AHEAD_ALL"))
-        # diagnostic (MINI_CMTS_TIMING): per upstream channel, MTC grants and what came back
+        self.ahead_all = bool(os.environ.get("SDR_CMTS_AHEAD_ALL"))
+        # diagnostic (SDR_CMTS_TIMING): per upstream channel, MTC grants and what came back
         self.mtc_stat = collections.defaultdict(collections.Counter)
         # back-pressure (2026-10-11): rx_lag_ms(ucid) -> how far behind its RX stream that
-        # channel's receiver is (set by mini_cmts.py). Granting more air time than the receiver
+        # channel's receiver is (set by sdr_cmts.py). Granting more air time than the receiver
         # decodes only piles up delay: 6 DS + 2 US under upload, both upstream processes short
         # of CPU, 0.5-2.4 s behind. Beyond lag_ahead_ms the channel gets no grant in advance,
         # beyond lag_data_ms no data grant at all (the requests wait, polls go on); 0 = off.
@@ -132,23 +132,23 @@ class CmtsCore:
         self.next_dsid = 0x1001
         self.bonded = {}      # modem MAC -> DSID of its bonded unicast traffic, once online
         self.bonded_channels = {}   # modem MAC -> DCIDs it acquired (REG-ACK partial service)
-        # several upstream channels (set by mini_cmts.py): [(UCID, frequency)], the first one is
+        # several upstream channels (set by sdr_cmts.py): [(UCID, frequency)], the first one is
         # where modems range; a DOCSIS 3.0 modem is then put in Multiple Transmit Channel mode
         self.us_chans = None
         self.sid_ch = {}      # SID -> UCID, for the SIDs that are not on the first channel
         self.mtc_sids = set() # SIDs whose data grants carry segments (segment header ON)
-        self.ms_syms = 128    # symbols per mini-slot (set by mini_cmts.py)
+        self.ms_syms = 128    # symbols per mini-slot (set by sdr_cmts.py)
         self.phi_db = 54.0    # Phi of a 2-channel transmit channel set, 64-QAM (PHYv3.0 table 6-8)
         self.seg_lock = threading.Lock()   # segment reassembly: bursts of two channel threads
         self._maps_ch = collections.Counter()
         self._prof = None
         self._tcc_try = 0
         # Multi-channel registration per MULPIv3.0, as a real CMTS (ARRIS) does it (receive-only
-        # capture of 2026-10-12, mini_cmts --mtc-std, the default):
+        # capture of 2026-10-12, sdr_cmts --mtc-std, the default):
         # 47.3 criteria all 0, Dynamic Range Window in the TCC (UCID 0, action 2 "change") and
         # never in the RNG-RSPs (TLV 14), TLV 52, TCC references from 0, initialization technique 3
         self.mtc_std = False
-        # Multiple Transmit Channel mode, as MULPIv3.0 7.2.1.4 / Annex III have it (mini_cmts
+        # Multiple Transmit Channel mode, as MULPIv3.0 7.2.1.4 / Annex III have it (sdr_cmts
         # --mtc-owed): a queue-depth request only carries the bytes the CM had not requested yet,
         # so the CMTS owes the SUM of the requests not yet granted (primary SID -> bytes); every
         # grant to the modem (requested or in advance) pays some of it back, each MAP of each of
@@ -557,7 +557,7 @@ class CmtsCore:
         kw = dict(drw_action=None)
         if self.mtc_std:
             kw = dict(drw_action=2, technique=3, first_ref=0)
-        var = os.environ.get("MINI_CMTS_TCC_VARIANTS")     # diagnostic: a TCC variant per REG-REQ-MP
+        var = os.environ.get("SDR_CMTS_TCC_VARIANTS")     # diagnostic: a TCC variant per REG-REQ-MP
         if var:
             vs = var.split(",")
             v = vs[self._tcc_try % len(vs)]

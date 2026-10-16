@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Several B210s (mini_cmts --ds-radios 2): the bonded channels split into blocks of adjacent
+"""Several B210s (sdr_cmts --ds-radios 2): the bonded channels split into blocks of adjacent
 frequencies, one per device; the RCC of 12 channels over the receive modules of a 16-channel
 profile (MULPIv3.0 C.1.5.3); 6 channels keep the former single-module RCC."""
 import os
@@ -9,7 +9,7 @@ import sys
 import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import mini_cmts  # noqa: E402
+import sdr_cmts  # noqa: E402
 from cmts import cmcfg, registration  # noqa: E402
 
 ok_all = True
@@ -42,17 +42,17 @@ def rcp(rcp_id, nmods, nadj, nrc, per_module=8, primary_rcs=(1,)):
 
 # ---- channel split between the devices
 a = types.SimpleNamespace(ds_channels=12, ds_radios=2, freq=306e6, ds_spacing=8e6, ds_layout="around")
-chans = mini_cmts.ds_channels(a)
-groups = mini_cmts.radio_groups(chans, 2)
+chans = sdr_cmts.ds_channels(a)
+groups = sdr_cmts.radio_groups(chans, 2)
 f = [[chans[i][1] / 1e6 for i in g] for g in groups]
 check("12 canaux 'around' : primaire à 306 MHz", chans[0] == (1, 306e6), str(chans[:2]))
 check("2 B210 : deux blocs de 6 canaux adjacents", [len(x) for x in f] == [6, 6]
       and max(f[0]) < min(f[1]) and max(f[0]) - min(f[0]) == 40 and max(f[1]) - min(f[1]) == 40, str(f))
-check("6 canaux par B210 au plus", mini_cmts.radio_channels(a) == 6)
+check("6 canaux par B210 au plus", sdr_cmts.radio_channels(a) == 6)
 a1 = types.SimpleNamespace(ds_channels=6, ds_radios=1)
-check("1 B210 : inchangé", mini_cmts.radio_groups(mini_cmts.ds_channels(types.SimpleNamespace(
+check("1 B210 : inchangé", sdr_cmts.radio_groups(sdr_cmts.ds_channels(types.SimpleNamespace(
     ds_channels=6, freq=306e6, ds_spacing=8e6, ds_layout="around")), 1) == [[5, 1, 2, 0, 3, 4]]
-    or len(mini_cmts.radio_groups(mini_cmts.ds_channels(types.SimpleNamespace(
+    or len(sdr_cmts.radio_groups(sdr_cmts.ds_channels(types.SimpleNamespace(
         ds_channels=6, freq=306e6, ds_spacing=8e6, ds_layout="around")), 1)[0]) == 6)
 
 # ---- RCC

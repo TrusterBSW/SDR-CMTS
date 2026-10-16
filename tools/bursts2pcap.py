@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""Decoded upstream bursts saved by mini_cmts.py --save-bursts (burst_*.npz) -> DOCSIS pcap.
+"""Decoded upstream bursts saved by sdr_cmts.py --save-bursts (burst_*.npz) -> DOCSIS pcap.
 
   python3 tools/bursts2pcap.py captures/bursts -o captures/bursts.pcap
   wireshark captures/bursts.pcap

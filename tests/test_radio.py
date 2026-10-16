@@ -4,7 +4,7 @@
   - PacketRing: TS blocks written here arrive intact and in order in a spawned process;
   - SampleRing opened by name in another process: what that process pushes is seen here, with
     rx_tick0 / written read from the shared control words;
-  - TxChain gives the same samples as the single-process transmit chain of mini_cmts.py
+  - TxChain gives the same samples as the single-process transmit chain of sdr_cmts.py
     (1 channel: mux.shape, scale, clip; 2-3 channels: ChannelSynth, helper threads, scale_clip)."""
 import multiprocessing as mp
 import os
@@ -98,7 +98,7 @@ if __name__ == "__main__":
         chain = TxChain(p, stop)
         got = np.concatenate([chain(np.stack(b)) for b in blocks])
         stop.set()
-        # the single-process loop of mini_cmts.py (encoder + shaper threads), on the same packets
+        # the single-process loop of sdr_cmts.py (encoder + shaper threads), on the same packets
         encs = [J83AEncoder(qam) for _ in range(nch)]
         ref = []
         shaper = PulseShaper(sps)

@@ -1,4 +1,4 @@
-# mini-CMTS — un CMTS EuroDOCSIS logiciel sur USRP B210 (ou bladeRF)
+# sdr-cmts — un CMTS EuroDOCSIS logiciel sur USRP B210 (ou bladeRF)
 
 *[English version: README.md](README.md)*
 
@@ -8,6 +8,11 @@ Un CMTS (Cable Modem Termination System) écrit en Python, avec des noyaux en C.
 - DHCP, TFTP, ToD, enregistrement DOCSIS 1.1 et 3.0 ;
 - agrégation de canaux descendants et montants (DOCSIS 3.0), pont Ethernet vers le PC Linux ;
 - paquet Debian, service systemd, page d'état dans le navigateur.
+
+**EuroDOCSIS uniquement** : canaux descendants de 8 MHz, UIT-T J.83 annexe A (6,952 Msym/s,
+64/256-QAM), voie montante 5-65 MHz. Le DOCSIS nord-américain (J.83 annexe B : canaux de 6 MHz,
+codage en treillis, RS(128,122)) n'est pas implémenté ; la voie montante et la couche MAC sont les
+mêmes dans les deux.
 
 À notre connaissance, aucun CMTS libre ne faisait cela avec un SDR bon marché. Le projet sert à
 apprendre DOCSIS concrètement, et à permettre à d'autres de le faire.
@@ -65,12 +70,12 @@ Guide complet (hôte, USB, priorité temps réel, radios, service) : [docs/INSTA
 
 ```bash
 # Debian 12+ / Ubuntu 24.04+ : le paquet (dépendances installées par apt, noyaux C compilés pour ce CPU)
-./packaging/build-deb.sh && sudo apt install ./mini-cmts_*_all.deb
-sudo mini-cmts --config /etc/mini-cmts/mini-cmts.toml          # puis allumer le modem
+./packaging/build-deb.sh && sudo apt install ./sdr-cmts_*_all.deb
+sudo sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml          # puis allumer le modem
 
 # ou depuis les sources
 sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40               # priorité temps réel pour ce shell
-python3 mini_cmts.py --all-in-one --config configs/b210.toml
+python3 sdr_cmts.py --all-in-one --config configs/b210.toml
 ```
 
 `--all-in-one` lance aussi `provision.py` sur l'interface TAP `cmts0` (10.10.0.1/24) :
@@ -101,17 +106,17 @@ Journal attendu, en une minute environ : `RANGING TERMINÉ`, DHCP, TFTP, puis
     écrites dans le fichier de banc `--config` (commentaires gardés, `.bak`), puis le CMTS
     redémarre dessus. Depuis la machine elle-même seulement (ou `ssh -L 8090:127.0.0.1:8090 hôte`) ;
     `--status-edit on` depuis partout où la page est joignable, `off` en lecture seule.
-- **Sans matériel** : `MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4` fait tourner toute la
+- **Sans matériel** : `SDR_CMTS_SDR_SIM=1 sdr-cmts --tap none --ds-channels 4` fait tourner toute la
   chaîne sur une radio simulée, au rythme du temps réel : pour l'essayer, ou dimensionner un PC
   avant d'acheter un SDR (la marge TX des lignes d'état doit rester au-dessus de ~5 ms).
   `--sim SECONDES`, lui, simule un modem dans un seul processus, sans temps réel.
-- **Service** : `sudo systemctl enable --now mini-cmts` lance le banc de
-  `/etc/mini-cmts/mini-cmts.toml` ; `journalctl -u mini-cmts -f` montre sa console. Un SDR débranché
+- **Service** : `sudo systemctl enable --now sdr-cmts` lance le banc de
+  `/etc/sdr-cmts/sdr-cmts.toml` ; `journalctl -u sdr-cmts -f` montre sa console. Un SDR débranché
   arrête le CMTS (code 3) et le service le relance toutes les 15 s jusqu'à son retour.
 - **Réglages de l'hôte** : pendant qu'il tourne, le CMTS met le gouverneur du processeur en
   `performance`, bloque les états de veille profonds et écarte les autres interruptions de ses
   cœurs ; après chaque arrêt (même tué), tout revient aux valeurs par défaut du noyau
-  (`mini-cmts --restore-host`, lancé par le service).
+  (`sdr-cmts --restore-host`, lancé par le service).
 
 Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 
@@ -143,7 +148,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
 | `--status-edit` | auto | le formulaire de configuration : modifications depuis cette machine seulement ; `on` depuis partout, `off` lecture seule |
 | `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |
 
-`python3 mini_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
+`python3 sdr_cmts.py --help` donne tout ; `--sim SECONDES` simule un modem sans matériel.
 
 ## Fonctionnement
 
@@ -163,7 +168,7 @@ Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
   - trames MAC et concaténations ;
   - une rafale de segment d'un modem dont l'égaliseur est connu (la grande majorité du trafic
     multi-canal) est décodée d'un seul appel C, égaliseur recalculé en C si besoin (`seg_fast`) ;
-    le reste passe par le chemin Python (`MINI_CMTS_US_FAST=0` : tout en Python).
+    le reste passe par le chemin Python (`SDR_CMTS_US_FAST=0` : tout en Python).
 - **MAC** (`cmts/ranging.py`, `cmts/registration.py`, `cmts/docsis_mac.py`) :
   - ranging (temps, puissance, fréquence) ;
   - demandes de bande passante et grants, y compris les grants en avance ;
@@ -270,13 +275,29 @@ La plupart des tests rejouent de vraies rafales du modem (`tests/data/sagem3686/
 
 ## Feuille de route
 
+Souhaitées ensuite :
+- **Un modem câble logiciel (SDR CM)** : le côté modem de DOCSIS sur une seconde radio, pour
+  éprouver le CMTS face à un modem entièrement connu et étudier le protocole des deux côtés. Au
+  labo, face à ce CMTS seulement : jamais sur le réseau d'un opérateur.
+- **ZeroMQ entre le CMTS et le SDR CM** : les échantillons échangés en logiciel au lieu de passer
+  par l'antenne, comme le fait srsRAN pour la LTE : tout le lien DOCSIS sur un seul PC sans radio,
+  pour le développement et les tests de la CI.
+- **Un CMTS réparti sur plusieurs PC** : les radios (et leur trafic USB) sur des machines
+  distinctes, la MAC sur une seule, les blocs TS et les résultats montants par le réseau, les
+  horloges reliées (10 MHz / PPS, ou PTP) : moins de processeur par machine, plus de bus USB
+  unique à sa limite.
+
+Autres évolutions possibles :
 - Un 10 MHz / PPS commun pour plusieurs B210 (`--clock-source external`) : plus rien à recaler ;
   puis 3 + 3 DS et plus de radios sur un hôte avec assez de bande passante mémoire.
+- Le DOCSIS nord-américain : voie descendante J.83 annexe B (canaux de 6 MHz, codage en treillis,
+  RS(128,122)) ; la voie montante et la couche MAC sont déjà les mêmes.
 - bladeRF : échantillons 8 bits (libbladeRF 2.5+) pour 2 US et 4 à 6 DS ; un pilote par radio,
   pour mélanger B210 et bladeRF.
 - Plusieurs modems à la fois (testé avec un seul), et un second modèle de modem.
 - Montant : moins de processeur par canal (suivi de phase par blocs, Reed-Solomon en SIMD), plus
   de 2 canaux en production.
+- Baseline Privacy Plus (BPI+, chiffrement du trafic), provisionnement IPv6 (le Sagem l'annonce).
 
 ## Licence
 
@@ -285,6 +306,9 @@ d'utiliser, de modifier et de partager ; une version modifiée distribuée ou ut
 réseau doit être accompagnée de son code source. L'intégrer dans un produit fermé, ou garder ses
 modifications privées, demande une licence commerciale du titulaire des droits. Contributions :
 `CONTRIBUTING.md`. Copyright © 2026 BILLY Rémi.
+
+DOCSIS® et EuroDOCSIS™ sont des marques de Cable Television Laboratories, Inc. (CableLabs) ; ce
+projet n'est ni affilié à CableLabs, ni certifié, ni approuvé par lui.
 
 Normes de référence (non incluses) : CableLabs DOCSIS MULPIv3.0 et PHYv3.0, UIT-T J.83,
 ETSI EN 300 429.

@@ -1,10 +1,11 @@
-# Installing mini-cmts
+# Installing sdr-cmts
 
 *[Version française : INSTALL.fr.md](INSTALL.fr.md)*
 
 Two ways: the Debian package (Debian 12 or newer, Ubuntu 24.04 or newer), or the sources (any
 Linux with Python 3.11+, UHD and a C compiler). Both need the same hardware and the same care with
-the cabling: read the **Safety** part of the README first. Closed coax only.
+the cabling: read the **Safety** part of the README first. Closed coax only. EuroDOCSIS modems
+only (8 MHz channels; North American DOCSIS is not implemented).
 
 ## 1. The host
 
@@ -17,7 +18,7 @@ the cabling: read the **Safety** part of the README first. Closed coax only.
   no other SDR, no hub). `lsusb -t` shows the tree. Late or missing samples (`U`, `L`, `O` in the
   status line) usually come from a shared controller, not from the software.
 - **Real-time priority**: the radio and upstream processes raise their priority themselves (`--rt-prio`,
-  50 by default). The Debian package allows it to the `usrp` group (`/etc/security/limits.d/99-mini-cmts.conf`)
+  50 by default). The Debian package allows it to the `usrp` group (`/etc/security/limits.d/99-sdr-cmts.conf`)
   and to the service; from the sources: `sudo prlimit --pid $$ --rtprio=99:99 --nice=40:40` in the
   shell that starts it, or the same limits.d lines.
 - `sudo` without a password for the user that starts it, or run it as root: it creates the TAP
@@ -27,8 +28,8 @@ the cabling: read the **Safety** part of the README first. Closed coax only.
 ## 2a. The Debian package
 
 ```bash
-./packaging/build-deb.sh            # -> mini-cmts_<version>_all.deb (needs dpkg-deb, python3, NumPy)
-sudo apt install ./mini-cmts_*_all.deb
+./packaging/build-deb.sh            # -> sdr-cmts_<version>_all.deb (needs dpkg-deb, python3, NumPy)
+sudo apt install ./sdr-cmts_*_all.deb
 sudo uhd_images_downloader -t b2xx  # B210 FPGA images, once (uhd-host)
 ```
 
@@ -40,14 +41,14 @@ What it installs:
 
 | Path | What |
 |---|---|
-| `/usr/bin/mini-cmts` | the CMTS (`mini_cmts.py`), same options; `man mini-cmts` describes them all |
-| `/usr/lib/mini-cmts/` | the code, `tools/bladerf_check.py`, `tools/clock_drift.py` |
-| `/etc/mini-cmts/mini-cmts.toml` | the bench of the service (kept on upgrade) |
-| `/usr/share/mini-cmts/configs/` | examples: `b210.toml` (6 DS + 2 US), `2xb210.toml`, `bladerf.toml` |
-| `mini-cmts.service` | the systemd service, **neither enabled nor started** by the installation |
-| `/var/lib/mini-cmts/captures/` | the logs and captures of the service |
+| `/usr/bin/sdr-cmts` | the CMTS (`sdr_cmts.py`), same options; `man sdr-cmts` describes them all |
+| `/usr/lib/sdr-cmts/` | the code, `tools/bladerf_check.py`, `tools/clock_drift.py` |
+| `/etc/sdr-cmts/sdr-cmts.toml` | the bench of the service (kept on upgrade) |
+| `/usr/share/sdr-cmts/configs/` | examples: `b210.toml` (6 DS + 2 US), `2xb210.toml`, `bladerf.toml` |
+| `sdr-cmts.service` | the systemd service, **neither enabled nor started** by the installation |
+| `/var/lib/sdr-cmts/captures/` | the logs and captures of the service |
 
-Moved the disk to another CPU? `sudo dpkg-reconfigure mini-cmts` compiles the C kernels again.
+Moved the disk to another CPU? `sudo dpkg-reconfigure sdr-cmts` compiles the C kernels again.
 
 ## 2b. From the sources
 
@@ -57,7 +58,7 @@ sudo apt install python3-numpy python3-scipy python3-uhd uhd-host gcc iproute2
 # Arch Linux
 sudo pacman -S python-numpy python-scipy libuhd gcc iproute2
 sudo uhd_images_downloader -t b2xx
-git clone <this repository> && cd mini-cmts
+git clone <this repository> && cd sdr-cmts
 python3 tests/run.py                # every test that needs no radio (a few minutes)
 ```
 
@@ -71,12 +72,12 @@ the whole CMTS runs (MAC, radio and upstream processes, status page) with no SDR
 size a PC before buying one:
 
 ```bash
-MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4 --us-channels 1    # Ctrl+C after a minute
+SDR_CMTS_SDR_SIM=1 sdr-cmts --tap none --ds-channels 4 --us-channels 1    # Ctrl+C after a minute
 ```
 
 The host holds that many channels if the status lines keep `marge TX min` above ~5 ms and no
 `!! blocage` appears. No modem answers: the upstream load of a real modem (bursts to decode) comes
-on top. `MINI_CMTS_SIM_UNPLUG_S=20` also simulates the SDR unplugged 20 s after start (the CMTS
+on top. `SDR_CMTS_SIM_UNPLUG_S=20` also simulates the SDR unplugged 20 s after start (the CMTS
 stops with exit code 3).
 
 ## 3. The radio
@@ -95,8 +96,8 @@ stops with exit code 3).
 ## 4. First start
 
 ```bash
-sudo mini-cmts --config /etc/mini-cmts/mini-cmts.toml     # package
-python3 mini_cmts.py --all-in-one --config configs/b210.toml   # sources
+sudo sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml     # package
+python3 sdr_cmts.py --all-in-one --config configs/b210.toml   # sources
 ```
 
 Then power the modem on. Within about a minute: `RANGING TERMINÉ`, DHCP, TFTP,
@@ -112,25 +113,25 @@ stays read-only from there unless `--status-edit on`; from another PC: `ssh -L
 ## 5. As a service
 
 ```bash
-sudoedit /etc/mini-cmts/mini-cmts.toml          # the bench: radio, channels, provisioning
-sudo systemctl enable --now mini-cmts
-journalctl -u mini-cmts -f                      # the console of the CMTS
-sudo systemctl stop mini-cmts                   # Ctrl+C for the CMTS: radios stopped cleanly
+sudoedit /etc/sdr-cmts/sdr-cmts.toml          # the bench: radio, channels, provisioning
+sudo systemctl enable --now sdr-cmts
+journalctl -u sdr-cmts -f                      # the console of the CMTS
+sudo systemctl stop sdr-cmts                   # Ctrl+C for the CMTS: radios stopped cleanly
 ```
 
 It restarts after a failure (15 s later): an SDR unplugged stops the CMTS (exit code 3) and the
 service starts it again every 15 s until the SDR is back. The host settings changed for the run
 (CPU governor, interrupts moved off the CMTS cores) are set back to the kernel's defaults after
-every stop, even a killed one (`ExecStopPost=mini-cmts --restore-host`; by hand: `sudo mini-cmts --restore-host`). The log of
-every run is also in `/var/lib/mini-cmts/captures/cmts_<date>_<time>.log`.
+every stop, even a killed one (`ExecStopPost=sdr-cmts --restore-host`; by hand: `sudo sdr-cmts --restore-host`). The log of
+every run is also in `/var/lib/sdr-cmts/captures/cmts_<date>_<time>.log`.
 
 ## 6. The bench file
 
-Keys are the options of `mini-cmts --help` (`--ds-channels` -> `ds_channels`); sections only group
+Keys are the options of `sdr-cmts --help` (`--ds-channels` -> `ds_channels`); sections only group
 them, except `[provisioning]` (the options of `provision.py`). The command line wins over the file:
 
 ```bash
-mini-cmts --config /etc/mini-cmts/mini-cmts.toml --ds-channels 2 --status-http none
+sdr-cmts --config /etc/sdr-cmts/sdr-cmts.toml --ds-channels 2 --status-http none
 ```
 
 A misspelt key is refused with the nearest names, rather than silently keeping a default.

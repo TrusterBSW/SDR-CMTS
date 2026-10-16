@@ -1,7 +1,7 @@
 # Two B210s: 2 + 2 downstream channels + 2 upstream channels (189 / 50 Mbit/s, 2026-10-15).
 # The first serial is the primary (low channels + upstream on its RX2), the second a follower;
 # without a common 10 MHz the follower realigns on the primary (cmts/radio.py, docs/JOURNAL.fr.md).
-#   python3 mini_cmts.py --all-in-one --config configs/2xb210.toml
+#   python3 sdr_cmts.py --all-in-one --config configs/2xb210.toml
 
 [radio]
 sdr = "b210"

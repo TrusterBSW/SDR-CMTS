@@ -57,7 +57,7 @@ def _fill(mux, n):
 
 
 class CoDel:
-    """CoDel (RFC 8289) at the head of a downstream data queue (mini_cmts --ds-aqm, 30 ms by default): while frames
+    """CoDel (RFC 8289) at the head of a downstream data queue (sdr_cmts --ds-aqm, 30 ms by default): while frames
     have waited more than `target` for at least `interval`, drop one now and then, more and more
     often (interval / sqrt(count)), instead of every frame past a hard limit at once. With 16 TCP
     flows the hard 100 ms limit dropped hundreds of frames in a row: all the flows backed off
