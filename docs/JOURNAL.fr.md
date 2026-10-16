@@ -891,4 +891,4 @@ place. Les mémoires partagées sont maintenant réservées dès leur création 
 Les tests en échec sur GitHub laissent la fin de leur sortie en annotation, lisible par tous.
 Les annotations ont ensuite montré la vraie cause sur GitHub : `test_tapfeed.py` bloqué, parce que ses 300 trames
 attendaient dans une paire de sockets `SOCK_DGRAM`, que le noyau limite à `net.unix.max_dgram_qlen` datagrammes en
-attente (512 chez nous, moins chez GitHub). `SOCK_SEQPACKET` garde une trame par lecture sans cette limite.
+attente (512 chez nous, moins chez GitHub), et toute socket à la taille de ses tampons, plafonnée par `net.core.wmem_max` (208 Ko par défaut). Le test met maintenant en attente ce que le noyau accepte, sans bloquer, et vérifie la limite de lot avec un tableau plus petit.
