@@ -889,3 +889,6 @@ vrai défaut : la radio mourait d'un SIGBUS en écrivant l'anneau montant, plus 
 Docker. Un tmpfs n'échoue pas à la création d'un segment trop grand, seulement à la première écriture au-delà de la
 place. Les mémoires partagées sont maintenant réservées dès leur création : le manque de place est dit au démarrage.
 Les tests en échec sur GitHub laissent la fin de leur sortie en annotation, lisible par tous.
+Les annotations ont ensuite montré la vraie cause sur GitHub : `test_tapfeed.py` bloqué, parce que ses 300 trames
+attendaient dans une paire de sockets `SOCK_DGRAM`, que le noyau limite à `net.unix.max_dgram_qlen` datagrammes en
+attente (512 chez nous, moins chez GitHub). `SOCK_SEQPACKET` garde une trame par lecture sans cette limite.

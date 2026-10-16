@@ -3,7 +3,7 @@
 """Downstream frames from the TAP by batches (cmts/bridge.py TapFeed, cdsp.tap_read_batch): the C
 reader takes every frame waiting in one call, up to its frame limit, sizes exact; the encoder side
 turns them into PDUs in order, a byte budget at a time, each with its arrival time; a batch older
-than the queue limit is dropped before any work. A datagram socket stands for the TAP (one frame
+than the queue limit is dropped before any work. A sequenced-packet socket stands for the TAP (one frame
 per read, as a TAP gives)."""
 import os
 import socket
@@ -28,10 +28,14 @@ if not cdsp.DS_AVAILABLE:
     print("SKIP (pas de C)")
     sys.exit(0)
 
-a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+# SOCK_SEQPACKET: one frame per read, as a TAP gives, queued up to the buffer sizes. SOCK_DGRAM
+# also stops at net.unix.max_dgram_qlen datagrams waiting: 512 on our hosts, lower on GitHub's
+# runners, where the 300 sends below blocked for good (CI timeout, 2026-10-16)
+a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 a.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
 b.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
 b.setblocking(False)
+a.settimeout(5)                                   # a full queue fails the test, never hangs it
 rng = np.random.default_rng(3)
 sizes = rng.integers(60, 1515, 300)
 frames = [bytes([k & 0xFF]) * int(n) for k, n in enumerate(sizes)]
