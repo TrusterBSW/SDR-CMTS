@@ -24,6 +24,8 @@ Interface (times in seconds of the device clock, ticks at p["mcr"]):
   stop_rx()
   close()                    (bladeRF: the device again free for another open in this process)
 """
+import os
+import sys
 import time
 
 import numpy as np
@@ -38,13 +40,115 @@ TX_CAL_RX_BW = 56e6
 
 
 def open_radio(p, has_rx):
-    """The device of the radio parameters p (p["driver"]: "uhd", the default, or "bladerf")."""
+    """The device of the radio parameters p (p["driver"]: "uhd", the default, or "bladerf");
+    MINI_CMTS_SDR_SIM=1: SimRadio, no hardware (tests)."""
+    if os.environ.get("MINI_CMTS_SDR_SIM"):
+        return SimRadio(p, has_rx)
     drv = p.get("driver", "uhd")
     if drv == "uhd":
         return UhdRadio(p, has_rx)
     if drv == "bladerf":
         return BladeRFRadio(p, has_rx)
     raise ValueError(f"pilote SDR inconnu : {drv}")
+
+
+class SimRadio:
+    """A radio without hardware, for the tests of the whole chain (MAC, radio and upstream
+    processes, bridge, stop sequence): it takes the transmit blocks and gives receive samples (low
+    noise) at the pace of real time, on a device clock of its own, as a B210 would.
+    MINI_CMTS_SIM_UNPLUG_S=N: N seconds after opening, the process aborts in the middle of a
+    transfer, as UHD did when the B210 was unplugged (2026-10-16: "terminate called after
+    throwing an instance of 'uhd::usb_error'", LIBUSB_ERROR_NO_DEVICE)."""
+    name = "radio simulée"
+    AHEAD_S = 0.015                       # how far ahead of air time a send may return (USB buffers)
+
+    def __init__(self, p, has_rx):
+        self.p, self.has_rx = p, has_rx
+        self.mcr, self.fs_tx, self.decim = p["mcr"], p["fs_tx"], p["decim"]
+        self._t0 = time.monotonic()
+        self._off = 0.0
+        self._rx_next = None
+        self._tx_end = None
+        self._events = []
+        self.tx_spp = self.rx_spp = 0
+        unplug = float(os.environ.get("MINI_CMTS_SIM_UNPLUG_S", "0") or 0)
+        self._unplug_at = self._t0 + unplug if unplug > 0 else None
+        self._rng = np.random.default_rng(1)
+
+    def _alive(self):
+        if self._unplug_at is not None and time.monotonic() >= self._unplug_at:
+            sys.stderr.write("[SIM] débranchement simulé : abort() dans le processus radio\n")
+            sys.stderr.flush()
+            os.abort()
+
+    def describe(self):
+        return (f"radio simulée (MINI_CMTS_SDR_SIM) : TX {self.fs_tx / 1e6:.3f} MS/s"
+                + (f", RX {self.mcr / self.decim / 1e6:.3f} MS/s" if self.has_rx else ", émission seule")
+                + ", aucun matériel")
+
+    def warning(self):
+        return None
+
+    def check(self):
+        return None
+
+    def open_streams(self):
+        self.tx_spp = self.rx_spp = 2040
+
+    def time_now(self):
+        return time.monotonic() - self._t0 + self._off
+
+    def set_time(self, t):
+        self._off = t - (time.monotonic() - self._t0)
+
+    def _wait_until(self, dev_t):
+        while True:
+            self._alive()
+            d = dev_t - self.time_now()
+            if d <= 0:
+                return
+            time.sleep(min(d, 0.05))
+
+    def start_rx(self, t):
+        self._rx_next = round(t * self.mcr)
+
+    def stop_rx(self):
+        self._rx_next = None
+
+    def recv(self, buf):
+        if self._rx_next is None:
+            time.sleep(0.01)
+            self._alive()
+            return 0, None, False
+        n = buf.shape[1]
+        tick = self._rx_next
+        self._wait_until((tick + n * self.decim) / self.mcr)
+        buf[0, :n] = (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n)).astype(np.complex64) * 1e-3
+        self._rx_next = tick + n * self.decim
+        return n, tick, False
+
+    def send(self, x, tick, first):
+        if tick is not None:
+            start = tick / self.mcr
+            if self.time_now() > start + 1e-3:
+                self._events.append("L")
+        else:
+            start = self._tx_end if self._tx_end is not None else self.time_now()
+        self._tx_end = start + x.size / self.fs_tx
+        self._wait_until(self._tx_end - self.AHEAD_S)
+
+    def end_burst(self):
+        pass
+
+    def tx_event(self, timeout):
+        if self._events:
+            return self._events.pop(0)
+        time.sleep(timeout)
+        self._alive()
+        return None
+
+    def close(self):
+        pass
 
 
 class UhdRadio:

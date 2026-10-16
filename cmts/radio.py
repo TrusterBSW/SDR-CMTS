@@ -203,7 +203,11 @@ class RadioProcess:
         self.params = params
         self.log = log
         self._q = self._ctx.Queue()
-        self._stop = self._ctx.Event()
+        # the stop flag: a plain shared byte, polled by the radio process. A multiprocessing.Event
+        # waited on there deadlocked us: Event.set() waits for every sleeper to acknowledge, and a
+        # radio process that died waiting (B210 unplugged, UHD aborts) never does; the MAC hung
+        # in stop() until systemd killed everything (2026-10-16)
+        self._stop = self._ctx.RawValue("b", 0)
         self.started = threading.Event()
         self.failed = None
         self.dropped = self.dropped_logged = 0   # blocks a follower missed (ring full)
@@ -273,7 +277,7 @@ class RadioProcess:
                 f"O {agg['O']} | {marg}")
 
     def stop(self):
-        self._stop.set()
+        self._stop.value = 1
         if self._proc is not None:
             self._proc.join(3)
             if self._proc.is_alive():
@@ -477,7 +481,8 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
                 counters[ev] += 1
 
     def watch_stop():
-        stop_ev.wait()
+        while not stop_ev.value and not stop.is_set():
+            time.sleep(0.1)
         stop.set()
 
     spp = dev.tx_spp

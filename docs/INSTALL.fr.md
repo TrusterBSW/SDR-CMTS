@@ -109,7 +109,11 @@ journalctl -u mini-cmts -f                      # la console du CMTS
 sudo systemctl stop mini-cmts                   # Ctrl+C pour le CMTS : radios arrêtées proprement
 ```
 
-Il redémarre après une panne (15 s plus tard). Le journal de chaque lancement est aussi dans
+Il redémarre après une panne (15 s plus tard) : un SDR débranché arrête le CMTS (code 3) et le
+service le relance toutes les 15 s jusqu'à ce que le SDR revienne. Les réglages de l'hôte changés
+pour le fonctionnement (gouverneur du processeur, interruptions écartées des cœurs du CMTS) sont
+rétablis après chaque arrêt, même tué (`ExecStopPost=mini-cmts --restore-host` ; à la main :
+`sudo mini-cmts --restore-host`). Le journal de chaque lancement est aussi dans
 `/var/lib/mini-cmts/captures/cmts_<date>_<heure>.log`.
 
 ## 6. Le fichier de banc

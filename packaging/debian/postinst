@@ -21,6 +21,8 @@ case "$1" in
     configure|reconfigure)
         build
         getent group usrp >/dev/null || addgroup --system usrp
+        # the unit may have changed (upgrade): systemd reads it again, without starting anything
+        [ -d /run/systemd/system ] && systemctl daemon-reload || true
         cat <<'MSG'
 mini-cmts installed. Not started: check the cabling (closed coax, attenuators) first.
   bench:        /etc/mini-cmts/mini-cmts.toml   (examples: /usr/share/mini-cmts/configs/)

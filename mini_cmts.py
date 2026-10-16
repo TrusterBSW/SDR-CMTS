@@ -46,7 +46,7 @@ import time
 import numpy as np
 
 from cmts import docsis_mac as mac
-from cmts import cdsp, modeminfo, netpkt, tomlconf
+from cmts import cdsp, hoststate, modeminfo, netpkt, tomlconf
 from cmts.bridge import TapFeed, BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
@@ -322,6 +322,7 @@ class LineLimiter:
 
 
 RESTART = 75                    # run_split's return code when the status page asked for a restart
+RADIO_LOST = 3                  # the radio process died (SDR unplugged...): exit non-zero, systemd restarts
 _restart = threading.Event()
 
 
@@ -770,9 +771,19 @@ def herd_irqs(irq_cpus):
         head = line.split(":")[0].strip()
         if head.isdigit() and "xhci_hcd" not in line:
             irqs.append(head)
-    moved, failed = 0, 0
+    original = {}
     for irq in irqs:
-        r = subprocess.run(["sudo", "-n", "tee", f"/proc/irq/{irq}/smp_affinity_list"], input=target,
+        try:
+            with open(f"/proc/irq/{irq}/smp_affinity_list") as f:
+                original[f"/proc/irq/{irq}/smp_affinity_list"] = f.read().strip()
+        except OSError:
+            pass
+    hoststate.remember("irq", original)              # before any change: restored whatever the end
+    restore_host_at_exit()
+    moved, failed = 0, 0
+    tee = ["tee"] if os.geteuid() == 0 else ["sudo", "-n", "tee"]
+    for irq in irqs:
+        r = subprocess.run([*tee, f"/proc/irq/{irq}/smp_affinity_list"], input=target,
                            capture_output=True, text=True)
         if r.returncode == 0:
             moved += 1
@@ -861,19 +872,6 @@ def _read_cpufreq(name):
     return out
 
 
-def _write_cpufreq(values):
-    """{sysfs path: value} through sudo tee (one call per distinct value)."""
-    by_val = {}
-    for path, v in values.items():
-        by_val.setdefault(v, []).append(path)
-    for v, paths in by_val.items():
-        r = subprocess.run(["sudo", "tee", *paths], input=v + "\n", text=True,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if r.returncode:
-            return r.stderr.strip() or f"sudo tee: code {r.returncode}"
-    return None
-
-
 def cpu_governor(want):
     """--performance: every CPU in the 'performance' governor for the run, the previous governor
     and energy/performance preference restored on exit. Otherwise only warn if it is not."""
@@ -887,15 +885,23 @@ def cpu_governor(want):
         return (f"!! gouverneur CPU {'/'.join(current)} : la fréquence varie et retarde l'émission. "
                 f"Relance avec --performance")
     epp = _read_cpufreq("energy_performance_preference")
-    err = _write_cpufreq({p: "performance" for p in gov})
+    hoststate.remember("cpufreq", {**gov, **epp})        # before any change: restored whatever the end
+    restore_host_at_exit()
+    err = hoststate.write({p: "performance" for p in gov})
     if err:
         return f"!! gouverneur CPU non modifié ({err}), reste {'/'.join(current)}"
+    return f"gouverneur CPU performance (était {'/'.join(current)}, rétabli à l'arrêt)"
 
-    def restore():
-        e = _write_cpufreq(gov) or (_write_cpufreq(epp) if epp else None)
-        print(f"gouverneur CPU {'/'.join(current)} restauré" if not e else f"!! gouverneur CPU non restauré: {e}")
-    atexit.register(restore)
-    return f"gouverneur CPU performance (était {'/'.join(current)}, restauré à l'arrêt)"
+
+_restore_registered = []
+
+
+def restore_host_at_exit():
+    """The host settings changed for the run put back when this process ends (cmts/hoststate.py;
+    after a SIGKILL: the service's ExecStopPost, or the next start)."""
+    if not _restore_registered:
+        _restore_registered.append(True)
+        atexit.register(lambda: (lambda m: m and log(m))(hoststate.restore("arrêt")))
 
 
 # holds the PM QoS request until its stdin closes (our exit, even a crash): the kernel drops it
@@ -1166,7 +1172,9 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                 rc = RESTART
                 break
             if not radio.alive():
-                log("!! processus radio arrêté")
+                log("!! processus radio arrêté (radio débranchée ou en panne) : arrêt du CMTS, code "
+                    f"{RADIO_LOST} (le service systemd le relance)")
+                rc = RADIO_LOST
                 break
             if gc_stats.pop("refreeze", False):
                 freeze_gc(log, "après une collecte complète lente")
@@ -1208,6 +1216,9 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
 
 
 def run_usrp(a):
+    stale = hoststate.restore("laissés par un arrêt brutal")
+    if stale:
+        log(stale)
     if a.tap and not ensure_tap(a.tap, log):
         log(f"!! interface {a.tap} indisponible : relance avec --tap none pour tourner sans pont")
         return 1
@@ -1697,6 +1708,9 @@ def parser():
                    help="status page (channels, radios, modems, throughput, alerts) on this address; "
                         "none to turn it off; 0.0.0.0:8090 to reach it from the network (closed lab only: "
                         "it shows the modems' MAC addresses)")
+    g.add_argument("--restore-host", action="store_true",
+                   help="only put back the host settings a run changed (CPU governor, interrupts) if it "
+                        "could not (killed); the systemd service runs it after every stop")
     g.add_argument("--status-edit", choices=("auto", "on", "off"), default="auto",
                    help="the Configuration form of the status page writes the --config file and restarts the "
                         "CMTS: auto = from this machine only (its browser, or ssh -L 8090:127.0.0.1:8090), read-only "
@@ -1776,6 +1790,8 @@ def _sigint_once(signum, frame):
 def main(argv=None):
     if threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGINT, _sigint_once)
+        import faulthandler
+        faulthandler.register(signal.SIGUSR1, all_threads=True)    # kill -USR1: every thread's stack
     argv = sys.argv[1:] if argv is None else list(argv)
     path, rest = tomlconf.split_config(argv)
     ap = parser()
@@ -1788,6 +1804,9 @@ def main(argv=None):
         except Exception as e:                    # noqa: BLE001 - tomllib.TOMLDecodeError
             sys.exit(f"--config {path} : {e}")
     a = ap.parse_args(argv)
+    if a.restore_host:
+        print(hoststate.restore("--restore-host") or "réglages de l'hôte : rien à rétablir")
+        return 0
     a.config_path = path
     opt_dest = {o: act.dest for act in ap._actions for o in act.option_strings}
     a.cli_locked = {opt_dest[t.split("=", 1)[0]] for t in rest if t.split("=", 1)[0] in opt_dest}
