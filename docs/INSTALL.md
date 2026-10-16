@@ -64,6 +64,21 @@ python3 tests/run.py                # every test that needs no radio (a few minu
 The C kernels (`cmts/*.c`) are compiled on first use into `cmts/_*.so`; without a C compiler the
 Python fallbacks are far too slow for a radio.
 
+## 2c. Trying it without a radio
+
+The simulated radio takes the transmit blocks and gives receive samples at the pace of real time:
+the whole CMTS runs (MAC, radio and upstream processes, status page) with no SDR. It is the way to
+size a PC before buying one:
+
+```bash
+MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4 --us-channels 1    # Ctrl+C after a minute
+```
+
+The host holds that many channels if the status lines keep `marge TX min` above ~5 ms and no
+`!! blocage` appears. No modem answers: the upstream load of a real modem (bursts to decode) comes
+on top. `MINI_CMTS_SIM_UNPLUG_S=20` also simulates the SDR unplugged 20 s after start (the CMTS
+stops with exit code 3).
+
 ## 3. The radio
 
 - **B210**: `uhd_find_devices` must list it, on USB 3 (`uhd_usrp_probe` says `USB 3`).

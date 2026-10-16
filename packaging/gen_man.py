@@ -111,6 +111,27 @@ def main():
         "the devices behind them), the throughput and the recent alerts. Its Configuration form "
         "rewrites the --config file and restarts the CMTS; by default only from the machine itself "
         "(--status-edit). /status.json gives the same data, /source.tar.gz the program's source.") + "\n")
+    w(".SH ENVIRONMENT\n")
+    for var, what in (
+            ("MINI_CMTS_SDR_SIM=1", "a simulated radio instead of the SDR: it takes the transmit blocks and gives "
+             "receive samples (low noise) at the pace of real time, with no hardware. The whole chain runs (MAC, "
+             "radio and upstream processes, bridge, status page): to try the CMTS, or to size a host before "
+             "buying an SDR (the TX margin in the status lines must stay above ~5 ms). No modem answers, so "
+             "the upstream load is not that of a real modem."),
+            ("MINI_CMTS_SIM_UNPLUG_S=N", "with the simulated radio: N seconds after start the radio process "
+             "aborts, as when an SDR is unplugged; the CMTS stops with exit code 3."),
+            ("MINI_CMTS_BLADERF_META_FORMAT=N", "the libbladeRF enum value of SC16_Q11_META, if the library's "
+             "version is not the one expected (see BLADERF.md)."),
+            ("MINI_CMTS_US_FAST=0", "every upstream burst decoded by the Python path (diagnostic; slower)."),
+            ("HOME", "UHD reads ~/.config/uhd.conf (the FPGA image of a B210 clone); the service sets it to /root.")):
+        w(f".TP\n.B {esc(var)}\n{esc(what)}\n")
+    w(".PP\n" + esc("Other MINI_CMTS_* variables are diagnostics described where the code reads them.") + "\n")
+    w(".SH \"EXIT STATUS\"\n")
+    for code, what in (("0", "stopped normally (Ctrl+C, systemctl stop)"),
+                       ("1", "could not start (no SDR found, TAP interface, bench file refused...)"),
+                       ("2", "command line options refused"),
+                       ("3", "the radio was lost while running (SDR unplugged): the service starts it again 15 s later")):
+        w(f".TP\n.B {code}\n{esc(what)}\n")
     w(".SH FILES\n")
     for path, what in (("/etc/mini-cmts/mini-cmts.toml", "the bench of the mini-cmts service"),
                        ("/usr/share/mini-cmts/configs/", "example bench files: b210.toml, 2xb210.toml, bladerf.toml"),

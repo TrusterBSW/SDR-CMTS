@@ -31,7 +31,10 @@ missing = [o for ap, skip in ((mini_cmts.parser(), ()), (provision.parser(), ("-
            if o.startswith("--") and o != "--help" and o not in skip and not re.search(rf"\\fB{re.escape(o)}\\fR", text)]
 check("chaque option longue est décrite", not missing, ", ".join(missing[:8]))
 check("sections attendues", all(f".SH {s}" in page for s in ("NAME", "SYNOPSIS", "DESCRIPTION", "SAFETY", "FILES",
-                                                             "EXAMPLES", "LICENSE")))
+                                                             "EXAMPLES", "LICENSE", "ENVIRONMENT",
+                                                             '"EXIT STATUS"')))
+check("radio simulée et code 3 décrits", "MINI_CMTS_SDR_SIM" in text and "MINI_CMTS_SIM_UNPLUG_S" in text
+      and "exit code 3" in text)
 if shutil.which("groff"):
     r = subprocess.run(["groff", "-man", "-Tutf8", "-ww", "-z"], input=page, capture_output=True, text=True)
     check("groff sans avertissement", not r.stderr.strip(), r.stderr.strip()[:120])

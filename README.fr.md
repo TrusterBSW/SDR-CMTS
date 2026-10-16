@@ -101,6 +101,10 @@ Journal attendu, en une minute environ : `RANGING TERMINÉ`, DHCP, TFTP, puis
     écrites dans le fichier de banc `--config` (commentaires gardés, `.bak`), puis le CMTS
     redémarre dessus. Depuis la machine elle-même seulement (ou `ssh -L 8090:127.0.0.1:8090 hôte`) ;
     `--status-edit on` depuis partout où la page est joignable, `off` en lecture seule.
+- **Sans matériel** : `MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4` fait tourner toute la
+  chaîne sur une radio simulée, au rythme du temps réel : pour l'essayer, ou dimensionner un PC
+  avant d'acheter un SDR (la marge TX des lignes d'état doit rester au-dessus de ~5 ms).
+  `--sim SECONDES`, lui, simule un modem dans un seul processus, sans temps réel.
 - **Service** : `sudo systemctl enable --now mini-cmts` lance le banc de
   `/etc/mini-cmts/mini-cmts.toml` ; `journalctl -u mini-cmts -f` montre sa console. Un SDR débranché
   arrête le CMTS (code 3) et le service le relance toutes les 15 s jusqu'à son retour.

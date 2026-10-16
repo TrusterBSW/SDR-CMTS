@@ -95,6 +95,10 @@ TFTP, `REG-ACK ok -> MODEM EN LIGNE` within about a minute. The console and logs
     `--config` bench file (comments kept, `.bak`), then the CMTS restarts on it. From the machine
     itself only (or `ssh -L 8090:127.0.0.1:8090 host`); `--status-edit on` from anywhere the page
     is reachable, `off` read-only.
+- **Without hardware**: `MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4` runs the whole
+  chain on a simulated radio at the pace of real time: to try it, or to size a PC before buying an
+  SDR (the TX margin of the status lines must stay above ~5 ms). `--sim SECONDS` instead simulates
+  a modem in a single process, without real time.
 - **Service**: `sudo systemctl enable --now mini-cmts` runs the bench of
   `/etc/mini-cmts/mini-cmts.toml`; `journalctl -u mini-cmts -f` shows its console. An SDR
   unplugged stops the CMTS (exit code 3) and the service starts it again every 15 s until the SDR

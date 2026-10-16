@@ -68,6 +68,21 @@ python3 tests/run.py                # tous les tests sans radio (quelques minute
 Les noyaux C (`cmts/*.c`) sont compilés à la première utilisation dans `cmts/_*.so` ; sans
 compilateur C, les versions Python de secours sont bien trop lentes pour une radio.
 
+## 2c. Essayer sans radio
+
+La radio simulée prend les blocs d'émission et rend des échantillons de réception au rythme du
+temps réel : tout le CMTS tourne (MAC, processus radio et montants, page d'état) sans SDR. C'est le
+moyen de dimensionner un PC avant d'en acheter un :
+
+```bash
+MINI_CMTS_SDR_SIM=1 mini-cmts --tap none --ds-channels 4 --us-channels 1    # Ctrl+C après une minute
+```
+
+La machine tient ce nombre de canaux si les lignes d'état gardent `marge TX min` au-dessus de
+~5 ms et qu'aucun `!! blocage` n'apparaît. Aucun modem ne répond : la charge montante d'un vrai
+modem (rafales à décoder) vient en plus. `MINI_CMTS_SIM_UNPLUG_S=20` simule en plus le SDR
+débranché 20 s après le lancement (le CMTS s'arrête avec le code 3).
+
 ## 3. La radio
 
 - **B210** : `uhd_find_devices` doit le voir, en USB 3 (`uhd_usrp_probe` affiche `USB 3`).
