@@ -281,6 +281,13 @@ Other possible evolutions:
     master clock at 30.72 MHz (3 DS); a custom image doing J.83, QAM, shaping and mixing (an
     "edge QAM", as real CMTSs do) would remove ~1.3 cores and ~90 % of the TX USB traffic, at the
     cost of months of Spartan-6 work.
+  - **the MAC's data path in C**: the MAC costs ~0.15 core idle and ~20 µs per downstream frame
+    (i5-9500, `tools/mac_load.sh`), ~1 core in a full 6 + 2 run; the frames' path (Ethernet frame
+    -> DOCSIS PDU, queue with CoDel, spreading over the channels; upstream segments reassembled
+    to the TAP) in C would save ~0.4-0.6 core and no longer hold Python's GIL, the cause of
+    several transmit stalls. The control plane (ranging, registration, MAP scheduling, status
+    page) runs a few hundred times a second and stays in Python. To be measured first with a modem
+    and real traffic both ways.
 
 ## Licence
 

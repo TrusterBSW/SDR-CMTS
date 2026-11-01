@@ -906,3 +906,10 @@ cœur, ~0,7 avec des tampons sans copie : 10 à 15 % d'un 6 + 2, car la MAC et l
 **FPGA du B210 (estimation)** : le format USB 12 bits réduit le trafic d'un quart ; les DDC du FPGA sur deux voies RX
 plafonnent l'horloge maître à 30,72 MHz ; une image « edge QAM » (J.83 et synthèse dans le FPGA) serait le vrai saut
 (−1,3 cœur, USB d'émission ÷ 10), mais un projet à part entière.
+
+**La MAC en Python (même jour, `tools/mac_load.sh`)** : radio simulée en 6 DS + 2 US, flux UDP réel dans `cmts0` vers un
+faux équipement. La MAC coûte 0,15 cœur au repos, 0,33 à 48 Mbit/s (4 300 trames/s), 0,42 à 150 Mbit/s (13 400 trames/s) :
+~20 µs par trame descendante. Le profil py-spy montre que le lourd est déjà en C (`tap_read_batch`, `ts_pack`) ; il reste en
+Python l'aiguillage et la mise en file de chaque trame. Sans modem, tout part sur le canal principal et le chemin montant
+n'est pas exercé. Piste retenue : le chemin des données en C (pas toute la MAC), ~0,4 à 0,6 cœur et plus de GIL tenu par
+trame ; à mesurer d'abord avec le modem.

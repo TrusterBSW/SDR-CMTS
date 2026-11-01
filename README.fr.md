@@ -308,6 +308,14 @@ Autres évolutions possibles :
     plafonnent l'horloge maître à 30,72 MHz (3 DS) ; une image maison faisant J.83, QAM, mise en
     forme et mélange (un « edge QAM », comme les vrais CMTS) retirerait ~1,3 cœur et ~90 % du
     trafic USB d'émission, au prix de mois de travail sur Spartan-6.
+  - **le chemin des données de la MAC en C** : la MAC coûte ~0,15 cœur au repos et ~20 µs par
+    trame descendante (i5-9500, `tools/mac_load.sh`), ~1 cœur en 6 + 2 à pleine charge ; le trajet
+    des trames (trame Ethernet -> PDU DOCSIS, file avec CoDel, répartition sur les canaux ;
+    segments montants réassemblés jusqu'au TAP) en C gagnerait ~0,4 à 0,6 cœur et ne tiendrait plus
+    le GIL de Python, à l'origine de plusieurs blocages de l'émission. Le plan de contrôle
+    (ranging, enregistrement, ordonnancement des MAP, page d'état) ne tourne que quelques
+    centaines de fois par seconde et reste en Python. À mesurer d'abord avec un modem et du trafic
+    réel dans les deux sens.
 
 ## Licence
 
