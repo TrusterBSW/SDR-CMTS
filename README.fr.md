@@ -298,6 +298,16 @@ Autres évolutions possibles :
 - Montant : moins de processeur par canal (suivi de phase par blocs, Reed-Solomon en SIMD), plus
   de 2 canaux en production.
 - Baseline Privacy Plus (BPI+, chiffrement du trafic), provisionnement IPv6 (le Sagem l'annonce).
+- Décharger le processeur (mesuré sur l'i5-9500 le 01/11/2026, `tools/gpu_bench.py`) :
+  - **GPU intégré** (OpenCL, Intel UHD 630) : la synthèse des 6 canaux descendants (0,80 cœur
+    en AVX2) prend 0,62 ms par bloc de 1,88 ms sur le GPU, il reste 0,32 cœur sur le processeur ;
+    ~0,7 cœur gagné avec des tampons partagés sans copie, soit 10 à 15 % d'un 6 + 2. L'encodage
+    J.83, la MAC et la démodulation montante restent sur le processeur ;
+  - **FPGA du B210** : le format USB 12 bits (`sc12`, image d'origine) réduit le trafic USB d'un
+    quart ; les DDC du FPGA pourraient extraire les canaux montants (deux voies RX), mais deux voies
+    plafonnent l'horloge maître à 30,72 MHz (3 DS) ; une image maison faisant J.83, QAM, mise en
+    forme et mélange (un « edge QAM », comme les vrais CMTS) retirerait ~1,3 cœur et ~90 % du
+    trafic USB d'émission, au prix de mois de travail sur Spartan-6.
 
 ## Licence
 

@@ -271,6 +271,16 @@ Other possible evolutions:
 - Upstream: less CPU per channel (phase tracking by blocks, SIMD Reed-Solomon), more than 2 channels
   in production.
 - Baseline Privacy Plus (BPI+, traffic encryption), IPv6 provisioning (the Sagem announces it).
+- Offloading the CPU (measured on the i5-9500, 2026-11-01, `tools/gpu_bench.py`):
+  - **integrated GPU** (OpenCL, Intel UHD 630): the synthesis of the 6 downstream channels
+    (0.80 core in AVX2) runs in 0.62 ms per 1.88 ms block on the GPU, 0.32 core left on the CPU;
+    ~0.7 core saved with zero-copy buffers, i.e. 10-15 % of a 6 + 2 run. J.83 encoding, the MAC
+    and the upstream demodulation stay on the CPU;
+  - **B210 FPGA**: the 12-bit USB format (`sc12`, stock image) cuts the USB traffic by a quarter;
+    the FPGA's DDCs could take the upstream channels out (two RX paths), but two paths cap the
+    master clock at 30.72 MHz (3 DS); a custom image doing J.83, QAM, shaping and mixing (an
+    "edge QAM", as real CMTSs do) would remove ~1.3 cores and ~90 % of the TX USB traffic, at the
+    cost of months of Spartan-6 work.
 
 ## Licence
 

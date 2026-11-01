@@ -892,3 +892,17 @@ Les tests en échec sur GitHub laissent la fin de leur sortie en annotation, lis
 Les annotations ont ensuite montré la vraie cause sur GitHub : `test_tapfeed.py` bloqué, parce que ses 300 trames
 attendaient dans une paire de sockets `SOCK_DGRAM`, que le noyau limite à `net.unix.max_dgram_qlen` datagrammes en
 attente (512 chez nous, moins chez GitHub), et toute socket à la taille de ses tampons, plafonnée par `net.core.wmem_max` (208 Ko par défaut). Le test met maintenant en attente ce que le noyau accepte, sans bloquer, et vérifie la limite de lot avec un tableau plus petit.
+
+## GPU intégré et FPGA du B210 : ce qu'on gagnerait (01/11/2026)
+
+**Mesure** (`tools/gpu_bench.py`, i5-9500, UHD Graphics 630, OpenCL par `ctypes`, blocs de 64 paquets TS × 6 canaux
+256-QAM à 8 échantillons par symbole) : en AVX2, un bloc de 1,88 ms coûte 0,49 cœur d'encodage J.83, 0,74 de synthèse,
+0,06 de mise à l'échelle (la synthèse vaut 0,12 cœur par canal, pas 0,06 comme le disait un commentaire du 10/10).
+Le même calcul sur le GPU, exact à 143 dB près : un premier noyau naïf était plus lent que le temps réel ; un fil par
+symbole qui calcule ses 8 échantillons (les symboles lus une fois) donne 0,62 ms de calcul par bloc (33 % du temps
+d'antenne, pointe 1,03 ms), et il reste 0,32 cœur sur le processeur pour préparer et copier les données. Gain ~0,5
+cœur, ~0,7 avec des tampons sans copie : 10 à 15 % d'un 6 + 2, car la MAC et la démodulation montante restent.
+
+**FPGA du B210 (estimation)** : le format USB 12 bits réduit le trafic d'un quart ; les DDC du FPGA sur deux voies RX
+plafonnent l'horloge maître à 30,72 MHz ; une image « edge QAM » (J.83 et synthèse dans le FPGA) serait le vrai saut
+(−1,3 cœur, USB d'émission ÷ 10), mais un projet à part entière.
