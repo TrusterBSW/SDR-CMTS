@@ -268,7 +268,10 @@ DHCP addresses (default: 10.10.0.10\-10.10.0.99)
 DHCP lease time (s) (default: 3600)
 .TP
 \fB\-\-cm\-class\-only\fR
-give the config file name only to DHCP clients that announce a docsis class
+(the default since 0.1.1: only the clients announcing a docsis / pktc class get the config file name; kept so that former command lines still work)
+.TP
+\fB\-\-config\-to\-all\fR
+give the config file name (and no name server) to every DHCP client, the behaviour before 0.1.1
 .TP
 \fB\-\-config\-name\fR \fICONFIG_NAME\fR
 config file name given by DHCP (default: cm.cfg)
