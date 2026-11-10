@@ -29,3 +29,4 @@ cmts/_*.so
 # Debian packages built by packaging/build-deb.sh
 dist/
 *.deb
+!releases/*.deb
