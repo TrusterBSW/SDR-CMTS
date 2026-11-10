@@ -991,3 +991,9 @@ plus aucune rafale de données décodée : MER 17-18 dB au lieu de 21. La 5ᵉ h
 du coupleur. OL passé sous le canal (55,8 MHz) : MER 21,1 dB, modem en ligne sur 5 canaux. Le choix est maintenant
 automatique (`lo_folds`, `rx_lo_offset`). Reste : en 5 + 1, 3,4 % de pertes UDP descendantes à 50 Mbit/s et 8,8 % à
 150 Mbit/s (retards d'émission sous charge), TCP 57 / 7 Mbit/s à travers le routeur du 3686.
+
+Signalé par la session du modem SDR, mesuré à son B210 : en 5 DS, le centre d'émission (la moyenne des canaux) tombait au
+milieu du primaire, 306 MHz, et la fuite de l'OL TX du B210 y faisait une raie à ~−28 dBc du canal (MER de son modem
+plafonné à 21,5 dB, plus de synchro MPEG). `tx_center_for` décale maintenant le centre d'un demi-canal quand il tombe
+dans un canal et que les échantillons tiennent encore tous les canaux : 310 MHz en 5 DS (55,6 MS/s) ; rien ne change en
+2, 4 ou 6 DS (déjà entre deux canaux), ni en 3 DS à 27,8 MS/s ou avec un seul canal. Test : `tests/test_tx_center.py`.

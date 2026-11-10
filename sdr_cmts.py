@@ -80,6 +80,24 @@ def lo_folds(a, lo):
     return hit
 
 
+def tx_center_for(freqs, fs, spacing=8e6):
+    """TX LO frequency for downstream channels at `freqs` sent at `fs` samples/s: their middle,
+    moved by half a channel when that falls inside a channel (an odd count laid out evenly) and
+    the samples still hold every channel. The B210's TX LO leakage (a carrier ~-28 dBc of a
+    channel) then sits on the boundary of two channels, where both spectra vanish, not on the
+    centre of one: with 5 DS around 306 MHz it was on the primary, an SDR modem's MER capped at
+    21.5 dB and its MPEG sync lost (2026-11-11). Returns (frequency, moved)."""
+    c = (min(freqs) + max(freqs)) / 2
+    # (one channel: the single-channel chain does not shift it, its centre stays the LO)
+    if len(freqs) < 2 or not any(abs(f - c) < spacing / 4 for f in freqs):
+        return c, False
+    for shift in (spacing / 2, -spacing / 2):
+        reach = max(abs(f - (c + shift)) for f in freqs) + SYMRATE * 1.15 / 2
+        if reach <= fs / 2 - 0.5e6:
+            return c + shift, True
+    return c, False
+
+
 def rx_lo_offset(a):
     """UHD does not tune the B210 below 50 MHz: the LO sits beside the upstream channel (3 MHz
     away from it at least, so the burst never sits on the DC / LO leakage) and the FPGA shifts it
@@ -1123,7 +1141,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
     radios = []
     for r, g in enumerate(groups):
         fr = [chans[i][1] for i in g]
-        center = (min(fr) + max(fr)) / 2 if len(groups) > 1 else tx_center
+        center = tx_center_for(fr, fs_tx, a.ds_spacing)[0] if len(groups) > 1 else tx_center
         span_r = (max(fr) - min(fr)) + 8e6
         if a.sdr == "bladerf":
             args_r = f"*:serial={serials[r]}" if r < len(serials) else args
@@ -1312,7 +1330,9 @@ def run_usrp(a):
     pcap = attach_pcap(a.pcap, mux, rx, lambda ts: wall0[0] + ts / TS_RATE) if a.pcap else None
     fs_tx = a.sps * SYMRATE
     chans = ds_channels(a)
-    tx_center = sum(f for _, f in chans) / len(chans)
+    tx_center, moved = tx_center_for([f for _, f in chans], fs_tx, a.ds_spacing)
+    if moved:
+        log(f"centre d'émission à {tx_center / 1e6:.3f} MHz : la fuite de l'OL TX entre deux canaux, pas au milieu d'un")
     if len(chans) > 1:                         # same USB reserve in ms at the higher sample rate
         a.tx_frames = int(a.tx_frames * fs_tx / (2 * SYMRATE))
     # num_send_frames: samples already handed to USB are the only reserve against a delay of the
