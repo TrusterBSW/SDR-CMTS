@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
-"""The manual page sdr-cmts(1) (packaging/gen_man.py): every option of sdr_cmts.py and of
+"""The manual page sdr-cmts(1) (packaging/gen_man.py, kept in man/sdr-cmts.1 for the package): the
+file in the repository is the one the options give; every option of sdr_cmts.py and of
 provision.py (but the two that --all-in-one sets itself) is described in it, and groff renders it
 without a warning when groff is installed."""
 import os
@@ -25,6 +26,9 @@ def check(name, ok, detail=""):
 
 page = subprocess.run([sys.executable, os.path.join(HERE, "..", "packaging", "gen_man.py")],
                       capture_output=True, text=True, check=True).stdout
+kept = open(os.path.join(HERE, "..", "man", "sdr-cmts.1"), encoding="utf-8").read()
+body = lambda t: [ln for ln in t.splitlines() if not ln.startswith(".TH ")]     # noqa: E731 (date aside)
+check("man/sdr-cmts.1 à jour (sinon : python3 packaging/gen_man.py --write)", body(kept) == body(page))
 text = page.replace("\\-", "-")
 missing = [o for ap, skip in ((sdr_cmts.parser(), ()), (provision.parser(), ("--iface", "--secret")))
            for a in ap._actions for o in a.option_strings

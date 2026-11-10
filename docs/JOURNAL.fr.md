@@ -913,3 +913,13 @@ faux équipement. La MAC coûte 0,15 cœur au repos, 0,33 à 48 Mbit/s (4 300 tr
 Python l'aiguillage et la mise en file de chaque trame. Sans modem, tout part sur le canal principal et le chemin montant
 n'est pas exercé. Piste retenue : le chemin des données en C (pas toute la MAC), ~0,4 à 0,6 cœur et plus de GIL tenu par
 trame ; à mesurer d'abord avec le modem.
+
+## Version 0.1.0 : un paquet pour Debian 12, 13 et Ubuntu 24.04 (10/11/2026)
+
+Un utilisateur a construit le paquet sur une machine sans NumPy : `gen_man.py` chargeait le programme pour lire ses
+options, et `build-deb.sh`, qui passait par un tube, a quand même livré un `.deb` à la page `man` vide. La page est
+maintenant gardée dans le dépôt (`man/sdr-cmts.1`, un test vérifie qu'elle suit les options) : la construction ne
+demande plus que `dpkg-deb`. Sur le modèle du projet DVB-Tx : le paquet est construit dans un Debian 12 nu, installé et
+lancé (radio simulée) dans un conteneur neuf de Debian 12, Debian 13 et Ubuntu 24.04, vérifié par `lintian`, puis
+publié dans `releases/` (avec `LATEST` et `SHA256SUMS`, que lit `install.sh`) et sur la page Releases de GitHub à
+chaque étiquette. Le README a pris la forme de celui de DVB-Tx ; le tableau des options est passé dans `docs/OPTIONS.md`.

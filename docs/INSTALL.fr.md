@@ -4,7 +4,7 @@
 
 Deux façons : le paquet Debian (Debian 12 ou plus récent, Ubuntu 24.04 ou plus récent), ou les
 sources (tout Linux avec Python 3.11+, UHD et un compilateur C). Les deux demandent le même
-matériel et le même soin au câblage : lire d'abord la partie **Sécurité** du README. Coax fermé
+matériel et le même soin au câblage : lire d'abord l'avertissement en tête du README et son câblage. Coax fermé
 uniquement. Modems EuroDOCSIS seulement (canaux de 8 MHz ; le DOCSIS nord-américain n'est pas
 implémenté).
 
@@ -35,7 +35,10 @@ implémenté).
 ## 2a. Le paquet Debian
 
 ```bash
-./packaging/build-deb.sh            # -> sdr-cmts_<version>_all.deb (demande dpkg-deb, python3, NumPy)
+# la dernière version, vérifiée par sa somme SHA-256, avec ses dépendances (et les images FPGA du B210)
+curl -fsSL https://raw.githubusercontent.com/TrusterBSW/SDR-CMTS/main/install.sh | sudo sh -s -- --uhd-images
+# ou une version de https://github.com/TrusterBSW/SDR-CMTS/releases, ou un paquet construit ici :
+./packaging/build-deb.sh            # -> sdr-cmts_<version>_all.deb (demande seulement dpkg-deb)
 sudo apt install ./sdr-cmts_*_all.deb
 sudo uhd_images_downloader -t b2xx  # images FPGA du B210, une fois (uhd-host)
 ```

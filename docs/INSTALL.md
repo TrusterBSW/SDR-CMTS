@@ -4,7 +4,7 @@
 
 Two ways: the Debian package (Debian 12 or newer, Ubuntu 24.04 or newer), or the sources (any
 Linux with Python 3.11+, UHD and a C compiler). Both need the same hardware and the same care with
-the cabling: read the **Safety** part of the README first. Closed coax only. EuroDOCSIS modems
+the cabling: read the warning at the top of the README and its wiring first. Closed coax only. EuroDOCSIS modems
 only (8 MHz channels; North American DOCSIS is not implemented).
 
 ## 1. The host
@@ -31,7 +31,10 @@ only (8 MHz channels; North American DOCSIS is not implemented).
 ## 2a. The Debian package
 
 ```bash
-./packaging/build-deb.sh            # -> sdr-cmts_<version>_all.deb (needs dpkg-deb, python3, NumPy)
+# the latest release, checked against its SHA-256, with its dependencies (and the B210's FPGA images)
+curl -fsSL https://raw.githubusercontent.com/TrusterBSW/SDR-CMTS/main/install.sh | sudo sh -s -- --uhd-images
+# or a release from https://github.com/TrusterBSW/SDR-CMTS/releases, or one built here:
+./packaging/build-deb.sh            # -> sdr-cmts_<version>_all.deb (needs only dpkg-deb)
 sudo apt install ./sdr-cmts_*_all.deb
 sudo uhd_images_downloader -t b2xx  # B210 FPGA images, once (uhd-host)
 ```

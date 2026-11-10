@@ -1,0 +1,35 @@
+# Les options et pourquoi elles sont réglées ainsi
+
+*[English version: OPTIONS.md](OPTIONS.md)*
+
+Toutes les options sont dans `man sdr-cmts` et `sdr-cmts --help` ; cette page garde, pour les principales, la mesure qui a fixé la valeur par défaut.
+
+Valeurs par défaut (depuis le 10/10/2026), celles des résultats ci-dessus :
+
+| Option | Défaut | Rôle |
+|---|---|---|
+| `--freq` | 306 MHz | premier canal descendant ; les suivants tous les `--ds-spacing` (8 MHz) |
+| `--ds-channels` | 6 | 1 à 6 (horloge maître 27,808 / 34,76 / 55,616 MHz) ; 6 : 234-258 / 21 Mbit/s sur le PC 6 cœurs |
+| `--qam` | 256 | modulation descendante |
+| `--us-freq`, `--us-rate`, `--us-mode`, `--us-mod` | 60 MHz, 32 (5,12 Msym/s), atdma, 64qam | canal montant |
+| `--us-target` | −14 dBFS | niveau visé pour les rafales des modems |
+| `--grant-ahead-hold/-every/-scale` | oui, 3, 4 | grants non sollicités qui entretiennent l'envoi |
+| `--us-process` | oui | démodulation montante dans un processus séparé |
+| `--radio-process` | oui | B210, encodage J.83, mise en forme et émission dans un processus séparé (`cmts/radio.py`) : sans lui, 3 canaux descendants décrochent sur un PC plus lent (GIL partagé avec la couche MAC) |
+| `--us-channels`, `--us-spacing` | 1, −7 MHz | canaux montants (2 : agrégation montante DOCSIS 3.0, le second 7 MHz plus bas) |
+| `--tx-queue` | 3 | blocs prêts avant l'envoi (~1,9 ms chacun). Avec `--tx-frames 48` : latence descendante ~25 ms au lieu de 36, ping au repos 100 → 78 ms, marge d'émission minimale ~7 ms (essai long à faire) |
+| `--send-frame-size`, `--tx-frames` | 16360, 48 (réserve 14 ms) | trames USB d'envoi de 16 Ko (UHD : 8 Ko) et nombre en vol : moitié moins de soumissions USB, fil d'envoi 23 → 16 % d'un cœur à 55,6 MS/s, 6 DS sans retard d'émission |
+| `--ds-layout` | around | `--freq` (le canal principal) au milieu, les autres de part et d'autre (`up` : tous au-dessus) ; en 6 DS, la seule disposition où le Sagem utilise ses grants montants (234-247 / 21 Mbit/s) |
+| `--recv-frame-size` | 16360 | trames USB de réception de 16 Ko : fil de réception de la radio 24 → 14 % d'un cœur à 27,8 MS/s |
+| `--us-cpus` | auto | `own` : un cœur par processus montant ; `shared` : tous les cœurs, priorité temps réel 10 en dessous de l'émission ; `auto` : `shared` seulement si des cœurs réservés laisseraient moins de 4 cœurs à l'émission de 5-6 DS (6 DS + 2 US) |
+| `--us-lag-limit` | 150 ms | contre-réaction : un canal montant dont le récepteur a ce retard ne reçoit plus de grant de données (la moitié : plus de grant en avance) jusqu'à ce qu'il ait rattrapé ; 0 = sans |
+| `--mtc-std` | oui | enregistrement multi-canal montant conforme au MULPI, comme un vrai CMTS (ARRIS) : fenêtre de dynamique dans la TCC (action 2, obligatoire en mode multi-canal) et non dans les RNG-RSP, critères 47.3 à 0, TLV 52 = 60 ; `--no-mtc-std` : l'ancien enregistrement, sans fenêtre de dynamique |
+| `--mtc-owed` | oui | requêtes multi-canal cumulées (le modem ne demande que les octets nouveaux), accordées sur chaque canal à chaque MAP, grant pending tant qu'il reste dû ; `--no-mtc-owed` : chaque requête remplace la précédente |
+| `--ds-aqm` | 30 ms | CoDel sur les files descendantes : quelques trames jetées une à une au lieu de rafales à la limite `--ds-queue-ms` ; ping pendant un téléchargement 88 → 55 ms ; 0 = sans |
+| `--tx-dc-cal` | non | mesure et compense au démarrage la fuite de l'oscillateur local TX du B210 (−2 à −24 dB ; n'a pas aidé le 3e canal) |
+| `--sdr`, `--sdr-args` | b210, — | `bladerf` : un **bladeRF 2.0 micro** à la place du B210 (libbladeRF appelée directement, `cmts/sdrdev.py`), TX1 vers le modem, RX1 pour le montant. Validé en **3 DS + 1 US** (138 / 24,5 Mbit/s) : émission et réception au même débit (27,8 MS/s en 16 bits au plus), réception à partir de 70 MHz (un seul canal montant, à 61,8 MHz). `--sdr-args "*:serial=…"` choisit la carte. Choix, pièges et limites : `docs/BLADERF.fr.md` ; vérification : `tools/bladerf_check.py --loop` |
+| `--ds-radios`, `--radio-serials`, `--clock-source` | 1, —, internal | plusieurs radios (branche `multi-b210`) : les canaux descendants répartis en blocs adjacents, une radio par bloc ; la première reçoit aussi le montant. Sans 10 MHz commun (`internal`), la suiveuse se recale sur la principale par groupes de 8 paquets MPEG (dérive mesurée entre deux B210 : 2,5 ppm, 8,9 ms/h) ; 2 B210 en 2 + 2 DS : 189 / 50 Mbit/s |
+| `--config` | — | un fichier de banc en TOML (ci-dessus) ; `@fichier.args` (une option par ligne) marche toujours |
+| `--status-http` | 127.0.0.1:8090 | la page d'état ; `none` : coupée |
+| `--status-edit` | auto | le formulaire de configuration : modifications depuis cette machine seulement ; `on` depuis partout, `off` lecture seule |
+| `--prov-args` | — | par ex. `"--us-burst 64000 --us-rate 1000000000"` (déjà les défauts ; 1 Gbit/s dans les deux sens) ; `--us-buffer` (défaut 128 Ko) fixe le tampon montant du modem (TLV 24.35) : ping pendant un envoi 237 → 93 ms |

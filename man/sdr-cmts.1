@@ -1,0 +1,398 @@
+.TH SDR\-CMTS 1 "2026-11" "sdr\-cmts 0.1.0" "User Commands"
+.SH NAME
+sdr\-cmts \- EuroDOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
+.SH SYNOPSIS
+.B sdr\-cmts
+[\fB\-\-config\fR \fIBENCH.toml\fR] [\fIOPTION\fR]...
+.br
+.B sdr\-cmts
+\fB\-\-sim\fR \fISECONDS\fR [\fIOPTION\fR]...
+.SH DESCRIPTION
+sdr\-cmts is a cable modem termination system for a closed coax lab. It drives one or more Ettus USRP B210 (UHD) or a Nuand bladeRF 2.0 micro (libbladeRF) and brings unmodified DOCSIS cable modems online: EuroDOCSIS downstream (J.83 annex A, 64/256\-QAM, up to 6 bonded channels per B210), TDMA/ATDMA upstream up to 64\-QAM with DOCSIS 3.0 upstream bonding, ranging, registration, an Ethernet bridge to the TAP interface cmts0, and, with \-\-all\-in\-one, DHCP, TFTP and time of day for the modems and the devices behind them. EuroDOCSIS only: North American DOCSIS (J.83 annex B, 6 MHz channels) is not implemented.
+.PP
+The console and the logs are in French. Ctrl+C stops it cleanly (power the modem off first). Every run on hardware writes captures/cmts_DATE_TIME.log in the current directory.
+.SH SAFETY
+Closed coax only. Never connect it to an operator's cable network: it transmits. Never connect the radio's receive input without attenuation: a modem transmits up to +60 dBmV.
+.SH "GENERAL OPTIONS"
+.TP
+\fB\-\-config\fR \fIBENCH.toml\fR
+bench description in TOML (configs/*.toml, cmts/tomlconf.py): sections [radio], [downstream], [upstream], [host]... with the option names as keys, [provisioning] for provision.py; options given on the command line win
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+console detail: \-v ranging and requests, \-vv every bridged frame, \-vvv raw energy scan and network noise (the log file always gets everything) (default: 0)
+.TP
+\fB\-\-color\fR \fI{auto,always,never}\fR
+console colours; auto = only on a terminal (always: keeps them through tee, read with less \-R) (default: auto)
+.SH "DOWNSTREAM OPTIONS"
+.TP
+\fB\-\-freq\fR \fIFREQ\fR
+primary downstream channel (Hz), on the 8 MHz European raster (114 + 8 n: the Sagem scans it, 310 MHz is never found). With 2 upstream channels the RX LO sits at 56.5 MHz and its 5th harmonic (282.5 MHz) folds the lowest channel of 306 'around' (286\-294 MHz) into upstream channel 1: noise \-47.6 instead of \-60.5 dBFS. 314 (298\-338 MHz) avoids it and halves the lost bursts, but gave ~2 Mbit/s less upstream with 8 flows (50 vs 52, 2026\-10\-12): 306 kept. The real cure: a low\-pass (diplex) filter before RX2 (default: 306e6)
+.TP
+\fB\-\-gain\fR \fIGAIN\fR
+B210 TX gain dB; default 45 (~12 dBmV at the Sagem through one 1:2 splitter; 49 gave 16.4) plus 10*log10(channels) when bonding, so each channel keeps its level
+.TP
+\fB\-\-qam\fR \fI{64,256}\fR
+downstream QAM (256 since 2026\-10\-09: modem SNR 48.6 dB, 40.8 Mbit/s carried) (default: 256)
+.TP
+\fB\-\-sps\fR \fISPS\fR
+ (default: 2)
+.TP
+\fB\-\-mcr\-mult\fR \fIMCR_MULT\fR
+master clock = sps*6.952M*this; default 2 (27.8 MHz, as validated with ds_tx.py), 4 (55.6 MHz) only when the RX LO offset is large (upstream below 53 MHz)
+.TP
+\fB\-\-scale\fR \fISCALE\fR
+ (default: 0.3)
+.TP
+\fB\-\-mac\fR \fIMAC\fR
+ (default: 02:00:00:ca:fe:01)
+.TP
+\fB\-\-no\-invert\fR
+
+.TP
+\fB\-\-block\fR \fIBLOCK\fR
+TS packets per block (multiple of 8) (default: 64)
+.TP
+\fB\-\-tx\-queue\fR \fITX_QUEUE\fR
+blocks buffered before the send thread (~1.9 ms each; covers encoder delays, adds latency) (default: 3)
+.TP
+\fB\-\-tx\-frames\fR \fITX_FRAMES\fR
+UHD send frames in flight on USB (~0.3 ms each at 27.8 MS/s with 16 KB frames, scaled with the sample rate: 14 ms of reserve): reserve against delays of the sending thread, adds the same latency (default: 48)
+.TP
+\fB\-\-send\-frame\-size\fR \fISEND_FRAME_SIZE\fR
+UHD USB send frame size (bytes; UHD's default 8176): larger frames, fewer USB submissions, less kernel time in the send thread; 0 = UHD's default (default: 16360)
+.TP
+\fB\-\-recv\-frame\-size\fR \fIRECV_FRAME_SIZE\fR
+UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX stream; 0 = UHD's (default: 16360)
+.TP
+\fB\-\-sdr\fR \fI{b210,bladerf}\fR
+the SDR: b210 (Ettus, UHD) or bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream) (default: b210)
+.TP
+\fB\-\-sdr\-args\fR \fISDR_ARGS\fR
+\-\-sdr bladerf: libbladeRF device identifier ("" = the first one, "*:serial=...")
+.TP
+\fB\-\-args\fR \fIARGS\fR
+UHD device args (default: type=b200)
+.TP
+\fB\-\-rt\-prio\fR \fIRT_PRIO\fR
+real\-time priority (SCHED_RR 1\-99) of the whole process, 0 = normal (default: 50)
+.TP
+\fB\-\-cpus\fR \fICPUS\fR
+CPUs for the whole process: auto = all but the core taking the USB interrupts, all, or a list like 1\-3,5\-7 (default: auto)
+.TP
+\fB\-\-performance\fR | \fB\-\-no\-performance\fR
+put every CPU in the 'performance' governor and block the deep C\-states (/dev/cpu_dma_latency) for the run (sudo); on exit the governor and energy preference go back to the kernel's defaults, the C\-states are free again (default: on)
+.TP
+\fB\-\-tx\-dc\-cal\fR | \fB\-\-no\-tx\-dc\-cal\fR
+measure and cancel the TX LO leakage at start (the B210 RX tuned to the TX centre for a moment). It lowered the leakage in the middle of 3 channels (\-31 dBc) by 2\-24 dB but did not make the modem acquire channel 2 more often (2026\-10\-10): off by default
+.TP
+\fB\-\-tx\-untimed\fR
+only the first block is timed (old behaviour: an underflow shifts the downstream)
+.SH "UPSTREAM OPTIONS"
+.TP
+\fB\-\-us\-freq\fR \fIUS_FREQ\fR
+upstream center frequency (UCD); 53\-64 MHz keeps the B210 LO >= 50 MHz with a small offset (the modem's origin network uses 60.4 MHz) (default: 60e6)
+.TP
+\fB\-\-us\-rate\fR \fIUS_RATE\fR
+symbol rate in 160 ksym/s units (16 = 2.56 Msym/s, 3.2 MHz; 8 = 1.28 Msym/s) (default: 32)
+.TP
+\fB\-\-us\-channels\fR \fIUS_CHANNELS\fR
+upstream channels (DOCSIS 3.0 upstream bonding, experimental): >1 receives one wideband stream and runs one upstream process per channel (default: 1)
+.TP
+\fB\-\-us\-spacing\fR \fIUS_SPACING\fR
+upstream channel spacing (Hz); \-7 MHz: the next channel 7 MHz below (60 \-> 53 MHz: the EuroDOCSIS upstream band ends at 65 MHz), 0.6 MHz between two 5.12 Msym/s channels for the RX LO (default: \-7e6)
+.TP
+\fB\-\-us\-mod\fR \fI{qpsk,16qam,64qam}\fR
+modulation of the upstream data bursts (16qam: twice the bits per symbol; 64qam: ATDMA only) (default: 64qam)
+.TP
+\fB\-\-us\-mode\fR \fI{tdma,atdma}\fR
+upstream channel type: tdma (DOCSIS 1.x, UCD type 2, up to 2.56 Msym/s 16\-QAM) or atdma (DOCSIS 2.0, UCD type 29, up to 5.12 Msym/s 64\-QAM) (default: atdma)
+.TP
+\fB\-\-minislot\fR \fIMINISLOT\fR
+mini\-slot size in 6.25 us ticks (default: 4)
+.TP
+\fB\-\-us\-gain\fR \fIUS_GAIN\fR
+B210 RX gain dB (20: noise \-70 dBFS, ranged bursts \-20 dBFS) (default: 20)
+.TP
+\fB\-\-us\-lo\-offset\fR \fIUS_LO_OFFSET\fR
+RX LO \- upstream freq (Hz); default 3 MHz, more if needed to keep the LO >= 52 MHz
+.TP
+\fB\-\-irq\-herd\fR | \fB\-\-no\-irq\-herd\fR
+with \-\-cpus auto: move every other hardware interrupt off the CMTS cores (sudo), onto the USB core's other hyperthread, or the USB core itself without SMT; on exit they go back to the kernel's default affinity (default: on)
+.TP
+\fB\-\-us\-process\fR | \fB\-\-no\-us\-process\fR
+upstream demodulation in a separate process (own GIL and core); \-\-no\-us\-process: a thread, as before 2026\-10\-09 (default: on)
+.TP
+\fB\-\-us\-cpus\fR \fI{auto,own,shared}\fR
+with \-\-cpus auto: 'own' gives each upstream process a core of its own; 'shared' runs them on every core at a lower real\-time priority than the transmit side; 'auto': own cores unless that leaves the transmit side of 5\-6 DS fewer than 4 (6 DS + 2 US on 6 cores) (default: auto)
+.TP
+\fB\-\-mtc\-std\fR | \fB\-\-no\-mtc\-std\fR
+multi\-channel upstream registration per MULPIv3.0, as a real CMTS (ARRIS) does it: Dynamic Range Window in the TCC (action 2, mandatory in MTC mode) instead of the RNG\-RSPs, 47.3 criteria at 0, TLV 52 = 60, TCC references from 0, initialization technique 3 (\-\-no\-mtc\-std: the former registration, no DRW TCC) (default: on)
+.TP
+\fB\-\-mtc\-owed\fR | \fB\-\-no\-mtc\-owed\fR
+multi\-channel upstream: queue\-depth requests add up (MULPIv3.0: a request only carries bytes not requested before), granted on every channel each MAP, Data Grant Pending while bytes are still owed (\-\-no\-mtc\-owed: each request replaces the previous one) (default: on)
+.TP
+\fB\-\-us\-lag\-limit\fR \fIUS_LAG_LIMIT\fR
+ms: an upstream channel whose receiver is this far behind its RX stream gets no data grant until it catches up (half of it: no grant in advance); 0 = off (default: 150)
+.TP
+\fB\-\-us\-target\fR \fIUS_TARGET\fR
+burst power the modems are ranged to (dBFS); \-14 since 2026\-10\-10 (64\-QAM, raw MER 21 \-> 28 dB with a \-49 dBFS noise floor), \-20 before (default: \-14)
+.TP
+\fB\-\-gate\-db\fR \fIGATE_DB\fR
+energy above the noise floor to search a burst (default: 8)
+.TP
+\fB\-\-im\-slack\-us\fR \fIIM_SLACK_US\fR
+Initial Maintenance: accept bursts this early or late (µs, unranged modems) (default: 1000)
+.TP
+\fB\-\-sm\-period\fR \fISM_PERIOD\fR
+Station Maintenance period once ranged (s) (default: 1)
+.TP
+\fB\-\-no\-rsp\fR
+listen only: decode bursts, never answer
+.TP
+\fB\-\-pcap\fR \fIFILE\fR
+DOCSIS pcap of every decoded upstream frame and RNG\-RSP sent; \-\-pcap alone = captures/cmts_<date>_<time>.pcap
+.TP
+\fB\-\-log\fR \fIFILE\fR
+copy of the console without colours; auto = captures/cmts_<date>_<time>.log on hardware runs, none = no file (default: auto)
+.TP
+\fB\-\-save\-bursts\fR \fIDIR\fR
+save every detected burst (IQ .npz)
+.SH "NETWORK AND MODEM REGISTRATION OPTIONS"
+.TP
+\fB\-\-tap\fR \fITAP\fR
+Linux TAP interface bridged to the modems (created with sudo if missing); none = no bridge (default: cmts0)
+.TP
+\fB\-\-all\-in\-one\fR
+also run provision.py (DHCP, TFTP + generated config file, ToD) on the TAP, through sudo
+.TP
+\fB\-\-status\-http\fR \fI[ADDR:]PORT\fR
+status page (channels, radios, modems, throughput, alerts) on this address; none to turn it off; 0.0.0.0:8090 to reach it from the network (closed lab only: it shows the modems' MAC addresses) (default: 127.0.0.1:8090)
+.TP
+\fB\-\-restore\-host\fR
+only set the host settings a run changed (CPU governor, energy preference, interrupts) back to the kernel's defaults, if the run could not (killed); the systemd service runs it after every stop
+.TP
+\fB\-\-status\-edit\fR \fI{auto,on,off}\fR
+the Configuration form of the status page writes the \-\-config file and restarts the CMTS: auto = from this machine only (its browser, or ssh \-L 8090:127.0.0.1:8090), read\-only from the network; on = from wherever the page is reachable (anyone there could make the radio transmit elsewhere); off = read\-only (default: auto)
+.TP
+\fB\-\-prov\-args\fR \fIPROV_ARGS\fR
+extra arguments for provision.py, e.g. "\-\-config my.cfg"
+.TP
+\fB\-\-shared\-secret\fR \fISHARED_SECRET\fR
+CMTS MIC shared secret (same as in the config file) (default: docsis\-lab)
+.TP
+\fB\-\-strict\-mic\fR
+refuse a REG\-REQ whose CMTS MIC is wrong
+.TP
+\fB\-\-ds\-aqm\fR \fIMS\fR
+CoDel on every downstream data queue, target MS (e.g. 15), interval 100 ms: drops one frame now and then instead of bursts at the \-\-ds\-queue\-ms limit; 0 = off (default: 30)
+.TP
+\fB\-\-ds\-queue\-ms\fR \fIDS_QUEUE_MS\fR
+downstream data frames waiting longer than this are dropped (bounded latency) (default: 100)
+.TP
+\fB\-\-ds\-channels\fR \fIDS_CHANNELS\fR
+bonded downstream channels, 8 MHz apart (DOCSIS 3.0), 1\-6 per B210 (5\-6: master clock 55.616 MHz; 6 with \-\-ds\-layout around: 234\-258 / 21 Mbit/s on the Proxmox host, 2026\-10\-11); up to 6 x \-\-ds\-radios (default: 6)
+.TP
+\fB\-\-ds\-radios\fR \fIDS_RADIOS\fR
+B210s sharing the downstream channels (2: up to 12 channels, 6 per device, each device a block of adjacent channels; the first one also receives the upstream). Use \-\-radio\-serials and, for no drift between them, \-\-clock\-source external (default: 1)
+.TP
+\fB\-\-radio\-serials\fR \fIRADIO_SERIALS\fR
+serial numbers of the B210s, comma separated, in \-\-ds\-radios order (uhd_find_devices)
+.TP
+\fB\-\-clock\-source\fR \fI{internal,external,gpsdo}\fR
+reference of every B210: external = their 10 MHz inputs (one common source, e.g. a HackRF CLKOUT through a splitter: no drift between the devices) (default: internal)
+.TP
+\fB\-\-synth\-threads\fR \fISYNTH_THREADS\fR
+threads sharing the shaping of 3+ bonded downstream channels (default: 2)
+.TP
+\fB\-\-radio\-process\fR | \fB\-\-no\-radio\-process\fR
+B210, J.83 encoding, shaping and timed send in a process of their own (cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge (default: on)
+.TP
+\fB\-\-ds\-spacing\fR \fIDS_SPACING\fR
+spacing of the bonded downstream channels (Hz) (default: 8e6)
+.TP
+\fB\-\-ds\-layout\fR \fI{up,around}\fR
+bonded downstream channels: 'up' from \-\-freq every \-\-ds\-spacing; 'around': \-\-freq (the primary) in the middle, the others on both sides (6 channels: the only layout where the Sagem used its upstream grants, 2026\-10\-11) (default: around)
+.TP
+\fB\-\-docsis30\fR
+send a MAC Domain Descriptor (MDD): the modem initialises in DOCSIS 3.0 mode (experimental, needed for channel bonding)
+.TP
+\fB\-\-grant\-ahead\-hold\fR | \fB\-\-no\-grant\-ahead\-hold\fR
+keep the grants in advance through 0 piggyback requests and empty grants (upload x?, but the upstream receiver must keep up: watch 'retard max') (default: on)
+.TP
+\fB\-\-im\-every\-idle\fR \fIIM_EVERY_IDLE\fR
+Initial Maintenance every N MAPs while all known modems are online (5 otherwise) (default: 25)
+.TP
+\fB\-\-grant\-ahead\-every\fR \fIGRANT_AHEAD_EVERY\fR
+a grant in advance every N MAPs only (fewer, larger bursts with \-\-grant\-ahead\-scale) (default: 3)
+.TP
+\fB\-\-grant\-ahead\-scale\fR \fIGRANT_AHEAD_SCALE\fR
+size of a grant in advance, in multiples of the last request (max 255 mini\-slots) (default: 4)
+.TP
+\fB\-\-grant\-ahead\-ms\fR \fIGRANT_AHEAD_MS\fR
+after each request, keep granting that SID the same size in every MAP for this long (ms): frames no longer wait one request/MAP round trip each; 0 = off (default: 100)
+.SH "SIMULATION (NO HARDWARE) OPTIONS"
+.TP
+\fB\-\-sim\fR \fISECONDS\fR
+run with a simulated modem
+.TP
+\fB\-\-sim\-delay\-us\fR \fISIM_DELAY_US\fR
+ (default: 11.7)
+.TP
+\fB\-\-sim\-power\fR \fISIM_POWER\fR
+ (default: \-38)
+.TP
+\fB\-\-sim\-freq\fR \fISIM_FREQ\fR
+ (default: 2300)
+.TP
+\fB\-\-sim\-snr\fR \fISIM_SNR\fR
+ (default: 28)
+.TP
+\fB\-\-sim\-latency\-ms\fR \fISIM_LATENCY_MS\fR
+ (default: 30)
+.SH "PROVISIONING OPTIONS"
+Options of the provisioning server (DHCP, TFTP, ToD) started by \-\-all\-in\-one; give them with \-\-prov\-args "..." or in the [provisioning] section of a bench file.
+.TP
+\fB\-\-server\-ip\fR \fISERVER_IP\fR
+address given to the interface (gateway, DHCP, TFTP and time server) (default: 10.10.0.1/24)
+.TP
+\fB\-\-no\-ip\fR
+leave the interface address alone
+.TP
+\fB\-\-pool\fR \fIPOOL\fR
+DHCP addresses (default: 10.10.0.10\-10.10.0.99)
+.TP
+\fB\-\-lease\fR \fILEASE\fR
+DHCP lease time (s) (default: 3600)
+.TP
+\fB\-\-cm\-class\-only\fR
+give the config file name only to DHCP clients that announce a docsis class
+.TP
+\fB\-\-config\-name\fR \fICONFIG_NAME\fR
+config file name given by DHCP (default: cm.cfg)
+.TP
+\fB\-\-config\fR \fICONFIG\fR
+serve this config file instead of the generated one
+.TP
+\fB\-\-tftp\-root\fR \fITFTP_ROOT\fR
+also serve the files of this directory
+.TP
+\fB\-\-ds\-rate\fR \fIDS_RATE\fR
+generated config: downstream max rate (bit/s) (default: 1000000000)
+.TP
+\fB\-\-us\-rate\fR \fIUS_RATE\fR
+generated config: upstream max rate (bit/s) (default: 1000000000)
+.TP
+\fB\-\-us\-buffer\fR \fIBYTES\fR
+upstream flow buffer in the modem (TLV 24.35 target = maximum): its queue, so the delay a TCP upload sees. 128 KB: ping during an upload 237 \-> 93 ms on the Sagem 3686, throughput unchanged (52 Mbit/s, 2 US); 0 = the modem's own size (2026\-10\-12) (default: 131072)
+.TP
+\fB\-\-us\-burst\fR \fIUS_BURST\fR
+generated config: upstream Maximum Traffic Burst (bytes, TLV 24.9; DOCSIS default 3044). The modem never requests more than this at once: with a ~60 ms request\-to\-grant cycle, 3044 B held the Sagem's upload to ~3.5 Mbit/s (2026\-10\-09) (default: 64000)
+.TP
+\fB\-\-max\-cpe\fR \fIMAX_CPE\fR
+generated config: CPE devices allowed behind a modem (a Sagemcom set\-top box alone uses 5 MAC addresses, 2026\-10\-14) (default: 16)
+.TP
+\fB\-\-dns\fR \fIDNS\fR
+name servers given by DHCP to the devices behind the modems, comma separated (e.g. 1.1.1.1; with NAT of the cable network on the host for Internet access); default none
+.TP
+\fB\-\-no\-network\-access\fR
+generated config: network access off
+.TP
+\fB\-\-snmp\-community\fR \fINAME\fR
+generated config: let the modem answer SNMP (read\-only) with this community from 10.10.0.0/24 (TLV 53): DS SNR, codeword errors, US power... via snmpwalk
+.TP
+\fB\-\-make\-config\fR \fIFILE\fR
+write the generated config file and exit
+.TP
+\fB\-\-show\-config\fR \fIFILE\fR
+print a config file, check its MICs and exit
+.SH "BENCH FILES"
+\-\-config BENCH.toml reads the options from a TOML file. The keys are the long option names with underscores (\-\-ds\-channels becomes ds_channels); sections only group them, except [provisioning], whose keys are the provisioning options. true and false stand for \-\-x and \-\-no\-x, lists are joined with commas. Options on the command line win over the file. A misspelt key is refused with the nearest names.
+.PP
+.nf
+[downstream]
+freq = 306e6
+ds_channels = 6
+
+[upstream]
+us_channels = 2
+
+[provisioning]
+dns = "1.1.1.1"
+.fi
+.SH "STATUS PAGE"
+While it runs, http://127.0.0.1:8090/ (\-\-status\-http) shows the channels, the radios (underflows, late packets, transmit margin), the upstream receivers, the modems and what they announce (DOCSIS version, receivers, transmitters, vendor, model, embedded components, the devices behind them), the throughput and the recent alerts. Its Configuration form rewrites the \-\-config file and restarts the CMTS; by default only from the machine itself (\-\-status\-edit). /status.json gives the same data, /source.tar.gz the program's source.
+.SH ENVIRONMENT
+.TP
+.B SDR_CMTS_SDR_SIM=1
+a simulated radio instead of the SDR: it takes the transmit blocks and gives receive samples (low noise) at the pace of real time, with no hardware. The whole chain runs (MAC, radio and upstream processes, bridge, status page): to try the CMTS, or to size a host before buying an SDR (the TX margin in the status lines must stay above ~5 ms). No modem answers, so the upstream load is not that of a real modem.
+.TP
+.B SDR_CMTS_SIM_UNPLUG_S=N
+with the simulated radio: N seconds after start the radio process aborts, as when an SDR is unplugged; the CMTS stops with exit code 3.
+.TP
+.B SDR_CMTS_BLADERF_META_FORMAT=N
+the libbladeRF enum value of SC16_Q11_META, if the library's version is not the one expected (see BLADERF.md).
+.TP
+.B SDR_CMTS_US_FAST=0
+every upstream burst decoded by the Python path (diagnostic; slower).
+.TP
+.B HOME
+UHD reads ~/.config/uhd.conf (the FPGA image of a B210 clone); the service sets it to /root.
+.PP
+Other SDR_CMTS_* variables are diagnostics described where the code reads them.
+.SH "EXIT STATUS"
+.TP
+.B 0
+stopped normally (Ctrl+C, systemctl stop)
+.TP
+.B 1
+could not start (no SDR found, TAP interface, bench file refused, /dev/shm too small for the rings between the processes: docker run \-\-shm\-size=1g...)
+.TP
+.B 2
+command line options refused
+.TP
+.B 3
+the radio was lost while running (SDR unplugged): the service starts it again 15 s later
+.SH FILES
+.TP
+.I /etc/sdr\-cmts/sdr\-cmts.toml
+the bench of the sdr\-cmts service
+.TP
+.I /usr/share/sdr\-cmts/configs/
+example bench files: b210.toml, 2xb210.toml, bladerf.toml
+.TP
+.I /var/lib/sdr\-cmts/captures/
+logs and captures of the service
+.TP
+.I /etc/security/limits.d/99\-sdr\-cmts.conf
+real\-time priority for the usrp group
+.TP
+.I /usr/lib/sdr\-cmts/tools/bladerf_check.py
+checks a bladeRF before use
+.TP
+.I /usr/share/doc/sdr\-cmts/
+README, installation guide, journal and test book
+.SH EXAMPLES
+.TP
+.B sudo sdr\-cmts \-\-config /etc/sdr\-cmts/sdr\-cmts.toml
+the installed bench, in the foreground
+.TP
+.B sudo systemctl enable \-\-now sdr\-cmts
+the same bench as a service; journalctl \-u sdr\-cmts \-f shows it
+.TP
+.B sdr\-cmts \-\-config /usr/share/sdr\-cmts/configs/b210.toml \-\-ds\-channels 4
+an example bench with one option changed
+.TP
+.B sdr\-cmts \-\-sim 3
+a simulated modem, no hardware
+.SH "SEE ALSO"
+.BR uhd_find_devices (1),
+.BR uhd_usrp_probe (1),
+.BR bladeRF\-cli (1),
+.BR systemctl (1),
+.BR journalctl (1)
+.PP
+/usr/share/doc/sdr\-cmts/docs/INSTALL.md, BLADERF.md; https://github.com/TrusterBSW/SDR\-CMTS
+.SH LICENSE
+GNU Affero General Public License v3.0 only, or a commercial licence from the copyright holder: see /usr/share/doc/sdr\-cmts/COMMERCIAL.md. DOCSIS and EuroDOCSIS are trademarks of CableLabs; this project is not affiliated with or endorsed by CableLabs.
+.SH AUTHOR
+BILLY Rémi

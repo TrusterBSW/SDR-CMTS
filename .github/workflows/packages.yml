@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
+# The Debian package: ONE .deb (Architecture: all) for Debian 12 / 13, Proxmox VE 8 / 9 and Ubuntu
+# 24.04, built on Debian 12 with nothing but dpkg-deb, then installed and checked in a fresh
+# container of each release (packaging/check-deb.sh), and published on the Releases page when the
+# run comes from a tag v*. Same steps as packaging/build-all-debs.sh, which does it locally.
+name: packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: package
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Build dependencies (git for the changelog, no Python needed)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # tags, for git describe
+
+      - name: Tag matches VERSION
+        if: github.ref_type == 'tag'
+        run: |
+          v=$(cat VERSION)
+          [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "tag $GITHUB_REF_NAME but VERSION is $v" >&2; exit 1; }
+
+      - name: Build the package
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          deb=$(./packaging/build-deb.sh dist)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | grep -E "man1|systemd|changelog"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  check:
+    name: check ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "debian:13", "ubuntu:24.04"]
+    container:
+      image: ${{ matrix.image }}
+      options: --shm-size=1g     # the rings between the processes (Docker's default: 64 MB)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging/check-deb.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: dist
+
+      - name: Install and check
+        run: sh packaging/check-deb.sh dist/sdr-cmts_*_all.deb
+
+  release:
+    name: GitHub release
+    needs: check
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum sdr-cmts_*_all.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=$GITHUB_REF_NAME
+          if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" dist/*.deb dist/SHA256SUMS --clobber    # workflow run again
+          else
+              gh release create "$tag" dist/*.deb dist/SHA256SUMS --verify-tag --title "sdr-cmts ${tag#v}" \
+                  --generate-notes
+          fi

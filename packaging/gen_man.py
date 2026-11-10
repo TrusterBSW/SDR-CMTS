@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 BILLY Rémi - see LICENSE and COMMERCIAL.md
 """The sdr-cmts(1) manual page, written from the option parsers themselves (sdr_cmts.py and
-provision.py): it cannot fall behind the options. packaging/build-deb.sh installs it.
+provision.py), into man/sdr-cmts.1, which the repository keeps: building the package then needs
+neither Python nor NumPy, and tests/test_manpage.py fails when an option changed without it.
 
-    python3 packaging/gen_man.py > sdr-cmts.1 && man ./sdr-cmts.1
+    python3 packaging/gen_man.py --write      # man/sdr-cmts.1, after any change of an option
+    python3 packaging/gen_man.py | man -l -   # to read it
 """
 import argparse
 import os
@@ -64,14 +66,19 @@ def options_of(ap, skip=()):
     return sections
 
 
+MAN = os.path.join(ROOT, "man", "sdr-cmts.1")
+
+
 def main():
     try:
         with open(os.path.join(ROOT, "VERSION")) as f:
             version = f.read().strip()
     except OSError:
         version = ""
-    date = time.strftime("%Y-%m-%d", time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))))
-    w = sys.stdout.write
+    date = time.strftime("%Y-%m", time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH", time.time()))))
+    write_file = "--write" in sys.argv[1:]
+    out = []
+    w = out.append
     w(f'.TH SDR\\-CMTS 1 "{date}" "sdr\\-cmts {version}" "User Commands"\n')
     w(".SH NAME\nsdr\\-cmts \\- EuroDOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)\n")
     w(".SH SYNOPSIS\n.B sdr\\-cmts\n[\\fB\\-\\-config\\fR \\fIBENCH.toml\\fR] [\\fIOPTION\\fR]...\n.br\n"
@@ -157,6 +164,16 @@ def main():
                             "are trademarks of CableLabs; this project is not affiliated with or endorsed by "
                             "CableLabs.") + "\n")
     w(".SH AUTHOR\nBILLY Rémi\n")
+
+
+    text = "".join(out)
+    if write_file:
+        os.makedirs(os.path.dirname(MAN), exist_ok=True)
+        with open(MAN, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(MAN)
+    else:
+        sys.stdout.write(text)
 
 
 if __name__ == "__main__":
