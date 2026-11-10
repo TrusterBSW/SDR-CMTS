@@ -65,15 +65,21 @@ class TapFeed:
     Python step); the encoder thread itself turns them into PDUs (pump), before each block, at
     most a little more than its channels carry: no thread competes with it for that work, and a
     burst waits here instead of in front of it. Each frame keeps its arrival time: the queue
-    limit and CoDel still count the whole wait; a batch older than max_age_s is dropped unbuilt."""
+    limit and CoDel still count the whole wait; a batch older than max_age_s is dropped unbuilt.
 
-    def __init__(self, send, max_age_s=0.1):
+    With `plane` (cdsp.DataPlane, 2026-11-10) a batch goes into the C data plane whole: PDUs,
+    channel, queue, without Python per frame; `sync()` (BondedForwarder.sync) first hands it the
+    routes when they changed, `peek(eth)` sees the first frame of every batch (the bridge's log)."""
+
+    def __init__(self, send, max_age_s=0.1, plane=None, sync=None, peek=None):
         self.send = send                   # send(eth, arrival time): BondedForwarder via start_bridge
         self.max_age_s = max_age_s
+        self.plane, self.sync, self.peek = plane, sync, peek
         self.batches = collections.deque()  # (arrival time, frames back to back, sizes)
         self._cur = None
         self._off = self._i = 0
-        self.stats = dict(frames=0, dropped=0, batches=0, max_batch=0)
+        self._pos = [0, 0]
+        self.stats = dict(frames=0, dropped=0, batches=0, max_batch=0, full=0)
 
     def add(self, t, data, lens):
         """TAP thread: one batch (deque append, thread-safe)."""
@@ -83,6 +89,8 @@ class TapFeed:
 
     def pump(self, max_bytes):
         """Encoder thread: frames into PDUs until max_bytes of frames; returns the bytes taken."""
+        if self.plane is not None:
+            return self._pump_plane(max_bytes)
         now = time.perf_counter()
         taken = 0
         while taken < max_bytes:
@@ -105,6 +113,35 @@ class TapFeed:
             self.send(eth, t)
             self.stats["frames"] += 1
             taken += size
+        return taken
+
+    def _pump_plane(self, max_bytes):
+        if self._cur is None and not self.batches:
+            return 0                       # (idle: not even the routes' check)
+        if self.sync is not None:
+            self.sync()
+        now = time.perf_counter()
+        taken = 0
+        while taken < max_bytes:
+            if self._cur is None:
+                if not self.batches:
+                    break
+                self._cur = self.batches.popleft()
+                self._pos[0] = self._pos[1] = self._i = 0
+                if self.peek is not None:
+                    self.peek(self._cur[1][:int(self._cur[2][0])])
+            t, data, lens = self._cur
+            if now - t > self.max_age_s:   # waited past the queue limit: dropped before any work
+                self.stats["dropped"] += len(lens) - self._i
+                self._cur = None
+                continue
+            k, queued, full = self.plane.push(data, lens, self._pos, t, max_bytes - taken)
+            taken += k
+            self.stats["frames"] += queued
+            self.stats["full"] += full
+            self._i = self._pos[0]
+            if self._i >= len(lens):
+                self._cur = None
         return taken
 
     def waiting(self):
@@ -194,12 +231,55 @@ class BondedForwarder:
         self.seq = {}                    # DSID -> next packet sequence number
         self.per_chan = [0] * len(channels)
         self.force_ch = None             # diagnostic: every bonded frame on this channel index
+        self.plane = None                # cdsp.DataPlane (attach_plane): the frames go there
+        self._owner_ver = 0
+        self._sig = None
+        self._per_chan_t = 0.0
+        self.route_overflow = 0
 
     def learn(self, eth, sid):
         """An upstream frame from `sid`: its source address belongs to that modem."""
         m = self.core.by_sid.get(sid)
         if m is not None and len(eth) >= 12:
-            self.owner[bytes(eth[6:12])] = m.mac
+            src = bytes(eth[6:12])
+            if self.owner.get(src) != m.mac:
+                self.owner[src] = m.mac
+                self._owner_ver += 1
+
+    def attach_plane(self, plane):
+        """The frames from now on through the C data plane (TapFeed with plane=, sync=self.sync):
+        each channel's mux takes its batches from it."""
+        self.plane = plane
+        for i, ch in enumerate(self.channels):
+            ch.plane, ch.plane_ch = plane, i
+        plane.force_channel(self.force_ch)
+        self._sig = None
+
+    def _route(self, cm):
+        """(DSID or None, usable channel indexes) of the frames for modem `cm` (as send())."""
+        dsid = self.core.bonded.get(cm) if cm is not None else None
+        if dsid is None:
+            return None, [0]
+        n = len(self.channels)
+        return dsid, [c - 1 for c in self.core.bonded_channels.get(cm, range(1, n + 1)) if 0 < c <= n] or [0]
+
+    def sync(self):
+        """Encoder thread, before each push: the routes into the C data plane when the learned
+        addresses or the bonded modems changed (modem_of's rules, address by address)."""
+        bonded = self.core.bonded
+        sig = (self._owner_ver, tuple(bonded.items()),
+               tuple((k, tuple(v)) for k, v in self.core.bonded_channels.items()))
+        if sig != self._sig:
+            self._sig = sig
+            routes = {dst: self._route(cm) for dst, cm in list(self.owner.items())}
+            for cm in list(bonded):
+                routes.setdefault(cm, self._route(cm))
+            default = self._route(next(iter(bonded))) if len(bonded) == 1 else (None, [0])
+            self.route_overflow += len(self.plane.set_routes(routes, bool(bonded), default))
+        now = time.perf_counter()
+        if now - self._per_chan_t > 0.2:          # the split shown on the status line
+            self._per_chan_t = now
+            self.per_chan[:] = self.plane.per_chan()
 
     def modem_of(self, eth):
         """MAC of the bonded modem a unicast frame is for, or None (primary, no DSID)."""

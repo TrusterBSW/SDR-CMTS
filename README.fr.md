@@ -345,10 +345,12 @@ Autres évolutions possibles :
     FPGA sur deux voies RX plafonnent l'horloge maître à 30,72 MHz (3 DS) ; une image « edge QAM »
     (J.83, QAM, mise en forme et mélange dans le FPGA, comme les vrais CMTS) retirerait ~1,3 cœur et
     ~90 % du trafic USB d'émission, au prix de mois de travail sur Spartan-6 ;
-  - **le chemin des données de la MAC en C** (`tools/mac_load.sh`) : la MAC coûte ~0,15 cœur au
-    repos et ~20 µs par trame descendante, ~1 cœur en 6 + 2 à pleine charge ; le trajet des trames en
-    C gagnerait ~0,4 à 0,6 cœur et ne tiendrait plus le GIL de Python ; le plan de contrôle reste en
-    Python. À mesurer avec un modem.
+  - **le chemin des données de la MAC en C** : fait pour le descendant (10/11/2026,
+    `--ds-dataplane`, actif par défaut) : trame -> PDU, canal, files avec CoDel, paquets TS dans
+    `cmts/dsdsp.c`, les mêmes paquets TS à l'octet près ; 0,25 -> 0,07 cœur à 290 Mbit/s en trames
+    pleines, 2 cœurs (qui ne suivaient pas) -> 0,10 en petites trames (`tools/ds_path_bench.py`).
+    Les trames montantes (~4 000/s à 50 Mbit/s, quelques µs chacune : ~0,04 cœur) et le plan de
+    contrôle restent en Python.
 
 ## Licence
 

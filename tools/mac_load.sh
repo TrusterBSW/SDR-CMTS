@@ -6,10 +6,14 @@
 # every MAC thread and the frames handled, then a py-spy profile (PYSPY=path, default /root/py-spy).
 # As root on a host with the sdr-cmts package and no CMTS running; transmits nothing.
 # i5-9500 (2026-11-01): 0.15 core idle, 0.33 at 48 Mbit/s, 0.42 at 150: ~20 µs per frame.
+# ARGS: more options of the CMTS (e.g. ARGS=--no-ds-dataplane: the former Python data path);
+# RATES: the UDP rates in Mbit/s (default "0 48 150").
 PYSPY=${PYSPY:-/root/py-spy}
+ARGS=${ARGS:-}
+RATES=${RATES:-0 48 150}
 cd /tmp
 SDR_CMTS_SDR_SIM=1 sdr-cmts --ds-channels 6 --ds-layout around --us-channels 2 --tap cmts0 --status-http none \
-   --color never --log /tmp/mac_load.log > /tmp/mac_load.out 2>&1 &
+   --color never --log /tmp/mac_load.log $ARGS > /tmp/mac_load.out 2>&1 &
 MAC=$!
 sleep 25
 ip addr show cmts0 | grep -q "10.10.0.1/" || ip addr add 10.10.0.1/24 dev cmts0
@@ -18,7 +22,7 @@ ip neigh replace 10.10.0.50 lladdr 02:00:00:00:00:50 dev cmts0 nud permanent
 cpu() { awk '{print $14+$15}' /proc/$MAC/stat; }
 thr() { for t in /proc/$MAC/task/*; do echo "$(basename $t) $(cut -d' ' -f14,15 $t/stat | awk '{print $1+$2}') $(cat $t/comm)"; done; }
 txp() { cat /sys/class/net/cmts0/statistics/tx_packets; }
-for rate in 0 48 150; do
+for rate in $RATES; do
   [ $rate -gt 0 ] && (iperf -u -c 10.10.0.50 -b ${rate}M -l 1472 -t 45 >/dev/null 2>&1 &)
   sleep 5
   c0=$(cpu); p0=$(txp); thr > /tmp/t0; sleep 30; c1=$(cpu); p1=$(txp); thr > /tmp/t1

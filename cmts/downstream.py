@@ -36,6 +36,7 @@ def _fill(mux, n):
     while i < n:
         q = mux._q
         if q is None:
+            mux._room = n - i              # (the C data plane fills up to the end of the block)
             q = mux._item()
             if q is None:
                 r = mux._null_run(min(NULL_RUN, n - i))
@@ -52,7 +53,37 @@ def _fill(mux, n):
         i += k
         if mux._qi >= q.shape[0]:
             mux._q = None
+    if mux.plane is not None:          # load of this channel for the C forwarder (backlog())
+        q = mux._q
+        mux.plane.inflight_mv[mux.plane_ch] = 0 if q is None else (q.shape[0] - mux._qi) // 8
     return out
+
+
+def _plane_batch(mux, limit):
+    """The next data batches of `mux` from the C data plane (cdsp.DataPlane), back to back while
+    fewer than `limit` packets are built: their TS packets (None: no frame) and, only for on_ucast
+    (pcap), their PDUs."""
+    pk, mux.pk.cc, sent, drop, wmax, pdus = mux.plane.take(
+        mux.plane_ch, time.perf_counter(), mux.data_pack * 183, mux.pk.cc, limit=limit,
+        frames=mux.on_ucast is not None)
+    st = mux.stats
+    st["data"] += sent
+    st["data_drop"] += drop
+    if wmax > st["data_max_ms"]:
+        st["data_max_ms"] = wmax
+    return pk, pdus or []
+
+
+def _queue_len(mux):
+    """Data frames waiting (Python queue and C data plane)."""
+    return len(mux.data) + (mux.plane.queued(mux.plane_ch) if mux.plane is not None else 0)
+
+
+def _backlog(mux):
+    """Frames waiting + TS packets of the message in progress not sent yet (load measure of the
+    bonding forwarder)."""
+    q = mux._q
+    return _queue_len(mux) + (0 if q is None else (q.shape[0] - mux._qi) // 8)
 
 
 
@@ -161,6 +192,10 @@ class DownstreamMux:
         self.mdd_iv = int(1.0 * 10240 * 1000)
         self.next_mdd = 0
         self._batch = []
+        self._batch_pk = None      # TS packets of the batch, already packed by the C data plane
+        # the C data plane (cdsp.DataPlane, attached by sdr_cmts.start_bridge) and this channel's
+        # index in it: the data frames queue there instead of self.data
+        self.plane, self.plane_ch = None, 0
         self.now_ts = ts_start     # air time of the packet being generated (read by other threads)
 
     # -------------------------------------------------------------- timing
@@ -257,9 +292,11 @@ class DownstreamMux:
         SYNC or a MAP is due), SYNC, MAP, MDD, UCD."""
         now = self.pkt_air_ts(self.p)
         self.now_ts = now
-        if (self.ucast or self.data) and now < self.next_sync and not (
+        if (self.ucast or self.data or (self.plane is not None and self.plane.count[self.plane_ch])) \
+                and now < self.next_sync and not (
                 self.next_map_ms is None or self.next_map_ms * self.ms_counts < now + self.map_lead) \
                 and (self.ucast or self._data_batch()):
+            packed = None
             if self.ucast:                         # MAC management first
                 frame, cb = self.ucast.popleft()
                 frames = [frame]
@@ -267,11 +304,11 @@ class DownstreamMux:
                 if cb:
                     cb(now)
             else:
-                frames = self._batch
+                frames, packed = self._batch, self._batch_pk
             if self.on_ucast:
                 for f in frames:
                     self.on_ucast(f, now)
-            return self.pk.pack_array(frames)
+            return packed if packed is not None else self.pk.pack_array(frames)
         if now >= self.next_sync:
             q = self._sync_packet()[None]
             self.next_sync = now + self.sync_iv
@@ -306,11 +343,8 @@ class DownstreamMux:
     def next_packet(self):
         return self.packets(1)[0]
 
-    def backlog(self):
-        """Frames waiting + TS packets of the message in progress not sent yet (load measure of
-        the bonding forwarder)."""
-        q = self._q
-        return len(self.data) + (0 if q is None else (q.shape[0] - self._qi) // 8)
+    backlog = _backlog
+    queue_len = _queue_len
 
     def send_data(self, frame, t=None):
         """Queue a downstream data PDU (thread-safe: deque append); t: when its frame arrived
@@ -319,6 +353,11 @@ class DownstreamMux:
 
     def _data_batch(self):
         """Take the data frames for the next TS packets (stale ones dropped). True if any."""
+        self._batch_pk = None
+        if self.plane is not None and self.plane.count[self.plane_ch]:
+            self._batch_pk, self._batch = _plane_batch(self, self._data_room())
+            if self._batch_pk is not None:
+                return True
         now = time.perf_counter()
         batch, size = [], 0
         while self.data:
@@ -337,6 +376,25 @@ class DownstreamMux:
         self.stats["data"] += len(batch)
         self._batch = batch
         return bool(batch)
+
+    def _data_room(self):
+        """Packets from self.p that may start a data batch: up to the one where a SYNC or the
+        first channel's MAP falls due (what _item checks before data), at most the rest of the
+        block being filled."""
+        t = self.next_sync
+        if self.next_map_ms is not None:
+            t = min(t, self.next_map_ms * self.ms_counts - self.map_lead + 1)
+        room = max(1, getattr(self, "_room", 1))
+        if self.pkt_air_ts(self.p + room - 1) < t:
+            return room
+        lo, hi = 1, room - 1                   # pkt_air_ts(p) < t (data allowed at p): bisect
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self.pkt_air_ts(self.p + mid - 1) < t:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
 
     def packets(self, n):
         return _fill(self, n)
@@ -372,6 +430,7 @@ class SecondaryMux:
         self.next_mdd = 0
         self.on_ucast = None
         self.stats = dict(mdd=0, data=0, data_drop=0, null=0, data_max_ms=0.0)
+        self.plane, self.plane_ch = None, 0       # (as DownstreamMux)
 
     def send_data(self, frame, t=None):
         self.data.append((time.perf_counter() if t is None else t, frame))
@@ -382,6 +441,16 @@ class SecondaryMux:
             self.next_mdd = self.p + self.mdd_every
             self.stats["mdd"] += 1
             return self.pk.pack_array([self.mdd])
+        if self.plane is not None and self.plane.count[self.plane_ch]:
+            room = max(1, getattr(self, "_room", 1))
+            if self.mdd is not None:
+                room = min(room, max(1, self.next_mdd - self.p))
+            pk, frames = _plane_batch(self, room)
+            if pk is not None:
+                if self.on_ucast:
+                    for f in frames:
+                        self.on_ucast(f, None)
+                return pk
         now, batch, size = time.perf_counter(), [], 0
         while self.data:
             t, f = self.data[0]
@@ -412,7 +481,8 @@ class SecondaryMux:
     def next_packet(self):
         return self.packets(1)[0]
 
-    backlog = DownstreamMux.backlog
+    backlog = _backlog
+    queue_len = _queue_len
 
     def packets(self, n):
         return _fill(self, n)

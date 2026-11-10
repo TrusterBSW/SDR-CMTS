@@ -204,6 +204,9 @@ reference of every B210: external = their 10 MHz inputs (one common source, e.g.
 \fB\-\-synth\-threads\fR \fISYNTH_THREADS\fR
 threads sharing the J.83 encoding and shaping of 3+ bonded downstream channels; raised by itself from 4 channels on: one thread per 2 channels, or one per channel when the host has at least the channels + 4 physical cores (a slower core, e.g. a Xeon E5 v4 at 2.4 GHz, needs ~0.6 core per channel) (default: 2)
 .TP
+\fB\-\-ds\-dataplane\fR | \fB\-\-no\-ds\-dataplane\fR
+downstream data frames in C (cmts/dsdsp.c, cdsp.DataPlane): Ethernet frame \-> DOCSIS PDU, channel of a bonded modem, queues with \-\-ds\-queue\-ms and CoDel, TS packets, without Python per frame (~11 \-> ~1 µs per frame); \-\-no\-ds\-dataplane: the former Python path (default: on)
+.TP
 \fB\-\-radio\-process\fR | \fB\-\-no\-radio\-process\fR
 B210, J.83 encoding, shaping and timed send in a process of their own (cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge (default: on)
 .TP

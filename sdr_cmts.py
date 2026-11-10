@@ -426,7 +426,25 @@ def start_bridge(a, mux, core, stop, batched=False):
         if flim.ok():
             log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
     core.on_data = up
-    br.feed = TapFeed(down, max_age_s=mux.data_max_ms / 1e3) if batched else None
+    br.feed = None
+    if batched:
+        plane = None
+        if a.ds_dataplane and cdsp.DS_AVAILABLE:
+            # the frames' path in C (cdsp.DataPlane): PDUs, channel, queues, CoDel, TS packets
+            plane = cdsp.DataPlane(len(fwd.channels))
+            for i, m in enumerate(fwd.channels):
+                aqm = getattr(m, "aqm", None)
+                plane.config(i, m.data_max_ms / 1e3, aqm.target if aqm else 0.0, aqm.interval if aqm else 0.1)
+            fwd.attach_plane(plane)
+            log(f"[PONT] chemin des trames descendantes en C ({len(fwd.channels)} canaux)")
+        elif a.ds_dataplane:
+            log("[PONT] !! dsdsp.c non compilé : chemin des trames descendantes en Python")
+
+        def peek(eth):                         # the first frame of every batch, in the log
+            if flim.ok():
+                log(f"[PONT] ↓ {netpkt.summary(eth)}", console=lim.ok())
+        br.feed = TapFeed(down, max_age_s=mux.data_max_ms / 1e3, plane=plane,
+                          sync=fwd.sync if plane else None, peek=peek if plane else None)
     br.start(down, stop, feed=br.feed)
     log(f"[PONT] modems <-> {a.tap} (état {br.link_up()})")
     return br
@@ -1000,7 +1018,7 @@ def web_snapshot(a, mux, core, rx, radios, br, fill, prev):
     if fd:
         bridge.update(tap_waiting=fd.waiting(), tap_dropped=fd.stats["dropped"], max_batch=fd.stats["max_batch"])
     return dict(radios=rad, upstream=ups, bridge=bridge,
-                downstream=dict(fill=fill, queue=len(mux.data), wait_max_ms=st["data_max_ms"], dropped=st["data_drop"]),
+                downstream=dict(fill=fill, queue=mux.queue_len(), wait_max_ms=st["data_max_ms"], dropped=st["data_drop"]),
                 modems=core.summary(), rng_rsp=core.n_rsp, grants=dict(core.n))
 
 
@@ -1215,7 +1233,7 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             tapq = f"file TAP {fd.waiting()} (jetées {fd.stats['dropped']}, lot max {fd.stats['max_batch']}), " if fd else ""
             fill = ds_fill(mux, fill_prev)
             pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}{fill_text(fill)}{tapq}file DS "
-                    f"{len(mux.data)}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
+                    f"{mux.queue_len()}, attente max {st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
             tx = radio.status() + "".join(f"{rp.name} : {rp.status()}" for rp in radios[1:])
             if board:
                 board.publish(web_snapshot(a, mux, core, rx, radios, br, fill, web_prev), iface=a.tap)
@@ -1560,7 +1578,7 @@ def run_usrp(a):
                 m_min = float("inf")
                 st = mux.stats
                 split = ("/".join(str(n) for n in mux.per_chan) + " par canal, ") if len(getattr(mux, "per_chan", [])) > 1 else ""
-                pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}file DS {len(mux.data)}, attente max "
+                pont = (f"pont ↑{br.stats['up']} ↓{br.stats['down']} ({split}file DS {mux.queue_len()}, attente max "
                         f"{st['data_max_ms']:.0f} ms, jetées {st['data_drop']}) | ") if br else ""
                 st["data_max_ms"] = 0.0
                 gap, counters["rx_gap_ms"] = counters.get("rx_gap_ms", 0.0), 0.0
@@ -1774,6 +1792,11 @@ def parser():
                         "raised by itself from 4 channels on: one thread per 2 channels, or one per channel "
                         "when the host has at least the channels + 4 physical cores (a slower core, e.g. a "
                         "Xeon E5 v4 at 2.4 GHz, needs ~0.6 core per channel)")
+    g.add_argument("--ds-dataplane", action=argparse.BooleanOptionalAction, default=True,
+                   help="downstream data frames in C (cmts/dsdsp.c, cdsp.DataPlane): Ethernet frame -> DOCSIS "
+                        "PDU, channel of a bonded modem, queues with --ds-queue-ms and CoDel, TS packets, "
+                        "without Python per frame (~11 -> ~1 µs per frame); --no-ds-dataplane: the former "
+                        "Python path")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=True,
                    help="B210, J.83 encoding, shaping and timed send in a process of their own "
                         "(cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge")

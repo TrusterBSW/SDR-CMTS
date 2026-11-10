@@ -93,7 +93,10 @@ if [ -n "$old" ] && dpkg --compare-versions "$old" gt "$new"; then
     say "replacing the installed sdr-cmts $old by the release $new"
     down="--allow-downgrades"
 fi
-apt-get install -y $down "$DEB"
+# a sdr-cmts.toml edited here is kept as it is (the new default goes next to it as .dpkg-dist):
+# without a terminal (curl | sh) dpkg would otherwise stop on its question and leave the package
+# unconfigured
+apt-get install -y $down -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$DEB"
 if [ "$IMAGES" = 1 ]; then
     if command -v uhd_images_downloader >/dev/null; then
         say "USRP B210 FPGA images"

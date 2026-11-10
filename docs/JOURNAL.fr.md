@@ -936,3 +936,27 @@ sinon un pour 2 canaux comme avant. Le 9500 (6 cœurs) garde ses 3 fils validés
 `--synth-threads` (`synth_threads` dans le TOML) reste un minimum ; au-delà du nombre de canaux il ne change rien.
 Erreur de ma part ce jour-là : deux essais 6 DS sur radio simulée lancés à côté du service en marche l'ont fait
 décrocher ; plus d'essai lourd sur une machine où tourne un CMTS sans l'avoir libérée.
+
+## Le chemin des trames descendantes en C (10/11/2026)
+
+Demandé depuis un moment : la MAC passait ~11 µs de Python par trame descendante (TapFeed.pump →
+BondedForwarder.send → data_pdu_dsid → file → _data_batch avec CoDel → ts_pack), GIL tenu tout du long.
+`cmts/dsdsp.c` (`dp_*`, enveloppe `cdsp.DataPlane`, option `--ds-dataplane`, active par défaut) fait maintenant
+tout le trajet : table adresse → DSID et canaux (recopiée par le répartiteur quand elle change), même règle de
+rotation entre canaux, PDU avec DS-EHDR, HCS et FCS (CRC32 par tranches de 8 octets), une file par canal
+(anneau de 1 Mo, 16 384 trames, refus compté quand elle est pleine), limite d'âge et CoDel recopiés ligne à
+ligne, puis tous les lots qui tiennent jusqu'au prochain SYNC / MAP (MDD sur les secondaires) ou la fin du
+bloc mis en paquets TS en un appel. `tests/test_dataplane.py` : les mêmes paquets TS à l'octet près que le
+chemin Python sur les 6 canaux (deux modems agrégés, CPE appris, modem non agrégé, diffusion, adresses
+inconnues), les mêmes trames jetées par CoDel, l'anneau qui boucle sans mélanger les trames.
+
+Mesures (`tools/ds_path_bench.py`, portable i5-11300H, 6 canaux agrégés) : trames de 1514 octets
+10,9 → 2,9 µs par trame, 0,26 → 0,07 cœur à 290 Mbit/s ; trames de 100 octets 6,4 → 0,3 µs, 2 cœurs (le
+Python ne suivait pas) → 0,10. Premier jet plus cher au repos (0,26 contre 0,15 cœur sur le 9500,
+`tools/mac_load.sh`) : un appel ctypes à 13 arguments à chaque série de paquets nuls, même file vide ; le
+nombre de trames en file est maintenant lu par Python dans un tableau tenu par le C, sans appel : 0,16
+contre 0,15. Sur `mac_load.sh` (radio simulée, sans modem agrégé : seul le primaire transporte, ~4 300
+trames/s) les deux chemins coûtent pareil (0,47 / 0,49 cœur à 280 Mbit/s offerts) ; le gain est sur le
+chemin agrégé, à confirmer avec le modem. Le montant reste en Python : ~4 000 trames/s à 50 Mbit/s, quelques
+µs chacune (~0,04 cœur), ses démodulateurs étant déjà en C. Au passage : `install.sh` garde un
+`sdr-cmts.toml` modifié (`--force-confold`) ; sans terminal, dpkg s'arrêtait sur sa question.

@@ -344,9 +344,11 @@ Other possible evolutions:
     DDCs on two RX paths cap the master clock at 30.72 MHz (3 DS); a custom "edge QAM" image (J.83,
     QAM, shaping and mixing in the FPGA, as real CMTSs do) would remove ~1.3 cores and ~90 % of the
     TX USB traffic, at the cost of months of Spartan-6 work;
-  - **the MAC's data path in C** (`tools/mac_load.sh`): the MAC costs ~0.15 core idle and ~20 µs per
-    downstream frame, ~1 core in a full 6 + 2 run; the frames' path in C would save ~0.4-0.6 core
-    and no longer hold Python's GIL; the control plane stays in Python. To be measured with a modem.
+  - **the MAC's data path in C**: done for the downstream (2026-11-10, `--ds-dataplane`, on by
+    default): frame -> PDU, channel, queues with CoDel, TS packets in `cmts/dsdsp.c`, the same TS
+    packets byte for byte; 0.25 -> 0.07 core at 290 Mbit/s of full-size frames, 2 cores (falling
+    behind) -> 0.10 for small ones (`tools/ds_path_bench.py`). The upstream frames (~4,000/s at
+    50 Mbit/s, a few µs each: ~0.04 core) and the control plane stay in Python.
 
 ## License
 

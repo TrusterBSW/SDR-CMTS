@@ -97,6 +97,25 @@ def _load_ds():
     dll.tap_read_batch.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
                                    ctypes.c_int]
     dll.tap_read_batch.restype = ctypes.c_int
+    V, I, L, Dv = ctypes.c_void_p, ctypes.c_int, ctypes.c_long, ctypes.c_double
+    dll.dp_new.argtypes, dll.dp_new.restype = [I, V, V], V
+    dll.dp_free.argtypes, dll.dp_free.restype = [V], None
+    dll.dp_config.argtypes, dll.dp_config.restype = [V, I, Dv, Dv, Dv], None
+    dll.dp_force_channel.argtypes, dll.dp_force_channel.restype = [V, I], None
+    dll.dp_routes_clear.argtypes, dll.dp_routes_clear.restype = [V, I, I, ctypes.c_uint32], None
+    dll.dp_route_set.argtypes, dll.dp_route_set.restype = [V, ctypes.c_char_p, I, ctypes.c_uint32], I
+    dll.dp_seq_get.argtypes, dll.dp_seq_get.restype = [V, I], I
+    dll.dp_push.argtypes, dll.dp_push.restype = [V, ctypes.c_char_p, V, I, V, Dv, I, V], I
+    dll.dp_take.argtypes, dll.dp_take.restype = [V, I, Dv, I, I], I
+    dll.dp_buffers.argtypes, dll.dp_buffers.restype = [V, V, I, V, I, V, I], None
+    dll.dp_set_cc.argtypes, dll.dp_set_cc.restype = [V, I], None
+    dll.dp_get_cc.argtypes, dll.dp_get_cc.restype = [V], I
+    dll.dp_result.argtypes, dll.dp_result.restype = [V, V, V], None
+    dll.dp_queued.argtypes, dll.dp_queued.restype = [V, I], I
+    dll.dp_full.argtypes, dll.dp_full.restype = [V, I], L
+    dll.dp_per_chan.argtypes, dll.dp_per_chan.restype = [V, I], L
+    dll.dp_crc32.argtypes, dll.dp_crc32.restype = [ctypes.c_char_p, I], ctypes.c_uint32
+    dll.dp_hcs.argtypes, dll.dp_hcs.restype = [ctypes.c_char_p, I], ctypes.c_uint16
     return dll
 
 
@@ -462,3 +481,108 @@ class Ddc:
                            ctypes.byref(self.skip), _f(out.view(np.float32)))
         return out[:n]
 
+
+
+class DataPlane:
+    """The downstream data path in C (dsdsp.c dp_*): frames from the TAP batches into Packet PDUs
+    on their channels (routes set by BondedForwarder), queues with the age limit and CoDel, batches
+    packed into TS packets. Pushed and taken by one thread, the TS block encoder; one Python call
+    per batch instead of ~11 µs of Python per frame. None of it without the C library (DS_AVAILABLE)."""
+
+    PACK_MAX = 512                      # TS packets of the batches of one take at most
+
+    def __init__(self, nch):
+        self.nch = nch
+        self.inflight = np.zeros(nch, np.int32)     # written by the muxes after each block
+        self.inflight_mv = memoryview(self.inflight)
+        self._count_np = np.zeros(nch, np.int32)    # frames queued per channel, written by the C
+        self.count = self._count = memoryview(self._count_np)   # (read without a call)
+        self._p = _DS.dp_new(nch, self.inflight.ctypes.data, self._count_np.ctypes.data)
+        if not self._p:
+            raise MemoryError("dp_new")
+        self._st = np.zeros(2, np.int32)
+        self._cnt = np.zeros(2, np.int64)
+        self._out = np.empty((self.PACK_MAX + 2, 188), np.uint8)
+        self._raw = np.empty(self.PACK_MAX * 188, np.uint8)
+        self._flen = np.empty(4096, np.int32)
+        self._res = np.zeros(2, np.int32)
+        self._wmax = np.zeros(1, np.float64)
+        a = lambda x: x.ctypes.data
+        self._a = dict(st=a(self._st), cnt=a(self._cnt), res=a(self._res), wmax=a(self._wmax))
+        _DS.dp_buffers(self._p, a(self._out), self._out.shape[0], a(self._raw), self._raw.size,
+                       a(self._flen), self._flen.size)
+
+    def __del__(self):
+        if getattr(self, "_p", None) and _DS is not None:
+            _DS.dp_free(self._p)
+            self._p = None
+
+    def config(self, ch, max_age_s, codel_target_s=0.0, codel_interval_s=0.1):
+        _DS.dp_config(self._p, ch, max_age_s, codel_target_s, codel_interval_s)
+
+    def force_channel(self, ch):
+        _DS.dp_force_channel(self._p, -1 if ch is None else ch)
+
+    def set_routes(self, routes, bonded, default):
+        """routes: {destination address (6 bytes): (DSID or None, channel indexes)}; bonded: any
+        bonded modem; default: (DSID or None, channel indexes) of a destination not in routes.
+        Returns the addresses that did not fit."""
+        mask = lambda chans: sum(1 << i for i in chans if 0 <= i < 32) or 1
+        dd, dc = default
+        _DS.dp_routes_clear(self._p, int(bool(bonded)), -1 if dd is None else dd, mask(dc))
+        return [m for m, (d, c) in routes.items()
+                if _DS.dp_route_set(self._p, bytes(m), -1 if d is None else d, mask(c))]
+
+    def seq(self, dsid):
+        return _DS.dp_seq_get(self._p, dsid)
+
+    def push(self, data, lens, pos, t, max_bytes):
+        """Frames of a TAP batch (bytes back to back, int32 sizes) from pos = [frame, byte offset]
+        (advanced), into PDUs on their channels, until max_bytes. Returns (bytes taken, frames
+        queued, frames refused: queue full)."""
+        self._st[0], self._st[1] = pos
+        self._cnt[:] = 0
+        k = _DS.dp_push(self._p, data, lens.ctypes.data, len(lens), self._a["st"], t, int(max_bytes),
+                        self._a["cnt"])
+        pos[0], pos[1] = int(self._st[0]), int(self._st[1])
+        return k, int(self._cnt[0]), int(self._cnt[1])
+
+    def take(self, ch, now, pack_bytes, cc, limit=1, frames=False):
+        """The next batches of channel ch, back to back while fewer than `limit` packets are built:
+        (TS packets k x 188 (a copy) or None, continuity counter, frames sent, dropped, longest
+        wait ms, [PDUs] if frames else None). Nothing queued: no C call at all."""
+        if not self._count[ch]:
+            return None, cc, 0, 0, 0.0, None
+        _DS.dp_set_cc(self._p, cc)
+        k = _DS.dp_take(self._p, ch, now, int(pack_bytes), max(1, min(int(limit), self.PACK_MAX - 40)))
+        if k < 0:
+            raise ValueError("dp_take")
+        _DS.dp_result(self._p, self._a["res"], self._a["wmax"])
+        sent, drop = int(self._res[0]), int(self._res[1])
+        pdus = None
+        if frames and sent:
+            raw, pdus, off = self._raw.tobytes(), [], 0
+            for n in self._flen[:sent]:
+                pdus.append(raw[off:off + int(n)])
+                off += int(n)
+        return (self._out[:k].copy() if k else None), _DS.dp_get_cc(self._p), sent, drop, \
+            float(self._wmax[0]), pdus
+
+    def queued(self, ch):
+        return self._count[ch]
+
+    def refused(self, ch):
+        return _DS.dp_full(self._p, ch)
+
+    def per_chan(self):
+        return [_DS.dp_per_chan(self._p, i) for i in range(self.nch)]
+
+
+def crc32(data):
+    """zlib.crc32 in C (dp_crc32), for the tests."""
+    return _DS.dp_crc32(bytes(data), len(data))
+
+
+def hcs(data):
+    """docsis_mac.crc16_ccitt in C (dp_hcs), for the tests."""
+    return _DS.dp_hcs(bytes(data), len(data))
