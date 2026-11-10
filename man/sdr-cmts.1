@@ -114,7 +114,7 @@ mini\-slot size in 6.25 us ticks (default: 4)
 B210 RX gain dB (20: noise \-70 dBFS, ranged bursts \-20 dBFS) (default: 20)
 .TP
 \fB\-\-us\-lo\-offset\fR \fIUS_LO_OFFSET\fR
-RX LO \- upstream freq (Hz); default 3 MHz, more if needed to keep the LO >= 52 MHz
+RX LO \- upstream freq (Hz); default 3 MHz (more if needed to keep the LO >= 52 MHz) above the channel, or below it when the LO's 3rd / 5th harmonics would otherwise fold downstream channels onto the upstream (5 x 64.2 MHz = 321 MHz: MER 21 \-> 17 dB at 5 DS)
 .TP
 \fB\-\-irq\-herd\fR | \fB\-\-no\-irq\-herd\fR
 with \-\-cpus auto: move every other hardware interrupt off the CMTS cores (sudo), onto the USB core's other hyperthread, or the USB core itself without SMT; on exit they go back to the kernel's default affinity (default: on)

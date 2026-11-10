@@ -971,3 +971,23 @@ recevaient `cm.cfg` et aucun serveur de noms, quoi que dise `dns = "1.1.1.1"` da
 seuls les clients qui s'annoncent `docsis…` ou `pktc…` (option 60, obligatoire pour un modem) reçoivent le
 fichier de configuration ; les autres reçoivent `--dns`. `--config-to-all` rend l'ancien comportement,
 `--cm-class-only` reste accepté. Test : `tests/test_provision_dhcp.py`.
+
+## 6 DS + 2 US sur le Xeon : la synthèse, puis l'USB, puis un repliement (11/11/2026, nuit)
+
+Premier essai 6 DS + 2 US sur le Xeon E5-2630 v4 avec un fil de synthèse par canal : l'émission prenait ~170 ms de
+retard toutes les 5 s. py-spy : le fil appelant de `TxChain` à 100 % : il synthétisait son canal, puis additionnait
+seul les 5 autres accumulateurs et mettait tout le bloc à l'échelle ; les accumulateurs étaient en plus alloués
+et remis à zéro à chaque bloc (~18 % d'un fil), la somme était scalaire et la table de cos/sin recalculée à chaque
+appel. Désormais deux phases par bloc : chaque fil écrit son premier canal (sans remise à zéro), additionne les
+suivants, puis fait une tranche de la somme de tous les accumulateurs, mise à l'échelle et écrêtée en une passe
+vectorisée (`sum_scale_clip`) ; table de cos/sin gardée par fil. Mêmes échantillons à l'octet près que l'ancienne
+chaîne ; synthèse de 6 canaux 2,95 → 1,44 cœur, fil appelant 1,5 → 0,44 ms par bloc (portable).
+
+Sur le Xeon l'émission ne dérive plus, mais à 334 Mo/s d'USB (6 DS + 2 US), le contrôleur xHCI du chipset C610 bloque
+l'émission 200 à 300 ms de temps en temps, hors Python : le 3686 perd des canaux secondaires à chaque fois, le TCP
+s'effondre (1 Mbit/s en montant). L'utilisateur a choisi 5 DS + 1 US « pour sécuriser ». Là, ranging réussi mais
+plus aucune rafale de données décodée : MER 17-18 dB au lieu de 21. La 5ᵉ harmonique de l'OL de réception (64,2 MHz,
+5 × 64,2 = 321 MHz) repliait les canaux descendants 314 et 322 MHz sur le montant de 60 MHz, à travers l'isolation
+du coupleur. OL passé sous le canal (55,8 MHz) : MER 21,1 dB, modem en ligne sur 5 canaux. Le choix est maintenant
+automatique (`lo_folds`, `rx_lo_offset`). Reste : en 5 + 1, 3,4 % de pertes UDP descendantes à 50 Mbit/s et 8,8 % à
+150 Mbit/s (retards d'émission sous charge), TCP 57 / 7 Mbit/s à travers le routeur du 3686.

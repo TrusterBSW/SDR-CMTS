@@ -292,6 +292,12 @@ class TxChain:
     several: cdsp.ChannelSynth per channel (shaping + shift + sum in C), split into groups computed
     by helper threads from 3 channels on, each thread encoding its own channels too (with the AVX2
     synthesis, encoding all 5 channels in the calling thread left it the bottleneck at 55.6 MS/s).
+    With several groups, two phases per block: every thread (the caller too) encodes and shapes
+    its channels into its own accumulator, then every thread sums one slice of all the
+    accumulators, scaled and clipped (cdsp.sum_scale_clip). Until 2026-11-10 the caller summed the
+    other groups and scaled the whole block alone, on top of its own channel: ~1 core at 6 DS on a
+    Xeon E5-2630 v4 (2.4 GHz), the transmission fell behind for good; the helpers' accumulators
+    were also allocated anew for every block.
     p: the radio parameters (qams, steps, sps, invert, scale, synth_threads)."""
 
     def __init__(self, p, stop):
@@ -308,21 +314,38 @@ class TxChain:
         self.bits = {64: 6, 256: 8}[p["qams"][0]]           # symbols per block = 204 * 8 / bits per packet
         ngroups = 1 if nch <= 2 else min(nch, p["synth_threads"])
         self.groups = [list(range(nch))[g::ngroups] for g in range(ngroups)]
+        self.nw = len(self.groups)                          # threads, the caller included
+        self.cap, self.accs, self._ptrs = 0, [], None       # one accumulator per thread (_room)
         self.helpers = []
-        for g in self.groups[1:]:
-            h = dict(ch=g, todo=queue.Queue(maxsize=1), done=queue.Queue(maxsize=1))
+        for w, g in enumerate(self.groups[1:], 1):
+            h = dict(ch=g, w=w, todo=queue.Queue(maxsize=1), done=queue.Queue(maxsize=1))
             self.helpers.append(h)
             threading.Thread(target=self._help_loop, args=(h,), name="synth", daemon=True).start()
+
+    def _room(self, n):
+        """Accumulators of at least n samples (a block may carry a group of packets more)."""
+        if n > self.cap:
+            import ctypes
+            self.cap = n + 8192
+            self.accs = [np.zeros(self.cap, np.complex64) for _ in range(self.nw)]
+            self._ptrs = (ctypes.c_void_p * self.nw)(*[a.ctypes.data for a in self.accs])
+
+    def _synth(self, w, chans, blk, n):
+        acc = self.accs[w][:n]
+        for i, k in enumerate(chans):              # the first one written, the others added
+            self.synths[k].add(self.encs[k].encode(blk[k]), acc, store=(i == 0))
 
     def _help_loop(self, h):
         while not self.stop.is_set():
             try:
-                blk, acc = h["todo"].get(timeout=0.2)
+                job = h["todo"].get(timeout=0.2)
             except queue.Empty:
                 continue
-            for k in h["ch"]:
-                self.synths[k].add(self.encs[k].encode(blk[k]), acc)
-            h["done"].put(acc)
+            if job[0] == "synth":
+                self._synth(h["w"], h["ch"], job[1], job[2])
+            else:                                   # ("sum", out, off, n)
+                self._cdsp.sum_scale_clip(job[1], self._ptrs, self.nw, job[2], job[3], self.scale)
+            h["done"].put(None)
 
     def __call__(self, blk):
         p = self.p
@@ -335,14 +358,25 @@ class TxChain:
             np.clip(x.imag, -1, 1, out=x.imag)
             return x
         n = len(blk[0]) * 204 * 8 // self.bits * p["sps"]
+        if not self.helpers:                        # 2 channels: one thread
+            x = np.empty(n, np.complex64)
+            for i, k in enumerate(self.groups[0]):
+                self.synths[k].add(self.encs[k].encode(blk[k]), x, store=(i == 0))
+            return self._cdsp.scale_clip(x, self.scale)
+        self._room(n)
         for h in self.helpers:
-            h["todo"].put((blk, np.zeros(n, np.complex64)))
-        x = np.zeros(n, np.complex64)
-        for k in self.groups[0]:
-            self.synths[k].add(self.encs[k].encode(blk[k]), x)
+            h["todo"].put(("synth", blk, n))
+        self._synth(0, self.groups[0], blk, n)
         for h in self.helpers:
-            self._cdsp.add_into(x, h["done"].get())
-        return self._cdsp.scale_clip(x, self.scale)
+            h["done"].get()
+        out = np.empty(n, np.complex64)             # a new block: the send thread still holds the last ones
+        b = [n * i // self.nw for i in range(self.nw + 1)]
+        for h in self.helpers:
+            h["todo"].put(("sum", out, b[h["w"]], b[h["w"] + 1] - b[h["w"]]))
+        self._cdsp.sum_scale_clip(out, self._ptrs, self.nw, b[0], b[1] - b[0], self.scale)
+        for h in self.helpers:
+            h["done"].get()
+        return out
 
 
 def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):

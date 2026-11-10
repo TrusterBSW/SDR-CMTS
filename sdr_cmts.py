@@ -64,13 +64,33 @@ from cmts.upstream import TS_RATE, Timebase, UpstreamRx
 US_SYM_UNIT = 160e3
 
 
+def lo_folds(a, lo):
+    """Downstream channels the RX LO's harmonics fold onto the upstream channel: the AD9361's
+    mixer also mixes with 5 x LO (f -> f - 5 LO) and 3 x LO (mirrored, f -> 3 LO - f), so a
+    downstream channel at 5 LO + (us - LO) or 3 LO - (us - LO) lands on the upstream burst. Seen
+    twice: 5 x 56.5 MHz folded 286-294 MHz into the upstream (2026-10-13), 5 x 64.2 MHz folded the
+    314 and 322 MHz channels of 5 DS onto the 60 MHz upstream, MER 21 -> 17 dB, no data burst
+    decoded (2026-11-11). Widths: the symbol rates (the roll-offs only touch)."""
+    d = a.us_freq - lo
+    half_us = a.us_rate * US_SYM_UNIT / 2
+    half_ds = SYMRATE / 2
+    hit = []
+    for c in (5 * lo + d, 3 * lo - d):
+        hit += [f for _, f in ds_channels(a) if abs(f - c) < half_us + half_ds]
+    return hit
+
+
 def rx_lo_offset(a):
-    """UHD does not tune the B210 below 50 MHz: the LO sits above the upstream channel (3 MHz
-    away from it, so the burst never sits on the DC / LO leakage) and the FPGA shifts it back."""
+    """UHD does not tune the B210 below 50 MHz: the LO sits beside the upstream channel (3 MHz
+    away from it at least, so the burst never sits on the DC / LO leakage) and the FPGA shifts it
+    back. Above the channel by default; below it (if the LO stays >= 52 MHz) when the LO's
+    harmonics would fold fewer downstream channels onto the upstream that way (lo_folds)."""
     if a.us_lo_offset is not None:
         return a.us_lo_offset
     half_bw = a.us_rate * US_SYM_UNIT * 1.25 / 2          # channel half width (roll-off 0.25)
-    return max(3e6, half_bw + 1e6, 52e6 - a.us_freq)       # LO leakage outside the channel
+    off = max(3e6, half_bw + 1e6, 52e6 - a.us_freq)       # LO leakage outside the channel
+    cands = [off] + ([-off] if a.us_freq - off >= 52e6 else [])
+    return min(cands, key=lambda o: len(lo_folds(a, a.us_freq + o)))
 
 
 def us_channels(a):
@@ -1709,7 +1729,9 @@ def parser():
     g.add_argument("--minislot", type=int, default=4, help="mini-slot size in 6.25 us ticks")
     g.add_argument("--us-gain", type=float, default=20, help="B210 RX gain dB (20: noise -70 dBFS, ranged bursts -20 dBFS)")
     g.add_argument("--us-lo-offset", type=float, default=None,
-                   help="RX LO - upstream freq (Hz); default 3 MHz, more if needed to keep the LO >= 52 MHz")
+                   help="RX LO - upstream freq (Hz); default 3 MHz (more if needed to keep the LO >= 52 MHz) "
+                        "above the channel, or below it when the LO's 3rd / 5th harmonics would otherwise fold "
+                        "downstream channels onto the upstream (5 x 64.2 MHz = 321 MHz: MER 21 -> 17 dB at 5 DS)")
     g.add_argument("--irq-herd", action=argparse.BooleanOptionalAction, default=True,
                    help="with --cpus auto: move every other hardware interrupt off the CMTS cores (sudo), onto the "
                         "USB core's other hyperthread, or the USB core itself without SMT; on exit they go "

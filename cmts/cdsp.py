@@ -86,10 +86,15 @@ def _load_ds():
     dll.mix_add.restype = None
     dll.shape_mix_add.argtypes = [F, ctypes.c_int, F, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, D, F]
     dll.shape_mix_add.restype = None
+    dll.shape_mix_store.argtypes = dll.shape_mix_add.argtypes
+    dll.shape_mix_store.restype = None
     dll.scale_clip.argtypes = [F, ctypes.c_int, ctypes.c_float]
     dll.scale_clip.restype = None
     dll.add_into.argtypes = [F, F, ctypes.c_int]
     dll.add_into.restype = None
+    dll.sum_scale_clip.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_float]
+    dll.sum_scale_clip.restype = None
     # bytes and plain addresses: no ctypes cast per call (ts_pack runs ~20,000 times/s)
     dll.ts_pack.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, I32, ctypes.c_void_p,
                             ctypes.c_int]
@@ -442,17 +447,26 @@ class ChannelSynth:
         self.step, self.conj = float(step), bool(conj)
         self.phase = np.zeros(1)
 
-    def add(self, sym, acc):
+    def add(self, sym, acc, store=False):
+        """acc += this channel's samples (store: acc = them, no zeroing of acc needed before)."""
         x = np.concatenate([self.tail, np.asarray(sym, np.complex64)])
         self.tail = x[-(self.ntaps - 1):].copy()
-        _DS.shape_mix_add(_f(x.view(np.float32)), sym.size, _f(self.h.view(np.float32)), self.sps, self.ntaps,
-                          int(self.conj), self.step, self.phase.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                          _f(acc.view(np.float32)))
+        (_DS.shape_mix_store if store else _DS.shape_mix_add)(
+            _f(x.view(np.float32)), sym.size, _f(self.h.view(np.float32)), self.sps, self.ntaps,
+            int(self.conj), self.step, self.phase.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+            _f(acc.view(np.float32)))
 
 
 def scale_clip(acc, scale):
     _DS.scale_clip(_f(acc.view(np.float32)), acc.size, float(scale))
     return acc
+
+
+def sum_scale_clip(out, ptrs, nacc, off, n, scale):
+    """out[off:off+n] = clip(scale * sum of the nacc accumulators at ptrs (a ctypes array of their
+    addresses)), complex64 (dsdsp.c): one slice of a block, the GIL let go meanwhile."""
+    _DS.sum_scale_clip(out.ctypes.data, ptrs, nacc, off, n, float(scale))
+    return out
 
 
 def add_into(dst, src):

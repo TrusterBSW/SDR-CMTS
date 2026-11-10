@@ -144,19 +144,45 @@ void mix_add(const float *x, int n, double step, double *phase, float *acc)
  * latency is hidden). The filtered samples land in planar buffers (re, im), then the shift and
  * the sum into acc (interleaved complex) run 8 samples at a time. 0.51 -> ~0.06 core per channel
  * at 8 samples per symbol on the i5-9500 (2026-10-10). */
+/* cos / sin of k * step, k < 1024, per thread for the last 8 steps: 2048 trig calls per block and
+ * channel before (2026-11-10, ~3 % of a synthesis thread) */
+static void phasor_table(double step, const float **tr, const float **ti)
+{
+    static __thread double steps[8];
+    static __thread int used[8], next;
+    static __thread float tab[8][2][1024];
+    for (int c = 0; c < 8; c++)
+        if (used[c] && steps[c] == step) {
+            *tr = tab[c][0];
+            *ti = tab[c][1];
+            return;
+        }
+    int c = next;
+    next = (next + 1) & 7;
+    for (int k = 0; k < 1024; k++) {
+        tab[c][0][k] = (float)cos(k * step);
+        tab[c][1][k] = (float)sin(k * step);
+    }
+    steps[c] = step;
+    used[c] = 1;
+    *tr = tab[c][0];
+    *ti = tab[c][1];
+}
+
 static void shape_mix_add_avx2(const float *x, int n, const float *h, int sps, int ntaps, int conj,
-                               double step, double *phase, float *acc)
+                               double step, double *phase, float *acc, int store)
 {
     enum { CHS = 128 };
     float br[CHS * 8 + 8] __attribute__((aligned(32)));
     float bi[CHS * 8 + 8] __attribute__((aligned(32)));
-    float tr[1024 + 8] __attribute__((aligned(32))), ti[1024 + 8] __attribute__((aligned(32)));
+    const float *tr, *ti;
     float *ht = aligned_alloc(32, sizeof(float) * 8 * ntaps);
     if (!ht) return;
     for (int k = 0; k < ntaps; k++)
         for (int p = 0; p < 8; p++)
             ht[8 * k + p] = p < sps ? h[p * ntaps + k] : 0.f;
-    for (int k = 0; k < 1024; k++) { tr[k] = (float)cos(k * step); ti[k] = (float)sin(k * step); }
+    phasor_table(step, &tr, &ti);
+    const __m256 zero = _mm256_setzero_ps();
     const __m256 cs = _mm256_set1_ps(conj ? -1.f : 1.f);
     double ph = *phase;
     for (int i0 = 0; i0 < n; i0 += CHS) {
@@ -215,14 +241,14 @@ static void shape_mix_add_avx2(const float *x, int n, const float *h, int sps, i
                 __m256 yi = _mm256_fmadd_ps(xr, pi, _mm256_mul_ps(xi, pr));
                 __m256 lo = _mm256_unpacklo_ps(yr, yi), hi = _mm256_unpackhi_ps(yr, yi);
                 __m256 c0 = _mm256_permute2f128_ps(lo, hi, 0x20), c1 = _mm256_permute2f128_ps(lo, hi, 0x31);
-                _mm256_storeu_ps(as + 2 * k, _mm256_add_ps(_mm256_loadu_ps(as + 2 * k), c0));
-                _mm256_storeu_ps(as + 2 * k + 8, _mm256_add_ps(_mm256_loadu_ps(as + 2 * k + 8), c1));
+                _mm256_storeu_ps(as + 2 * k, _mm256_add_ps(store ? zero : _mm256_loadu_ps(as + 2 * k), c0));
+                _mm256_storeu_ps(as + 2 * k + 8, _mm256_add_ps(store ? zero : _mm256_loadu_ps(as + 2 * k + 8), c1));
             }
             for (; k < len; k++) {
                 float pr = zr * tr[kb + k] - zi * ti[kb + k], pi = zr * ti[kb + k] + zi * tr[kb + k];
                 float xr = br[j0 + k], xi = bi[j0 + k];
-                as[2 * k] += xr * pr - xi * pi;
-                as[2 * k + 1] += xr * pi + xi * pr;
+                as[2 * k] = (store ? 0.f : as[2 * k]) + (xr * pr - xi * pi);
+                as[2 * k + 1] = (store ? 0.f : as[2 * k + 1]) + (xr * pi + xi * pr);
             }
             j0 += len;
         }
@@ -232,8 +258,10 @@ static void shape_mix_add_avx2(const float *x, int n, const float *h, int sps, i
 }
 #endif
 
-__attribute__((optimize("fast-math"))) void shape_mix_add(const float *x, int n, const float *h, int sps, int ntaps, int conj,
-                   double step, double *phase, float *acc)
+/* store: acc = the channel instead of acc += the channel (the first channel of a thread's
+ * accumulator: no zeroing pass over it, ~18 % of a synthesis thread, 2026-11-10) */
+__attribute__((optimize("fast-math"))) static void shape_mix(const float *x, int n, const float *h, int sps, int ntaps,
+                   int conj, double step, double *phase, float *acc, int store)
 {
     /* by chunks of 128 symbols: the polyphase filter writes a small buffer that stays in L1,
      * then the shift and sum run as a separate (vectorized) loop over it */
@@ -243,7 +271,7 @@ __attribute__((optimize("fast-math"))) void shape_mix_add(const float *x, int n,
     if (sps > 16) return;
 #ifdef __AVX2__
     if (sps <= 8) {
-        shape_mix_add_avx2(x, n, h, sps, ntaps, conj, step, phase, acc);
+        shape_mix_add_avx2(x, n, h, sps, ntaps, conj, step, phase, acc, store);
         return;
     }
 #endif
@@ -276,13 +304,25 @@ __attribute__((optimize("fast-math"))) void shape_mix_add(const float *x, int n,
             for (int k = 0; k < len; k++) {
                 float pr = zr * tr[kb + k] - zi * ti[kb + k], pi = zr * ti[kb + k] + zi * tr[kb + k];
                 float xr = bs[2 * k], xi = bs[2 * k + 1];
-                as[2 * k] += xr * pr - xi * pi;
-                as[2 * k + 1] += xr * pi + xi * pr;
+                as[2 * k] = (store ? 0.f : as[2 * k]) + (xr * pr - xi * pi);
+                as[2 * k + 1] = (store ? 0.f : as[2 * k + 1]) + (xr * pi + xi * pr);
             }
             j0 += len;
         }
     }
     *phase = fmod(ph + (double)n * sps * step, 2 * M_PI);
+}
+
+void shape_mix_add(const float *x, int n, const float *h, int sps, int ntaps, int conj, double step,
+                   double *phase, float *acc)
+{
+    shape_mix(x, n, h, sps, ntaps, conj, step, phase, acc, 0);
+}
+
+void shape_mix_store(const float *x, int n, const float *h, int sps, int ntaps, int conj, double step,
+                     double *phase, float *acc)
+{
+    shape_mix(x, n, h, sps, ntaps, conj, step, phase, acc, 1);
 }
 
 /* acc *= scale, each component clipped to [-1, 1] (the numpy pass cost ~0.19 core at 41.7 MS/s) */
@@ -291,6 +331,33 @@ void scale_clip(float *acc, int n, float scale)
     for (int k = 0; k < 2 * n; k++) {
         float v = acc[k] * scale;
         acc[k] = v > 1.f ? 1.f : (v < -1.f ? -1.f : v);
+    }
+}
+
+/* out[off..off+n) = clip(scale * sum of acc[i][off..off+n)), complex samples: the sum of the
+ * channel groups and the scaling in one pass over a slice, each synthesis thread doing its own
+ * slice. (2026-11-10: the calling thread summed the 5 other groups and scaled the block alone,
+ * on top of its own channel: 1 core on a Xeon E5-2630 v4 at 6 DS, the bottleneck of the chain.) */
+void sum_scale_clip(float *out, float *const *acc, int nacc, int off, int n, float scale)
+{
+    enum { C = 2048 };                     /* floats per chunk: 8 KB, in L1 while the accumulators stream */
+    float *restrict o = out + 2 * (long)off;
+    int nf = 2 * n;
+    for (int c0 = 0; c0 < nf; c0 += C) {
+        int m = nf - c0 < C ? nf - c0 : C;
+        float *restrict oc = o + c0;
+        const float *restrict a0 = acc[0] + 2 * (long)off + c0;
+        for (int k = 0; k < m; k++)
+            oc[k] = a0[k];
+        for (int i = 1; i < nacc; i++) {   /* same order as before: acc0 + acc1 + ... */
+            const float *restrict ai = acc[i] + 2 * (long)off + c0;
+            for (int k = 0; k < m; k++)
+                oc[k] += ai[k];
+        }
+        for (int k = 0; k < m; k++) {
+            float v = oc[k] * scale;
+            oc[k] = v > 1.f ? 1.f : (v < -1.f ? -1.f : v);
+        }
     }
 }
 
