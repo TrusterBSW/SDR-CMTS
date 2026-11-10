@@ -14,6 +14,8 @@ freq = 306e6                # primary channel (European grid 114 + 8n MHz)
 ds_channels = 4             # 6 with a strong CPU (283 Mbit/s on a 6-core i5-9500): b210.toml
 ds_layout = "around"        # the others on both sides of the primary
 qam = 256
+# synth_threads = 6          # J.83 + shaping threads; automatic: 1 per 2 channels, 1 per channel
+                            # with channels + 4 physical cores (a slow core, Xeon E5 v4: 6 DS need 6)
 
 [upstream]
 us_channels = 1             # 2: DOCSIS 3.0 upstream bonding (60 and 53 MHz)

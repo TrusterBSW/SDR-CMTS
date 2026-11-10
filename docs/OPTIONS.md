@@ -16,6 +16,7 @@ Defaults (since 2026-10-10) = the configuration of the results above:
 | `--grant-ahead-hold/-every/-scale` | on, 3, 4 | unsolicited grants keeping the upload going |
 | `--us-process` | on | upstream demodulation in its own process |
 | `--radio-process` | on | B210, J.83 encoding, shaping and transmission in a process of their own (`cmts/radio.py`): without it, 3 downstream channels fall behind on a slower PC (GIL shared with the MAC layer) |
+| `--synth-threads` | 2, raised by itself | threads sharing the J.83 encoding and shaping of the downstream channels (at most one per channel: more changes nothing). From 4 channels: one per 2 channels, or one per channel when the host has at least channels + 4 physical cores (Xeon E5-2630 v4, 10 cores at 2.4 GHz: ~0.6 core per channel, 3 threads of 2 channels fell behind at 6 DS; i5-9500, 6 cores: 3 threads) |
 | `--us-channels`, `--us-spacing` | 1, -7 MHz | upstream channels (2: DOCSIS 3.0 upstream bonding, the second one 7 MHz below) |
 | `--tx-queue` | 3 | blocks ready before the send (~1.9 ms each). With `--tx-frames 48`: downstream latency ~25 ms instead of 36, idle ping 100 -> 78 ms, smallest TX margin ~7 ms (long run still to do) |
 | `--send-frame-size`, `--tx-frames` | 16360, 48 (14 ms of reserve) | 16 KB USB send frames (UHD: 8 KB) and how many in flight: half the USB submissions, send thread 23 -> 16 % of a core at 55.6 MS/s, 6 DS without late sends |

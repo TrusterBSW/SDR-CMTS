@@ -1,4 +1,4 @@
-.TH SDR\-CMTS 1 "2026-11" "sdr\-cmts 0.1.0" "User Commands"
+.TH SDR\-CMTS 1 "2026-11" "sdr\-cmts 0.1.1" "User Commands"
 .SH NAME
 sdr\-cmts \- EuroDOCSIS 3.0 CMTS on a software radio (USRP B210, bladeRF 2.0 micro)
 .SH SYNOPSIS
@@ -202,7 +202,7 @@ serial numbers of the B210s, comma separated, in \-\-ds\-radios order (uhd_find_
 reference of every B210: external = their 10 MHz inputs (one common source, e.g. a HackRF CLKOUT through a splitter: no drift between the devices) (default: internal)
 .TP
 \fB\-\-synth\-threads\fR \fISYNTH_THREADS\fR
-threads sharing the shaping of 3+ bonded downstream channels (default: 2)
+threads sharing the J.83 encoding and shaping of 3+ bonded downstream channels; raised by itself from 4 channels on: one thread per 2 channels, or one per channel when the host has at least the channels + 4 physical cores (a slower core, e.g. a Xeon E5 v4 at 2.4 GHz, needs ~0.6 core per channel) (default: 2)
 .TP
 \fB\-\-radio\-process\fR | \fB\-\-no\-radio\-process\fR
 B210, J.83 encoding, shaping and timed send in a process of their own (cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge (default: on)

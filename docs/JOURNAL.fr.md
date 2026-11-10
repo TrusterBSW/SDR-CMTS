@@ -923,3 +923,16 @@ demande plus que `dpkg-deb`. Sur le modèle du projet DVB-Tx : le paquet est con
 lancé (radio simulée) dans un conteneur neuf de Debian 12, Debian 13 et Ubuntu 24.04, vérifié par `lintian`, puis
 publié dans `releases/` (avec `LATEST` et `SHA256SUMS`, que lit `install.sh`) et sur la page Releases de GitHub à
 chaque étiquette. Le README a pris la forme de celui de DVB-Tx ; le tableau des options est passé dans `docs/OPTIONS.md`.
+
+## Le Xeon E5 et le 6 DS : un fil de synthèse par canal (10/11/2026)
+
+Sur la machine « CMTS » de l'utilisateur (Xeon E5-2630 v4, 10 cœurs / 20 fils, 2,4 GHz tous cœurs chargés), 4 DS
+tournaient mais 6 DS ne suivaient pas. Mesure d'un bloc de 6 canaux : 3,53 cœurs (codage J.83 1,28, synthèse 2,08,
+mise à l'échelle 0,17) contre 1,29 sur l'i5-9500 : Broadwell ralentit sous AVX2 et tourne bien moins vite. Avec la
+règle d'alors (un fil pour 2 canaux à partir de 4 canaux, soit 3 fils en 6 DS), chaque fil demandait ~1,2 cœur :
+l'émission prenait du retard pour de bon. La règle tient maintenant compte de la machine : un fil par canal quand
+elle a au moins canaux (de tous les B210) + 4 cœurs physiques (l'envoi et la réception USB, la MAC, le montant),
+sinon un pour 2 canaux comme avant. Le 9500 (6 cœurs) garde ses 3 fils validés ; le Xeon passe à 6.
+`--synth-threads` (`synth_threads` dans le TOML) reste un minimum ; au-delà du nombre de canaux il ne change rien.
+Erreur de ma part ce jour-là : deux essais 6 DS sur radio simulée lancés à côté du service en marche l'ont fait
+décrocher ; plus d'essai lourd sur une machine où tourne un CMTS sans l'avoir libérée.

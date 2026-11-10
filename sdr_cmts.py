@@ -96,6 +96,37 @@ def ds_channels(a):
     return [(j + 1, f) for j, f in enumerate(freqs)]
 
 
+def physical_cores():
+    """Physical cores of this host (hyperthreads counted once), from the CPU topology."""
+    cores = set()
+    for d in glob.glob("/sys/devices/system/cpu/cpu[0-9]*/topology"):
+        try:
+            with open(f"{d}/physical_package_id") as f:
+                pkg = f.read().strip()
+            with open(f"{d}/core_id") as f:
+                cores.add((pkg, f.read().strip()))
+        except OSError:
+            pass
+    return len(cores) or (os.cpu_count() or 1)
+
+
+def synth_threads(a, nr):
+    """J.83 encoding + shaping threads of a radio sending nr downstream channels."""
+    if nr < 4:
+        return a.synth_threads
+    # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
+    # channels, AVX2: ~0.2 core per channel at 55.6 MS/s on an i5-9500). One per channel
+    # (6 at 55.6 MS/s) was 9 real-time threads on 4 CPUs: the RX read waited, upstream
+    # decoding up to 220 ms behind, ping 86-388 ms (2026-10-10). On a slower core one thread
+    # per 2 channels is too much: a Xeon E5-2630 v4 (2.4 GHz all cores, Broadwell) needs
+    # ~0.6 core per channel, 1.2 per thread, and 6 DS fell behind for good (2026-11-10). With
+    # enough physical cores (the channels + 4: the USB send and receive, the MAC, the
+    # upstream), one thread per channel; every B210 has its own radio process and threads
+    nrad = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    per_ch = physical_cores() >= nrad * nr + 4
+    return max(a.synth_threads, nr if per_ch else (nr + 1) // 2)
+
+
 def radio_channels(a):
     """Downstream channels per B210: the largest share of --ds-channels over --ds-radios."""
     return -(-a.ds_channels // max(1, int(getattr(a, "ds_radios", 1) or 1)))
@@ -132,12 +163,7 @@ def build(a, log=print):
         # Since that fix it locks at 41.712 and 55.616 MHz; 5-6 channels at 55.616 MS/s run on the
         # Proxmox host with the AVX2 synthesis and 16 KB USB frames (2026-10-11).
         a.sps = 4 if nr <= 3 else (5 if nr <= 4 else 8)
-        if nr >= 4:
-            # one synthesis thread per 2 channels (each thread encodes and synthesizes its own
-            # channels, AVX2: ~0.17 core per channel at 55.6 MS/s). One per channel (6 at 55.6 MS/s)
-            # was 9 real-time threads on 4 CPUs: the RX read waited, upstream decoding up to 220 ms
-            # behind, ping 86-388 ms (2026-10-10)
-            a.synth_threads = max(a.synth_threads, (nr + 1) // 2)
+        a.synth_threads = synth_threads(a, nr)
         if os.environ.get("SDR_CMTS_DS_SPS"):     # diagnostic: force the samples per symbol
             a.sps = int(os.environ["SDR_CMTS_DS_SPS"])
         a.mcr_mult, a.docsis30 = int(os.environ.get("SDR_CMTS_MCR_MULT", "1")), True   # (diagnostic override)
@@ -1744,7 +1770,10 @@ def parser():
                    help="reference of every B210: external = their 10 MHz inputs (one common source, e.g. a "
                         "HackRF CLKOUT through a splitter: no drift between the devices)")
     g.add_argument("--synth-threads", type=int, default=2,
-                   help="threads sharing the shaping of 3+ bonded downstream channels")
+                   help="threads sharing the J.83 encoding and shaping of 3+ bonded downstream channels; "
+                        "raised by itself from 4 channels on: one thread per 2 channels, or one per channel "
+                        "when the host has at least the channels + 4 physical cores (a slower core, e.g. a "
+                        "Xeon E5 v4 at 2.4 GHz, needs ~0.6 core per channel)")
     g.add_argument("--radio-process", action=argparse.BooleanOptionalAction, default=True,
                    help="B210, J.83 encoding, shaping and timed send in a process of their own "
                         "(cmts/radio.py): their GIL no longer shared with the MAC layer and the bridge")
