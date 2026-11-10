@@ -997,3 +997,14 @@ milieu du primaire, 306 MHz, et la fuite de l'OL TX du B210 y faisait une raie �
 plafonné à 21,5 dB, plus de synchro MPEG). `tx_center_for` décale maintenant le centre d'un demi-canal quand il tombe
 dans un canal et que les échantillons tiennent encore tous les canaux : 310 MHz en 5 DS (55,6 MS/s) ; rien ne change en
 2, 4 ou 6 DS (déjà entre deux canaux), ni en 3 DS à 27,8 MS/s ou avec un seul canal. Test : `tests/test_tx_center.py`.
+
+D'où viennent les pertes descendantes qui restent (11/11, 00:41, OL TX à 310 MHz) : UDP à 50 Mbit/s, 0,003 % ; à 150 Mbit/s,
+9,9 %. Pendant l'essai à 150 Mbit/s le CMTS a tout émis : les ~107 000 datagrammes vus sur cmts0, aucune trame jetée ni à
+l'entrée (file TAP) ni dans les files descendantes (CoDel compris), 5 canaux remplis à ~58 % à parts égales. Mais l'envoi
+USB s'est bloqué deux fois 70-100 ms (hors Python, défauts de page +400 à +990), ~5 ms de signal jetés pour se recaler
+(0,06 %) ; à chaque fois le 3686 perd le verrouillage d'un canal secondaire (CM-STATUS 3 puis 2) et le retrouve : ce qui
+part sur ce canal entre-temps est perdu, la remise en ordre DSID jette le reste. À 50 Mbit/s, aucun blocage. Suspects des
+blocages sous charge : les interruptions de la carte réseau (tg3, IRQ 65-69) toutes sur le CPU 5, l'autre hyperthread du
+CPU 15 qui sert le xHCI du B210 (c'est `irq_target` qui les y met : juste sans SMT, à vérifier avec), et la capture
+tcpdump de cmts0 alors en marche (une écriture par paquet). À tester : sans tcpdump, puis interruptions réseau sur un
+autre cœur.
