@@ -67,6 +67,14 @@ class Dhcp:
             self.leases[chaddr] = ip
         return ip
 
+    def is_modem(self, vendor_class):
+        """A cable modem (or its MTA) announces "docsis..." / "pktc..." (option 60, required of it):
+        the config file, no name server. Everything else (eRouter, set-top box, a PC) gets --dns.
+        Until 2026-11-10 any client was taken for a modem unless --cm-class-only: the eRouters and
+        set-top boxes got cm.cfg and no DNS, so no Internet behind the modems whatever --dns said.
+        --config-to-all: that former behaviour."""
+        return vendor_class.lower().startswith(("docsis", "pktc")) or bool(getattr(self.a, "config_to_all", False))
+
     def reply(self, req, mtype, yiaddr, docsis):
         tz = -time.altzone if time.localtime().tm_isdst > 0 else -time.timezone
         opts = [(53, bytes([mtype])), (54, self.server.packed), (51, struct.pack(">I", self.a.lease)),
@@ -92,7 +100,7 @@ class Dhcp:
             if not m or m["op"] != 1:
                 continue
             cls = m["opts"].get(60, b"").decode(errors="replace")
-            docsis = cls.lower().startswith(("docsis", "pktc")) or not self.a.cm_class_only
+            docsis = self.is_modem(cls)
             who = f"{netpkt.fmt_mac(m['chaddr'])}" + (f" [{cls}]" if cls else "")
             t = m["type"]
             if t == 1:                                      # DISCOVER -> OFFER
@@ -221,7 +229,11 @@ def parser():
     ap.add_argument("--pool", default="10.10.0.10-10.10.0.99", help="DHCP addresses")
     ap.add_argument("--lease", type=int, default=3600, help="DHCP lease time (s)")
     ap.add_argument("--cm-class-only", action="store_true",
-                    help="give the config file name only to DHCP clients that announce a docsis class")
+                    help="(the default since 0.1.1: only the clients announcing a docsis / pktc class get "
+                         "the config file name; kept so that former command lines still work)")
+    ap.add_argument("--config-to-all", action="store_true",
+                    help="give the config file name (and no name server) to every DHCP client, the "
+                         "behaviour before 0.1.1")
     ap.add_argument("--config-name", default="cm.cfg", help="config file name given by DHCP")
     ap.add_argument("--config", help="serve this config file instead of the generated one")
     ap.add_argument("--tftp-root", help="also serve the files of this directory")

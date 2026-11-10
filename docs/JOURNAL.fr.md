@@ -960,3 +960,14 @@ trames/s) les deux chemins coûtent pareil (0,47 / 0,49 cœur à 280 Mbit/s offe
 chemin agrégé, à confirmer avec le modem. Le montant reste en Python : ~4 000 trames/s à 50 Mbit/s, quelques
 µs chacune (~0,04 cœur), ses démodulateurs étant déjà en C. Au passage : `install.sh` garde un
 `sdr-cmts.toml` modifié (`--force-confold`) ; sans terminal, dpkg s'arrêtait sur sa question.
+
+## Pas de DNS derrière les modems (10/11/2026)
+
+Un second modem commercial (Sagem EMTA62-2, eMTA) et un décodeur derrière lui, en NAT sur le Xeon : rien ne
+sortait vers Internet, l'eRouter n'envoyait même aucune requête DNS. La capture de cmts0 l'explique : le
+serveur DHCP de `provision.py` ne donnait `--dns` qu'aux clients qu'il ne prenait pas pour un modem, et sans
+`--cm-class-only` (désactivé par défaut) il prenait tout le monde pour un modem. eRouters et décodeur
+recevaient `cm.cfg` et aucun serveur de noms, quoi que dise `dns = "1.1.1.1"` dans `sdr-cmts.toml`. Désormais
+seuls les clients qui s'annoncent `docsis…` ou `pktc…` (option 60, obligatoire pour un modem) reçoivent le
+fichier de configuration ; les autres reçoivent `--dns`. `--config-to-all` rend l'ancien comportement,
+`--cm-class-only` reste accepté. Test : `tests/test_provision_dhcp.py`.
