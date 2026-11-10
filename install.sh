@@ -84,7 +84,16 @@ fi
 say "installing (apt pulls python3, numpy, scipy, gcc, UHD; the C kernels are compiled for this CPU)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y "$DEB"
+# a version above the release already installed (a package built from the sources, or the
+# unpublished 1.0.0 of the development): replaced on purpose, apt -y refuses it otherwise
+new=$(dpkg-deb -f "$DEB" Version)
+old=$(dpkg-query -W -f '${Version}' sdr-cmts 2>/dev/null || true)
+down=""
+if [ -n "$old" ] && dpkg --compare-versions "$old" gt "$new"; then
+    say "replacing the installed sdr-cmts $old by the release $new"
+    down="--allow-downgrades"
+fi
+apt-get install -y $down "$DEB"
 if [ "$IMAGES" = 1 ]; then
     if command -v uhd_images_downloader >/dev/null; then
         say "USRP B210 FPGA images"
