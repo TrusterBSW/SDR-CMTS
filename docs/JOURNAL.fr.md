@@ -1073,3 +1073,17 @@ Premier essai sur la carte (13:04, émission coupée à 89,75 dB, descendant seu
 45 s, aucun en retard côté démon ni FPGA, aucun sous-débit DAC, arrivés 7 à 30 ms avant leur heure. Le portable
 atteignait la carte par le Wi-Fi (même sous-réseau) : `--edgephy-iface` attache les sockets au lien filaire. La voie
 montante de la carte est coupée pour l'instant (sa DMA RX se bloque avec le flux continu) : `--no-edgephy-us`.
+
+Le modem SDR en ligne (11/11, 13:00-13:30). La session « modem-docsis-6f » fait un modem câble sur un B210
+(10.5.1.25). Son récepteur perdait le 306 à ~22 dB de MER dès que son propre émetteur dépassait le gain 80 : le chemin
+montant entre son TX et le RX du CMTS demandait 91,5 dB pour arriver à la cible de −20 dBFS, et à ce niveau la fuite
+de son TX vers son RX (plancher +10 à 17 dB sur 282-338 MHz, raie à 5 × OL TX) lui faisait perdre SYNC et MAP : un
+ranging, une SM parfaite, puis plus rien. Ce n'était pas au CMTS de baisser sa cible, mais son gain de réception
+montante (us_gain du banc, 30) était trop bas pour ce coax : le Sagem lui-même y émettait à 54 dBmV, son maximum.
+À 42 dB : le Sagem à 40,5 dBmV, MER US 31,8 (bruit −61 → −59 dBFS, soit ~10 dB de rapport signal/bruit gagnés),
+et le modem SDR en ligne à 13:19:55 (ranging, DHCP, REG DOCSIS 2.0, SM à −20,0 dBFS, MER 30-31). Son essai de
+transfert : ping 19/20, UDP descendant 30 Mbit/s 0,07 % de pertes, 50 Mbit/s 6,7 % (la capacité du seul primaire :
+modem DOCSIS 2.0, sans agrégation), montant limité de son côté (chaque rafale au gain 76 lui coûte ~10 mots de code
+en descendant ; trois réinitialisations de MAC). Côté CMTS, aucune erreur : toutes les rafales décodées. Gain RX
+porté ensuite à 50 (Sagem à 32,5 dBmV, MER 29,9, bruit −51,7) pour que le modem SDR émette ~8 dB plus bas. Au gain
+TX 48 (essai de 12:25), le 306 restait à ~22 dB chez lui quel que soit son OL : le gain TX reste à 53.
