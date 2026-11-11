@@ -164,17 +164,43 @@ def index_bits(idx, bps):
     return ((idx[:, None] >> np.arange(bps - 1, -1, -1)) & 1).astype(np.uint8).ravel()
 
 
-@functools.lru_cache(maxsize=8)
-def _prbs(seed, n):
-    """Scrambler sequence (PHY Figure 6-8): delay element i holds seed bit i-1, element 14 XOR
-    element 15 is fed back into element 1, and the data are XORed with element 1. The first bit
-    is therefore seed bit 0, then the feedback bits (verified on a real modem)."""
+def _prbs_bits(seed, n):
+    """The scrambler register bit by bit (the reference; tests)."""
     r = seed & 0x7FFF
     out = np.empty(n, dtype=np.uint8)
     for i in range(n):
         out[i] = r & 1
         fb = ((r >> 13) ^ (r >> 14)) & 1
         r = ((r << 1) | fb) & 0x7FFF
+    return out
+
+
+@functools.lru_cache(maxsize=64)
+def _prbs_period(seed):
+    """One period of the scrambler sequence from `seed` (15-bit register: at most 32767 bits),
+    computed once per seed."""
+    r0 = r = seed & 0x7FFF
+    out = []
+    while True:
+        out.append(r & 1)
+        fb = ((r >> 13) ^ (r >> 14)) & 1
+        r = ((r << 1) | fb) & 0x7FFF
+        if r == r0 or len(out) > 0x8000:
+            break
+    return np.array(out, dtype=np.uint8)
+
+
+@functools.lru_cache(maxsize=64)
+def _prbs(seed, n):
+    """Scrambler sequence (PHY Figure 6-8): delay element i holds seed bit i-1, element 14 XOR
+    element 15 is fed back into element 1, and the data are XORed with element 1. The first bit
+    is therefore seed bit 0, then the feedback bits (verified on a real modem).
+    The register's period repeated. Until 2026-11-11 the whole sequence was computed bit by bit
+    in Python with 8 (seed, length) pairs cached: one profile more and the 262,144 bits of the C
+    path (~170 ms) or a burst's 4,096-65,536 came back while grants went by (found by the SDR
+    modem's session in the same code, its bursts missing their grants)."""
+    out = np.resize(_prbs_period(seed), n)
+    out.flags.writeable = False                  # (shared through the cache)
     return out
 
 

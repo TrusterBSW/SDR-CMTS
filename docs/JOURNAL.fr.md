@@ -1096,3 +1096,9 @@ de son bruit, avec le bloc d'avant et celui d'après. Des zéros dans les trous 
 plancher de bruit : il n'en prend jamais sur des échantillons nuls, et la première fenêtre vue, une rafale, deviendrait
 son plancher. Les trous sont donc remplis de bruit au niveau des blocs qui précèdent les rafales (NoiseFill). En mode
 continu, un datagramme perdu reste à zéro. `tests/test_edgephy.py` : rafales à leurs ticks, trous à ±1,5 dB du bruit réel.
+
+Séquence d'embrouillage montante (11/11, 14:15). La session du modem SDR, partie du même code, a trouvé que `_prbs`
+recalculait bit à bit en Python les séquences sorties de son cache de 8 entrées (65 536 bits ~40 ms, les 262 144 du
+chemin C ~170 ms). Côté CMTS, avec plusieurs profils de rafale et canaux, la même éviction pouvait survenir. Elle est
+maintenant calculée une fois par graine (une période du registre, ≤ 32 767 bits) puis répétée ; identique au calcul bit
+à bit (`tests/test_upstream_phy.py`).

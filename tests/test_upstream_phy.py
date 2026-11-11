@@ -59,5 +59,9 @@ res = [run("RNG-REQ (IM)", rng_req, mac.IUC_INIT_MAINT, 30, 1500),
 fa = sum(1 for _ in range(100) if (b := demod.detect((rng.normal(size=6000) + 1j * rng.normal(size=6000)).astype(np.complex64) * 0.01,
                                                      mac.IUC_INIT_MAINT)) is not None and b.frame is not None)
 print("false decodes on noise only:", fa, "/ 100")
-good = all(r[0] >= 0.99 for r in res[:2]) and res[4][0] >= 0.99 and res[0][1] < 50 and fa == 0
+# scrambler sequence: the register's period repeated = the register bit by bit, any seed, any length
+prbs_ok = all(np.array_equal(us_phy._prbs(sd, n), us_phy._prbs_bits(sd, n))
+              for sd in (0x3FFF, 0x1234, 0x0001, 0x7FFF) for n in (17, 4096, 40000, 1 << 18))
+print("scrambler sequence from its period = bit by bit:", prbs_ok)
+good = all(r[0] >= 0.99 for r in res[:2]) and res[4][0] >= 0.99 and res[0][1] < 50 and fa == 0 and prbs_ok
 print("PASS" if good else "FAIL")
