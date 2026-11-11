@@ -1086,4 +1086,6 @@ transfert : ping 19/20, UDP descendant 30 Mbit/s 0,07 % de pertes, 50 Mbit/s 6,7
 modem DOCSIS 2.0, sans agrégation), montant limité de son côté (chaque rafale au gain 76 lui coûte ~10 mots de code
 en descendant ; trois réinitialisations de MAC). Côté CMTS, aucune erreur : toutes les rafales décodées. Gain RX
 porté ensuite à 50 (Sagem à 32,5 dBmV, MER 29,9, bruit −51,7) pour que le modem SDR émette ~8 dB plus bas. Au gain
-TX 48 (essai de 12:25), le 306 restait à ~22 dB chez lui quel que soit son OL : le gain TX reste à 53.
+TX 48 (essai de 12:25), le 306 restait à ~22 dB chez lui quel que soit son OL : le gain TX reste à 53. Au gain RX 50, le modem SDR à P 68,5 : plus de
+perte de mots de code due à ses rafales, plus de réinitialisation, TCP descendant 37-40 Mbit/s (2,8 au gain 42) ;
+son montant reste limité par sa propre MAC en Python (rafales préparées trop tard).
