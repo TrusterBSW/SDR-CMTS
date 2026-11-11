@@ -1219,7 +1219,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
             # TS blocks: no USB buffer behind it, the blocks wait here until their air time
             f0, slots, mask = edgephy.ds_plan(fr)
             params.update(ep_host=a.edgephy_host, ep_att=a.edgephy_att, ep_freq0=f0, ep_slots=slots,
-                          ep_mask=mask, ep_us_freq=a.us_freq, pk_shape=(len(g), a.block, 2 + a.tx_queue))
+                          ep_mask=mask, ep_us_freq=a.us_freq if a.edgephy_us else None,
+                          ep_iface=a.edgephy_iface or None, pk_shape=(len(g), a.block, 2 + a.tx_queue))
             if os.environ.get("SDR_CMTS_EDGEPHY_PORTS"):    # (tests: data, control, upstream, HTTP)
                 ports = [int(x) for x in os.environ["SDR_CMTS_EDGEPHY_PORTS"].split(",")]
                 params.update(ep_ports=tuple(ports[:3]), ep_http=ports[3])
@@ -1786,6 +1787,12 @@ def parser():
     g.add_argument("--edgephy-att", type=float, default=None,
                    help="--sdr edgephy: TX attenuation to set on the board (dB, 0-89.75); unset = left as it "
                         "is: the board starts at 89.75, nothing on the coax until it is lowered")
+    g.add_argument("--edgephy-iface", default="",
+                   help="--sdr edgephy: network interface towards the board (e.g. enp4s0), when another link "
+                        "(Wi-Fi) is on the same subnet")
+    g.add_argument("--edgephy-us", action=argparse.BooleanOptionalAction, default=True,
+                   help="--sdr edgephy: the upstream channel through the board; --no-edgephy-us: downstream "
+                        "only (no modem can range: transmit tests)")
     g.add_argument("--sdr-args", default="",
                    help="--sdr bladerf: libbladeRF device identifier (\"\" = the first one, \"*:serial=...\")")
     g.add_argument("--args", default="type=b200", help="UHD device args")

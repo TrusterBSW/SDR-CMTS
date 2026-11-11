@@ -1069,3 +1069,7 @@ cœur redémarré (nouveau T0) arrête le processus radio, que le service relanc
 d'atténuation et le CMTS ne la baisse que sur `--edgephy-att`. Testé contre une carte simulée (`tests/test_edgephy.py` :
 numéros, contenu par emplacement, avance, rampe montante retrouvée aux bons ticks, datagramme perdu, cœur redémarré,
 puis le CMTS entier 9 s) ; pas encore sur la carte.
+Premier essai sur la carte (13:04, émission coupée à 89,75 dB, descendant seul depuis le portable) : 187 040 groupes en
+45 s, aucun en retard côté démon ni FPGA, aucun sous-débit DAC, arrivés 7 à 30 ms avant leur heure. Le portable
+atteignait la carte par le Wi-Fi (même sous-réseau) : `--edgephy-iface` attache les sockets au lien filaire. La voie
+montante de la carte est coupée pour l'instant (sa DMA RX se bloque avec le flux continu) : `--no-edgephy-us`.

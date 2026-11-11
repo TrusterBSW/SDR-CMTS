@@ -120,9 +120,9 @@ class Control:
     """The control link: queries, and the board's tick against the host's perf_counter (best round
     trips; the board's oscillator drifts a few ppm against the host's, refitted every second)."""
 
-    def __init__(self, host, port=CTL_PORT):
+    def __init__(self, host, port=CTL_PORT, iface=None):
         self.addr = (host, port)
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.s = bind_iface(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), iface)
         self.s.settimeout(0.2)
         self.nonce = 0
         self.ref = None                       # (host perf_counter, board tick) of a good round trip
@@ -176,6 +176,14 @@ class Control:
         self.s.close()
 
 
+def bind_iface(s, iface):
+    """The socket on that network interface (SO_BINDTODEVICE): a host with Wi-Fi and wired links
+    on the board's subnet would otherwise send its 205 Mbit/s of groups over the Wi-Fi."""
+    if iface:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+    return s
+
+
 def configure(host, settings, port=HTTP_PORT, timeout=3.0):
     """HTTP /set on the board; -> its answer (text)."""
     q = urllib.parse.urlencode(settings)
@@ -189,6 +197,8 @@ def board_settings(p):
              scale=f"{p['scale']:.4f}")
     if p.get("ep_us_freq"):
         s.update(us_freq=int(round(p["ep_us_freq"])), us_enable=1)
+    else:
+        s["us_enable"] = 0                     # (downstream only: --no-edgephy-us)
     if p.get("ep_att") is not None:
         s["att"] = f"{p['ep_att']:.2f}"
     return s
@@ -198,8 +208,9 @@ def describe(p, r):
     att = p.get("ep_att")
     return (f"edge PHY {p['ep_host']} : DS {len(p['ep_slots'])} canaux à partir de {p['ep_freq0'] / 1e6:.3f} MHz "
             f"(masque {p['ep_mask']:#x}), {p['qams'][0]}-QAM, {r['sample_rate'] / 1e6:.3f} MS/s, "
-            f"{r['samples_per_group']} éch./groupe ; US {p.get('ep_us_freq', 0) / 1e6:.2f} MHz à "
-            f"{r['sample_rate'] / US_DECIM / 1e6:.3f} MS/s ; "
+            f"{r['samples_per_group']} éch./groupe ; "
+            + (f"US {p['ep_us_freq'] / 1e6:.2f} MHz à {r['sample_rate'] / US_DECIM / 1e6:.3f} MS/s ; "
+               if p.get("ep_us_freq") else "pas de montant (--no-edgephy-us) ; ")
             + (f"atténuation {att:.2f} dB" if att is not None else
                "atténuation laissée telle quelle (89,75 dB au démarrage de la carte : rien sur le câble)"))
 
@@ -220,7 +231,8 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
         except Exception as e:                 # noqa: BLE001 - reported to the main process
             q.put(("fatal", f"edge PHY {host} : réglage HTTP impossible ({e})"))
             return
-    ctl = Control(host, ports[1])
+    iface = p.get("ep_iface")
+    ctl = Control(host, ports[1], iface)
     r = None
     t_end = time.monotonic() + 10
     while time.monotonic() < t_end and not stop_ev.value:
@@ -249,12 +261,12 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
     gpb = p["pk_shape"][1] // GROUP            # groups per MAC block
     by_ch = {s: i for i, s in enumerate(p["ep_slots"])}
     mask = p["ep_mask"]
-    sd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sd = bind_iface(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), iface)
     sd.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 << 20)
     data_addr = (host, ports[0])
     us = None
-    if ring is not None:
-        us = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    if ring is not None and p.get("ep_us_freq"):
+        us = bind_iface(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), iface)
         us.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 << 20)
         us.bind(("", ports[2]))
         us.settimeout(0.2)

@@ -73,6 +73,12 @@ the SDR: b210 (Ettus, UHD), bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and
 \fB\-\-edgephy\-att\fR \fIEDGEPHY_ATT\fR
 \-\-sdr edgephy: TX attenuation to set on the board (dB, 0\-89.75); unset = left as it is: the board starts at 89.75, nothing on the coax until it is lowered
 .TP
+\fB\-\-edgephy\-iface\fR \fIEDGEPHY_IFACE\fR
+\-\-sdr edgephy: network interface towards the board (e.g. enp4s0), when another link (Wi\-Fi) is on the same subnet
+.TP
+\fB\-\-edgephy\-us\fR | \fB\-\-no\-edgephy\-us\fR
+\-\-sdr edgephy: the upstream channel through the board; \-\-no\-edgephy\-us: downstream only (no modem can range: transmit tests) (default: on)
+.TP
 \fB\-\-sdr\-args\fR \fISDR_ARGS\fR
 \-\-sdr bladerf: libbladeRF device identifier ("" = the first one, "*:serial=...")
 .TP
