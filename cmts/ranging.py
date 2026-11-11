@@ -568,6 +568,32 @@ class CmtsCore:
             self.log(f"[REG] variante TCC « {v} » : {kw}")
         return clusters, registration.tcc_encodings(self.us_chans[0][0], adds, m.drw_qdb, **kw)
 
+    def _pr_cap(self, m):
+        """Highest transmit power (dBmV) the CMTS may command a modem that will be, or is, in
+        Multiple Transmit Channel mode: Phi - Pload_min_set (PHYv3.0 6.2.18, "CMTS commands
+        adjusting Pr_n MUST be consistent with" Pr_n <= Phi_n - Pload_min_set; 0 until the window
+        is set at registration). None with one upstream channel."""
+        if not self.us_chans or len(self.us_chans) < 2:
+            return None
+        return self.phi_db - (m.drw_qdb or 0) / 4
+
+    def _power_step(self, dp, ssap, cap_db):
+        """Power correction (1/4 dB, RNG-RSP) for a burst dp dB below the target, from a modem
+        reporting its transmit power ssap (1/4 dBmV, or None): not above cap_db. A modem left at
+        54.25 dBmV by single-channel ranging, above the 54 dBmV Phi of its 2-channel set, could
+        not keep that power in any Dynamic Range Window and the Sagem 3686 rejected its
+        registration (REG-ACK 210 reject-dynamic-range-window-violation, 2026-11-11); in Multiple
+        Transmit Channel mode it ignored a +12.25 dB step past Phi and the CMTS asked it again
+        for ever (never success, its bursts 12 dB under the target). Returns (step, power OK):
+        OK within the tolerance, or at the cap when more is wanted."""
+        if ssap is None or cap_db is None:
+            return max(-128, min(127, round(4 * dp))), abs(dp) <= self.tol[1]
+        room = cap_db - ssap / 4                       # dB the modem may still go up (< 0: over)
+        step = min(dp, room)
+        pq = max(-128, min(127, round(4 * step)))
+        at_cap = dp > room and room <= 0.25
+        return pq, (abs(dp) <= self.tol[1] or at_cap) and room >= 0
+
     def _drw(self, m):
         """Pload_min_set (1/4 dB below Phi) putting the modem's reported power in the middle of
         the 12 dB Dynamic Range Window (PHYv3.0 6.2.18: Pload_min_set <= Phi - Pr <= it + 12)."""
@@ -590,9 +616,9 @@ class CmtsCore:
             k.n_req += 1
             ta = round(ev.err_counts)
             dp = self.target - b.power_db
-            pq = max(-128, min(127, round(4 * dp)))
+            pq, p_ok = self._power_step(dp, info.get("ssap"), self._pr_cap(m))
             fq = max(-32768, min(32767, round(b.freq if b.inverted else -b.freq)))
-            ok = abs(ev.err_counts) <= self.tol[0] and abs(dp) <= self.tol[1] and abs(b.freq) <= self.tol[2]
+            ok = abs(ev.err_counts) <= self.tol[0] and p_ok and abs(b.freq) <= self.tol[2]
             status = mac.RNG_SUCCESS if ok else mac.RNG_CONTINUE
             newly = ok and k.state in ("ranging", "lost")
             back = newly and k.state == "lost"
@@ -889,10 +915,10 @@ class CmtsCore:
             # measurements -> adjustments
             ta = round(ev.err_counts)                              # >0: the CM must transmit earlier
             dp = self.target - b.power_db
-            pq = max(-128, min(127, round(4 * dp)))
+            pq, p_ok = self._power_step(dp, info.get("ssap"), self._pr_cap(m))
             fq = round(b.freq if b.inverted else -b.freq)
             fq = max(-32768, min(32767, fq))
-            ok = (not initial and abs(ev.err_counts) <= self.tol[0] and abs(dp) <= self.tol[1]
+            ok = (not initial and abs(ev.err_counts) <= self.tol[0] and p_ok
                   and abs(b.freq) <= self.tol[2])
             status = mac.RNG_SUCCESS if ok else mac.RNG_CONTINUE
             newly = ok and m.state == "ranging"

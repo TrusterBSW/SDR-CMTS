@@ -1041,3 +1041,15 @@ pilote). Tout ce qui n'est pas épinglé (serveur iperf3, tcpdump, pont cmts0 et
 sur le cœur 5/15, laissé libre pour les interruptions du xHCI : iperf3 tournait sur le CPU 15 même, et l'épingler ailleurs
 divise les pertes par trois. Piste : tenir ce cœur vraiment à l'écart (interruptions de la carte réseau et tâches du
 système ailleurs).
+
+Puissance montante au-dessus de Phi (11/11, 12:25-12:45). Au redémarrage du Xeon (gain TX 48 pour un essai du modem SDR),
+le Sagem 3686 a refusé chaque enregistrement par un REG-ACK 210 (reject-dynamic-range-window-violation), six fois de
+suite : le ranging sur un seul canal le menait à la cible de −20 dBFS à 54,25-54,50 dBmV, au-dessus du Phi de son jeu de
+2 canaux (54 dBmV, 64-QAM, PHYv3.0 tableau 6-8), et aucune fenêtre de dynamique ne pouvait le contenir (0 ≤ Pload_min_set
+≤ Phi − Pr). La nuit, il s'était enregistré à quelques quarts de dB près. Une fois en mode multi-canal, le même défaut
+laissait ses rafales 12 dB sous la cible : le CMTS lui demandait +12,25 dB au-delà de Phi à chaque Station Maintenance, il
+ne les appliquait pas, et le canal 2 restait « ranged » sans jamais de success. La norme est claire : « CMTS commands
+adjusting Pr_n MUST be consistent with » Pr_n ≤ Phi_n − Pload_min_set (6.2.18). Correctif : dès qu'il y a plusieurs canaux
+montants, la correction de puissance s'arrête à Phi − Pload_min_set d'après la puissance que le modem déclare dans ses
+RNG-REQ (MDD TLV 12), et le ranging réussit au plafond même un peu sous la cible ; avec un seul canal montant, ou un modem
+qui ne déclare rien, rien ne change (`tests/test_power_cap.py`).
