@@ -1008,3 +1008,13 @@ blocages sous charge : les interruptions de la carte réseau (tg3, IRQ 65-69) to
 CPU 15 qui sert le xHCI du B210 (c'est `irq_target` qui les y met : juste sans SMT, à vérifier avec), et la capture
 tcpdump de cmts0 alors en marche (une écriture par paquet). À tester : sans tcpdump, puis interruptions réseau sur un
 autre cœur.
+
+4 DS sur le Xeon (11/11, 00:55-01:25). La session du modem SDR mesurait 21 dB de MER sur 306 et 314 MHz (à ±4 MHz de l'OL
+TX) contre 29-31 sur les autres, en 5 DS comme en 4 DS : ce n'était donc pas le débit d'échantillons. La synthèse est
+propre hors ligne (39 dB numériques par canal, somme, écrêtage et quantification sc16 compris, rien d'écrêté) et le
+Sagem 3686 voit les 4 canaux à 38-39 dB de SNR, 3 dBmV à 0,5 dB près : le défaut est dans le récepteur de mesure (son
+MER saute entre ~22 et ~31 dB selon la fréquence d'où son synthétiseur RX arrive au réglage), il ne vient pas du CMTS.
+En 4 DS + 1 US (~195 Mo/s d'USB au lieu de ~278), plus aucun blocage d'émission sous charge : UDP descendant sans perte
+jusqu'à 180 Mbit/s (9,9 % à 150 Mbit/s en 5 DS), plafond ~190 Mbit/s, TCP 182 / 15,5 Mbit/s, mesuré depuis le PVE
+10.5.1.23 derrière le modem. Sur ce Xeon (xHCI du C610), 4 DS est la configuration fiable ; la capture tcpdump de cmts0
+tournait pendant ces essais, elle n'est donc pas la cause des blocages en 5 DS.
