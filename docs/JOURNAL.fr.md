@@ -1089,3 +1089,10 @@ porté ensuite à 50 (Sagem à 32,5 dBmV, MER 29,9, bruit −51,7) pour que le m
 TX 48 (essai de 12:25), le 306 restait à ~22 dB chez lui quel que soit son OL : le gain TX reste à 53. Au gain RX 50, le modem SDR à P 68,5 : plus de
 perte de mots de code due à ses rafales, plus de réinitialisation, TCP descendant 37-40 Mbit/s (2,8 au gain 42) ;
 son montant reste limité par sa propre MAC en Python (rafales préparées trop tard).
+
+Squelch montant de l'edge PHY (11/11, 14:00). Avec 4 DS, la carte ne peut pas envoyer en plus le montant brut en
+continu (168 Mbit/s : ses deux cœurs saturent). Par défaut (US_GATE=2), elle n'envoie que les blocs de 195 µs au-dessus
+de son bruit, avec le bloc d'avant et celui d'après. Des zéros dans les trous laisseraient le récepteur montant sans
+plancher de bruit : il n'en prend jamais sur des échantillons nuls, et la première fenêtre vue, une rafale, deviendrait
+son plancher. Les trous sont donc remplis de bruit au niveau des blocs qui précèdent les rafales (NoiseFill). En mode
+continu, un datagramme perdu reste à zéro. `tests/test_edgephy.py` : rafales à leurs ticks, trous à ±1,5 dB du bruit réel.

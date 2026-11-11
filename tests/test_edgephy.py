@@ -64,13 +64,16 @@ class Board:
         self.peer = None
         self.stop = threading.Event()
         self.c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.c.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.c.bind(("127.0.0.1", PORTS[1]))
         self.c.settimeout(0.1)
         self.d = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.d.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+        self.d.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.d.bind(("127.0.0.1", PORTS[0]))
         self.d.settimeout(0.1)
         self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.gated, self.us_origin, self.rng = False, None, np.random.default_rng(2)
         self.us_seq, self.us_skip = 0, {1300}  # one "lost" (~0.25 s in: after the ring started)
         for f in (self._ctl, self._data, self._us):
             threading.Thread(target=f, daemon=True).start()
@@ -114,13 +117,22 @@ class Board:
             if self.peer is None:
                 continue
             if nxt is None:
-                nxt = self.tick() // 4 * 4
+                nxt = self.us_origin = self.tick() // 4 * 4
             while nxt + 4 * ns <= self.tick():
                 k = np.arange(ns) + nxt // 4
                 iq = np.empty(2 * ns, np.int8)
                 iq[0::2] = (k % 200 - 100).astype(np.int8)       # I: the sample index (mod 200)
                 iq[1::2] = 7
-                hdr = ep.US_HDR.pack(ep.MAGIC_US, self.us_seq, nxt, ns, 1, ep.US_DECIM, 0, 0, 0)
+                flags = 0
+                if self.gated:                  # squelch: block 5 of 10 a "burst", 4 and 6 noise
+                    b = (nxt - self.us_origin) // (4 * ns) % 10
+                    if b not in (4, 5, 6):
+                        nxt += 4 * ns
+                        continue
+                    if b != 5:
+                        iq = self.rng.normal(0, 4, 2 * ns).round().astype(np.int8)
+                    flags = ep.US_FLAG_GATED
+                hdr = ep.US_HDR.pack(ep.MAGIC_US, self.us_seq, nxt, ns, 1, ep.US_DECIM, flags, 0, 0)
                 if self.us_seq not in self.us_skip:
                     try:
                         self.u.sendto(hdr + iq.tobytes(), (self.peer, PORTS[2]))
@@ -131,6 +143,7 @@ class Board:
 
     def close(self):
         self.stop.set()
+        time.sleep(0.3)                         # (its threads out of recv: the ports free again)
         for s in (self.c, self.d, self.u):
             s.close()
 
@@ -226,6 +239,29 @@ if ok_us:
     check("montant : le datagramme perdu laisse ses 2036 échantillons à zéro", holes == 2036, f"{holes} zéros")
 else:
     check("montant : des échantillons dans l'anneau", False, f"tick0 {tick0}, écrits {w}")
+
+# board squelch (US_GATE=2): only the blocks around a burst; the holes filled with noise at the
+# level of the blocks before the bursts, the bursts at their ticks
+board.gated = True
+time.sleep(0.8)
+w2 = ring.written
+tick0 = ring.rx_tick0
+L = int(0.5 * FS / 4)                                 # the last 0.5 s
+idx = np.arange(w2 - L, w2)
+x = ring.buf[idx % ring.buf.size]
+bt = tick0 + 4 * idx + base                           # board ticks
+blk = (bt - board.us_origin) // (4 * 2036) % 10
+burst = blk == 5
+got = np.round(x.real * 127).astype(int)
+want = ((bt // 4) % 200 - 100)
+ok_b = burst.any() and np.mean(got[burst] == want[burst]) > 0.999
+check("squelch : rafales à leurs ticks (rampe)", ok_b, f"{np.mean(got[burst] == want[burst]) if burst.any() else 0:.4f}")
+hole = ~np.isin(blk, (4, 5, 6))
+pn = float(np.mean(np.abs(x[np.isin(blk, (4, 6))]) ** 2))
+ph = float(np.mean(np.abs(x[hole]) ** 2)) if hole.any() else 0.0
+check("squelch : trous remplis de bruit au niveau des blocs de bruit (±1,5 dB), pas de zéros",
+      hole.any() and ph > 0 and abs(10 * np.log10(ph / pn)) < 1.5 and np.mean(x[hole] == 0) < 0.01,
+      f"bruit {10 * np.log10(pn):.1f} dBFS, trous {10 * np.log10(ph + 1e-30):.1f} dBFS")
 
 # board core restarted -> fatal
 board.T0 += 5

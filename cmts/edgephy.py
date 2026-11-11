@@ -116,6 +116,49 @@ def parse_us(d):
     return seq, tick, flags, gaps, lost, x
 
 
+US_FLAG_GAP, US_FLAG_GATED = 1, 2
+
+
+class NoiseFill:
+    """What goes into the SampleRing where the board sent nothing. With its squelch (US_GATE=2,
+    its default with 4 DS: the raw upstream, 168 Mbit/s, does not fit beside them) only the 195 us
+    blocks above its noise floor come, with the block before and the one after. Zeros there would
+    leave the upstream receiver without a noise floor (it never takes one from zero-filled
+    samples, cmts/upstream.py) and the first window it saw, a burst, would become its floor: then
+    nothing more is "hot". Noise at the level of the board's own quiet blocks keeps the receiver
+    as with a continuous stream. The level: the first datagram after a hole is the block before
+    a burst, noise only; until one is seen, zeros (the receiver waits)."""
+
+    N = 1 << 18
+
+    def __init__(self, seed=5):
+        rng = np.random.default_rng(seed)
+        self.unit = ((rng.standard_normal(self.N) + 1j * rng.standard_normal(self.N)) / np.sqrt(2)).astype(np.complex64)
+        self.power = None                      # per sample, linear (full scale 1)
+        self.pos = 0
+
+    def observe(self, x):
+        """A block of noise only (the one before a burst)."""
+        q = x[: max(1, x.size // 2)]           # (its first half: the burst may start in the second)
+        pw = float(np.mean(q.real * q.real + q.imag * q.imag))
+        if pw <= 0:
+            return
+        self.power = pw if self.power is None else (0.9 * self.power + 0.1 * min(pw, 4 * self.power))
+
+    def samples(self, n):
+        if self.power is None or n <= 0:
+            return None
+        out = np.empty(n, np.complex64)
+        i = 0
+        while i < n:
+            k = min(n - i, self.N - self.pos)
+            out[i:i + k] = self.unit[self.pos:self.pos + k]
+            i += k
+            self.pos = (self.pos + k) % self.N
+        out *= np.float32(np.sqrt(self.power))
+        return out
+
+
 class Control:
     """The control link: queries, and the board's tick against the host's perf_counter (best round
     trips; the board's oscillator drifts a few ppm against the host's, refitted every second)."""
@@ -283,8 +326,10 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
     log(f"[EDGEPHY] émission : bloc 0 = groupe {n0} (tick {air0}), {gpb} groupes par bloc, avance "
         f"{lead_s * 1e3:.0f} ms ; réception montante {'UDP ' + str(ports[2]) if us else 'aucune'}")
 
+    noise = NoiseFill()
+
     def rx_loop():
-        last_seq, started = None, False
+        last_seq, started, end = None, False, None
         while not stop.is_set():
             try:
                 d = us.recv(65536)
@@ -305,9 +350,16 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
                     continue
                 k = max(0, -(-(tick0 - dt) // US_DECIM))
                 x, dt, started = x[k:], dt + US_DECIM * k, True
+            elif dt > end:                      # samples the board did not send (squelch) or lost
+                if flags & US_FLAG_GATED:
+                    noise.observe(x)            # (the block before a burst: noise only)
+                fill = noise.samples((dt - end) // US_DECIM)
+                if fill is not None:
+                    ring.push(end, fill)
             ring.push(dt, x)
+            end = dt + US_DECIM * x.size
             now_p = time.monotonic()
-            if st["last_push"] is not None:
+            if st["last_push"] is not None and not flags & US_FLAG_GATED:
                 st["gap_ms"] = max(st["gap_ms"], (now_p - st["last_push"]) * 1e3)
             st["last_push"] = now_p
 
