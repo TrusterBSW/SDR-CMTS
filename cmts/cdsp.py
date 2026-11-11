@@ -386,22 +386,29 @@ def rs_decode_many(raw, info_lens, nsym, fcr=0):
 _D = ctypes.c_double
 
 
+def seg_fast_prepare():
+    """The ctypes prototype of seg_fast, set once (before decoding threads call it side by side)."""
+    if _DLL is None or hasattr(_DLL, "_seg_fast_set"):
+        return
+    _DLL.seg_fast.restype = ctypes.c_int
+    _DLL.seg_fast.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+                              ctypes.c_int, _D, _D, _D, ctypes.c_float, ctypes.c_int,
+                              ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                              ctypes.c_int, _D, ctypes.c_void_p, ctypes.c_int, ctypes.c_float, ctypes.c_int,
+                              ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float,
+                              ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+                              ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                              ctypes.c_void_p, ctypes.c_void_p]
+    _DLL._seg_fast_set = True
+
+
 def seg_fast(x, conj, mf, mf_delay, sps, t_lo, t_hi, rho_min, span, pre, offs, uoffs, up, nsym_cap, sps_d,
              w, mse_max, eq_train, pts, bps, prbs, layout, nparity, fec_k):
     """One Multiple Transmit Channel segment burst decoded whole in C (usdsp.c seg_fast).
     Returns (status, res[10], message bytes, equalized data symbols, decisions, refitted taps)."""
     if not hasattr(_DLL, "_seg_fast_set"):
-        _DLL.seg_fast.restype = ctypes.c_int
-        _DLL.seg_fast.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
-                                  ctypes.c_int, _D, _D, _D, ctypes.c_float, ctypes.c_int,
-                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
-                                  ctypes.c_int, _D, ctypes.c_void_p, ctypes.c_int, ctypes.c_float, ctypes.c_int,
-                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float,
-                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
-                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                                  ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
-                                  ctypes.c_void_p, ctypes.c_void_p]
-        _DLL._seg_fast_set = True
+        seg_fast_prepare()
     ad = lambda a: a.__array_interface__["data"][0]
     x = np.ascontiguousarray(x, dtype=np.complex64)
     g = _grid(pts)

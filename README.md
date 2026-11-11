@@ -251,6 +251,7 @@ Sagem F@st 3686, iperf3 through the modem:
 | Same, speedtest from the Internet (the host doing NAT) | 205-228 Mbit/s down, no incident |
 | Two B210s, 2 + 2 DS + 2 US, no common 10 MHz, Threadripper 2950X | **188-189 / 49.5 Mbit/s**, 86 min with the follower realigned (12.4 ms) |
 | bladeRF 2.0 micro, 3 DS + 1 US | **138 / 24.5 Mbit/s** |
+| One B210, 4 DS + 2 US, Xeon E5-2630 v4 (10 cores at 2.4 GHz), decoding threads | **186 / 51.5 Mbit/s** (8 flows) |
 | Each option's effect, seen by a second B210 (frequency, level, QAM, spectrum, MDD, UCD) | all as expected (`tools/arg_effects.py`) |
 
 Close to the physical limits of the channels (6 × 256-QAM ≈ 300 Mbit/s, 2 × 64-QAM ATDMA ≈ 50 Mbit/s).

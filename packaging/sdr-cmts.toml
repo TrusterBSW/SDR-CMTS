@@ -19,6 +19,8 @@ qam = 256
 
 [upstream]
 us_channels = 1             # 2: DOCSIS 3.0 upstream bonding (60 and 53 MHz)
+# us_decode_threads = 3      # burst decoding threads per upstream channel; automatic: 3 (and 2
+                            # cores each) when the host has the cores, else 1
 us_target = -20             # dBFS of the ranged bursts
 
 [provisioning]              # DHCP, TFTP, ToD on the cmts0 bridge

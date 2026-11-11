@@ -125,6 +125,9 @@ upstream demodulation in a separate process (own GIL and core); \-\-no\-us\-proc
 \fB\-\-us\-cpus\fR \fI{auto,own,shared}\fR
 with \-\-cpus auto: 'own' gives each upstream process a core of its own; 'shared' runs them on every core at a lower real\-time priority than the transmit side; 'auto': own cores unless that leaves the transmit side of 5\-6 DS fewer than 4 (6 DS + 2 US on 6 cores) (default: auto)
 .TP
+\fB\-\-us\-decode\-threads\fR \fIN\fR
+threads decoding the data bursts in each upstream process, results handed on in order; 0 = auto: 3 when the host has cores for the transmit side plus 2 per upstream channel (each upstream process then gets 2 cores of its own), else 1 (default: 0)
+.TP
 \fB\-\-mtc\-std\fR | \fB\-\-no\-mtc\-std\fR
 multi\-channel upstream registration per MULPIv3.0, as a real CMTS (ARRIS) does it: Dynamic Range Window in the TCC (action 2, mandatory in MTC mode) instead of the RNG\-RSPs, 47.3 criteria at 0, TLV 52 = 60, TCC references from 0, initialization technique 3 (\-\-no\-mtc\-std: the former registration, no DRW TCC) (default: on)
 .TP

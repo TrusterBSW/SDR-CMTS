@@ -14,6 +14,7 @@ error. Fixed latencies (B210 TX/RX pipelines, the modem's own delays) are absorb
 """
 import collections
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -77,7 +78,8 @@ class UpstreamRx:
     downstream thread, push() from the RX thread, process() from a worker thread."""
 
     def __init__(self, fs, decim, symrate, timebase, ms_counts, on_burst, history_s=1.0,
-                 gate_db=8.0, save_dir=None, im_slack_us=1000.0, log=print, ko_dir=None, buf=None):
+                 gate_db=8.0, save_dir=None, im_slack_us=1000.0, log=print, ko_dir=None, buf=None,
+                 decode_threads=1):
         self.fs, self.decim, self.tb = fs, decim, timebase
         self.demod = BurstDemod(fs, symrate)
         self.prof = profiles()
@@ -119,6 +121,16 @@ class UpstreamRx:
         self.raw_log = collections.deque(maxlen=50)    # wall times of the printed raw events
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
+        # decoding threads (--us-decode-threads): the data grants of ranged modems decoded side by
+        # side, their results handed on in order. One thread at 2.4 GHz (Xeon E5-2630 v4) decoded
+        # ~17 Mbit/s of segments per channel and fell 120-190 ms behind under an upload, 2026-11-11
+        self._pending = collections.deque()         # (Future or result or None, (end_ts, s1)), in order
+        self._pool, self._tl = None, threading.local()
+        self._max_pending = 4 * max(1, decode_threads)
+        if decode_threads > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            cdsp.seg_fast_prepare()                 # (ctypes prototypes set once, before the threads)
+            self._pool = ThreadPoolExecutor(decode_threads, thread_name_prefix="us-decode")
 
     # ------------------------------------------------------------ inputs
     def add_grants(self, grants):
@@ -198,26 +210,74 @@ class UpstreamRx:
                 break
             self.windows.popleft()
             done += 1
+            x = self._read(a, b)
+            if x is None:
+                self.stats["late"] += 1
+                self._pending.append((None, (end_ts, s1)))
+                continue
+            job = (x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg, ahead)
+            if self._pool is not None and sid != mac.SID_BROADCAST and iuc in DATA_IUCS:
+                # the heavy kind (data grants of a ranged modem: whole segments to demodulate and
+                # correct) to the decoding threads, their C kernels running side by side
+                self._pending.append((self._pool.submit(self._job, job, True), (end_ts, s1)))
+            else:
+                self._pending.append((self._job(job, False), (end_ts, s1)))
+            self._drain(len(self._pending) > self._max_pending)
+        self._drain(False)
+        return done
+
+    def _job(self, job, threaded):
+        """One interval: the search and decoding part of _handle, whose results _emit() hands on
+        in the order of the intervals. threaded: run by a decoding thread, with a demodulator of
+        its own (BurstDemod keeps per-call state) sharing the equalizer and drift caches, and
+        statistics of its own merged by _emit()."""
+        t0 = time.perf_counter()
+        if threaded:
+            demod = getattr(self._tl, "demod", None)
+            if demod is None:
+                demod = self._tl.demod = self._thread_demod()
+            st = collections.Counter()
+        else:
+            demod, st = self.demod, self.stats
+        found = self._handle(*job, demod=demod, st=st)
+        return found, st, job, time.perf_counter() - t0
+
+    def _thread_demod(self):
+        d = BurstDemod(self.fs, self.demod.symrate)
+        d.eq, d.drift, d.n_fast, d._fast_tabs = self.demod.eq, self.demod.drift, self.demod.n_fast, self.demod._fast_tabs
+        d.invert_first = self.demod.invert_first
+        return d
+
+    def _drain(self, wait):
+        """Hand on the results of the intervals done, oldest first, up to the first one still
+        being decoded (wait: block on that one)."""
+        while self._pending:
+            res, (end_ts, s1) = self._pending[0]
+            if res is not None and not isinstance(res, tuple):          # a Future
+                if not res.done() and not wait:
+                    return
+                res = res.result()
+                wait = False
+            self._pending.popleft()
             self.processed_ts = end_ts
-            # how far behind the RX stream this interval is handled (the buffer holds history_s)
+            # how far behind the RX stream this interval is handed on (the buffer holds history_s)
             lag = (self.written - s1) / self.fs * 1e3
             self.lag_now_ms = lag
             if lag > self.lag_max_ms:
                 self.lag_max_ms = lag
-            x = self._read(a, b)
-            if x is None:
-                self.stats["late"] += 1
+            if res is None:                             # too late to read
                 continue
-            t0, nb0 = time.perf_counter(), self.stats["bursts"]
-            self._ahead = ahead
-            self._handle(x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg)
-            key = f"{iuc}{'+' if self.stats['bursts'] > nb0 else '-'}"
+            found, st, job, dt = res
+            if st is not self.stats:
+                self.stats.update(st)
+            n_emitted = self._emit(found, *job)
+            key = f"{job[7]}{'+' if n_emitted else '-'}"
             c = self.timing.setdefault(key, [0, 0.0])
             c[0] += 1
-            c[1] += time.perf_counter() - t0
-        return done
+            c[1] += dt
 
-    def _detect_data(self, x, prof_iuc, t_lo, t_hi, gsym, eq_key, seg, data, burst_end=None, grant_end=None):
+    def _detect_data(self, x, prof_iuc, t_lo, t_hi, gsym, eq_key, seg, data, burst_end=None, grant_end=None,
+                     demod=None, ahead=True, st=None):
         """detect() for one interval. Multiple Transmit Channel mode data grant (seg): the modem
         answers every grant, one it has no data for with a segment of stuff bytes; the first
         codeword alone tells (no frame start, nothing but 0xFF), and the rest is not demodulated.
@@ -228,18 +288,20 @@ class UpstreamRx:
         # Only a grant in advance is looked at as padding first: a grant the modem asked for
         # carries its data, and the look (a second preamble search) was ~11 % of an upstream
         # process under upload, 4 DS + 2 US (2026-10-11)
+        demod = demod or self.demod
+        st = self.stats if st is None else st
         early_end = burst_end is not None and grant_end is not None and burst_end < grant_end - 4 * self.ms_samples
-        if seg and not early_end and getattr(self, "_ahead", True):
+        if seg and not early_end and ahead:
             # only the start of the window: the matched filter would otherwise run over the
             # whole grant (70,000 samples for 255 mini-slots) before the preamble search
             pr = self.prof[prof_iuc]
             lo = max(0, int(t_lo) - 64)
-            hi = min(x.size, int(t_hi + pr.burst_symbols(pr.fec_k) * self.demod.sps) + 256)
-            head = self.demod.detect(x[lo:hi], prof_iuc, t_lo - lo, t_hi - lo, max_frame=pr.fec_k, grant_syms=gsym,
+            hi = min(x.size, int(t_hi + pr.burst_symbols(pr.fec_k) * demod.sps) + 256)
+            head = demod.detect(x[lo:hi], prof_iuc, t_lo - lo, t_hi - lo, max_frame=pr.fec_k, grant_syms=gsym,
                                      eq_key=eq_key, seg=True, retry=False)
             if head is not None and head.frame is not None and _is_padding(head):
                 head.t += lo
-                self.stats["padding"] += 1
+                st["padding"] += 1
                 return head
         max_frame = int(gsym * self.prof[prof_iuc].bps / 8) + 64 if data else 64
         if seg and burst_end is not None:
@@ -249,14 +311,18 @@ class UpstreamRx:
             # was ~90 % busy under a speedtest (2026-10-10)
             pr = self.prof[prof_iuc]
             cw = pr.fec_k + 2 * pr.fec_t
-            span = (burst_end - t_lo) / self.demod.sps            # symbols from the earliest start
+            span = (burst_end - t_lo) / demod.sps                 # symbols from the earliest start
             max_frame = min(max_frame, int(span * pr.bps / 8) + 2 * cw)
-            x = x[:min(x.size, int(burst_end + (cw * 8 / pr.bps + 64) * self.demod.sps))]
-        return self.demod.detect(x, prof_iuc, t_lo, t_hi, max_frame=max_frame,
+            x = x[:min(x.size, int(burst_end + (cw * 8 / pr.bps + 64) * demod.sps))]
+        return demod.detect(x, prof_iuc, t_lo, t_hi, max_frame=max_frame,
                                  grant_syms=gsym, eq_key=eq_key, seg=seg,
                                  alt_iuc=DATA_SWAP.get(prof_iuc) if data else None)
 
-    def _handle(self, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg=False):
+    def _handle(self, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg=False, ahead=True, demod=None,
+                st=None):
+        """Search and decode one interval -> the bursts found in it (handed on by _emit())."""
+        demod = demod or self.demod
+        st = self.stats if st is None else st
         # energy gate on mini-slot sized blocks
         blk = max(8, int(self.ms_samples / 2))
         nb = x.size // blk
@@ -275,7 +341,7 @@ class UpstreamRx:
             # quiet windows; that channel then decoded nothing (2026-10-15, 2 B210: the modem
             # ranging on it unanswered, half of the starts)
             if lowest < FLOOR_MIN:
-                return
+                return None                             # (nothing handed on, not even an empty grant)
             self.floor = lowest
         elif sid == mac.SID_BROADCAST and lowest > self.floor * 1e3:
             # contention / initial maintenance windows are mostly empty: 20 in a row 30 dB above
@@ -331,7 +397,7 @@ class UpstreamRx:
                 for h in starts:
                     peak = float(p[h:h + 4].max()) if h < p.size else 0.0
                     if peak < self.burst_level * 10 ** -1.5:
-                        self.stats["crosstalk_skip"] += 1
+                        st["crosstalk_skip"] += 1
                     else:
                         keep.append(h)
                 starts = keep
@@ -347,13 +413,13 @@ class UpstreamRx:
                     t_hi = min(s1 - a + post, max(t_hi, s0 - a + 2 * blk))
                 if t_hi < t_lo:
                     continue
-                self.stats["searched"] += 1
+                st["searched"] += 1
                 data = iuc in DATA_IUCS
                 # data bursts: up to the whole grant (a 16-QAM concatenation of 36 frames was
                 # 3030 bytes; a 2048-byte cap cut it short)
-                gsym = (s1 - s0) / self.demod.sps if data else None
+                gsym = (s1 - s0) / demod.sps if data else None
                 bu = self._detect_data(x, prof_iuc, t_lo, t_hi, gsym, sid if unicast else None, seg and data, data,
-                                       burst_end, s1 - a)
+                                       burst_end, s1 - a, demod, ahead, st)
                 g0 = s0 - a                                 # grant start in x
                 if (unicast and data and bu is not None and bu.frame is None
                         and abs(bu.t - g0) > 0.25 * self.ms_samples and t_lo < g0 + 8 < t_hi + 8 * self.ms_samples):
@@ -361,21 +427,22 @@ class UpstreamRx:
                     # not decode is the tail of the previous burst (back-to-back grants of one
                     # modem, MTC). It was taken and the real burst never searched: ~15 segments
                     # lost in one speedtest, all "50 us early, MER 13.4" (2026-10-10)
-                    b2 = self._detect_data(x, prof_iuc, g0 - 8, g0 + 8, gsym, sid, seg and data, data, burst_end, s1 - a)
+                    b2 = self._detect_data(x, prof_iuc, g0 - 8, g0 + 8, gsym, sid, seg and data, data, burst_end, s1 - a,
+                                            demod, ahead, st)
                     if b2 is not None and b2.frame is not None:
                         bu = b2
-                        self.stats["regrant_search"] += 1
+                        st["regrant_search"] += 1
                 if bu is not None and bu.swapped:
-                    self.stats["iuc_swap"] += 1
+                    st["iuc_swap"] += 1
                 if bu is None:
                     continue
                 if iuc == mac.IUC_REQUEST and bu.frame is None and bu.rho < 0.6:
                     # a weak "preamble" on the tail of the data burst just before the request
                     # slots (ATDMA 64-QAM, 2026-10-09: ~3/s, corr 0.35-0.48, 47 us early; real bursts 0.96+)
-                    self.stats["false_pre"] += 1
+                    st["false_pre"] += 1
                     continue
                 if iuc == mac.IUC_INIT_MAINT and self._in_unicast_grant(a + bu.t):
-                    self.stats["im_skip"] += 1
+                    st["im_skip"] += 1
                     continue    # a ranged modem's burst in its own grant, left to that grant
                 found.append(bu)
                 if unicast or iuc == mac.IUC_INIT_MAINT:
@@ -385,22 +452,32 @@ class UpstreamRx:
                 # mini-slots, 174-sample blocks, 147 samples between bursts): the previous burst
                 # and this one then form one cluster, searched where that tail begins. A ranged
                 # modem starts at the grant start: search there.
-                gsym = (s1 - s0) / self.demod.sps if iuc in DATA_IUCS else None
+                gsym = (s1 - s0) / demod.sps if iuc in DATA_IUCS else None
                 bu = self._detect_data(x, prof_iuc, s0 - a - pre, s0 - a + 2 * blk, gsym,
-                                       sid if unicast else None, seg and bool(gsym), bool(gsym), burst_end, s1 - a)
+                                       sid if unicast else None, seg and bool(gsym), bool(gsym), burst_end, s1 - a,
+                                       demod, ahead, st)
                 if bu is not None:
-                    self.stats["grant_start_search"] += 1
+                    st["grant_start_search"] += 1
                     found.append(bu)
             if not found and iuc in DATA_IUCS and unicast and self.ko_dir and inside.size:
                 # energy in a data grant but no preamble (e.g. 16-QAM with an unknown map): keep it
                 np.savez(os.path.join(self.ko_dir, f"nopre_{time.strftime('%H%M%S')}_{start_ts}.npz"),
                          iq=x, fs=self.fs, iuc=iuc, sid=sid, t=-1.0, start_sample=s0 - a,
-                         grant_syms=(s1 - s0) / self.demod.sps, frame=np.zeros(0, np.uint8))
+                         grant_syms=(s1 - s0) / demod.sps, frame=np.zeros(0, np.uint8))
         elif not hot.size and lowest >= FLOOR_MIN:   # quiet window: track the noise floor
             self.floor = 0.9 * self.floor + 0.1 * lowest
+        return found
+
+    def _emit(self, found, x, a, s0, s1, pre, post, start_ts, iuc, sid, prof_iuc, seg, ahead):
+        """The bursts of one interval to on_burst (CmtsCore), in the order of the intervals
+        (one already found from the neighbouring interval left out). Returns how many."""
+        if found is None:
+            return 0
+        unicast = sid != mac.SID_BROADCAST
         if not found and unicast:
             self.on_burst(BurstEvent(iuc, sid, start_ts))
-            return
+            return 0
+        n = 0
         for bu in found:
             t_abs = a + bu.t
             if any(abs(t_abs - t0) < self.ms_samples for t0 in self.recent):
@@ -423,6 +500,8 @@ class UpstreamRx:
                          grant_syms=(s1 - s0) / self.demod.sps if iuc in DATA_IUCS else 0.0,
                          frame=np.frombuffer(bu.frame or b"", np.uint8))
             self.on_burst(ev)
+            n += 1
+        return n
 
     def _in_unicast_grant(self, n):
         """True if a burst starting at absolute RX sample n lies in a unicast grant (Station

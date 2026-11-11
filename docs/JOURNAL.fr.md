@@ -1018,3 +1018,26 @@ En 4 DS + 1 US (~195 Mo/s d'USB au lieu de ~278), plus aucun blocage d'émission
 jusqu'à 180 Mbit/s (9,9 % à 150 Mbit/s en 5 DS), plafond ~190 Mbit/s, TCP 182 / 15,5 Mbit/s, mesuré depuis le PVE
 10.5.1.23 derrière le modem. Sur ce Xeon (xHCI du C610), 4 DS est la configuration fiable ; la capture tcpdump de cmts0
 tournait pendant ces essais, elle n'est donc pas la cause des blocages en 5 DS.
+
+Montant faible sur le Xeon (11/11, 01:25-02:20). Avec 1 US, 21 Mbit/s en UDP et 15-17 en TCP, comme les ~20-24 d'octobre
+avec un seul canal ; le plein débit (48-52 Mbit/s) a toujours été obtenu avec 2 US, dont les requêtes cumulatives
+(`--mtc-owed`) ne jouent qu'en agrégation. En 4 DS + 2 US (même USB qu'en 4 + 1 : les deux canaux tiennent dans la
+réception à 17,38 MS/s), 33,5 Mbit/s seulement : py-spy montre le fil principal de chaque processus montant occupé à 97 %,
+dont 72 % dans `seg_fast` (décodage C d'un segment : filtre adapté, synchro, égaliseur, Reed-Solomon), et le retard de
+décodage monte à 120-190 ms, au-delà de `--us-lag-limit` : le CMTS retient alors des grants. Les cœurs du Xeon
+(2,4 GHz) décodent ~17 Mbit/s de segments par canal là où le 9500 en faisait ~26. Les deux processus montants
+partageaient en plus un même masque de 2 cœurs (4 hyperthreads) et tombaient souvent sur le même cœur ; les séparer à la
+main ne rapporte que 6 %.
+
+Correctif : `UpstreamRx` décode les grants de données unicast dans des fils (`--us-decode-threads`, 3 en auto quand
+l'hôte a les cœurs), chacun avec son démodulateur (BurstDemod garde un état pendant un appel) et le cache d'égaliseur
+et de dérive partagé ; le C libère le GIL. Les événements, la déduplication entre fenêtres voisines, les statistiques
+et `processed_ts` restent dans le fil principal, dans l'ordre des fenêtres (`_handle` cherche et décode, `_emit` rend).
+Les fenêtres de contention et de maintenance restent dans le fil principal. Chaque processus montant a ses propres 2
+cœurs. Résultat : 51,5 Mbit/s montants à 8 flux en 4 + 2 (retard ≤ 31 ms), 22,1 en 4 + 1.
+
+Ce qui reste en 4 + 2 : l'UDP descendant perd 1 à 3 % à 150 Mbit/s par des blocages d'envoi USB de 30 à 90 ms (côté
+pilote). Tout ce qui n'est pas épinglé (serveur iperf3, tcpdump, pont cmts0 et interruptions réseau en softirq) tombe
+sur le cœur 5/15, laissé libre pour les interruptions du xHCI : iperf3 tournait sur le CPU 15 même, et l'épingler ailleurs
+divise les pertes par trois. Piste : tenir ce cœur vraiment à l'écart (interruptions de la carte réseau et tâches du
+système ailleurs).

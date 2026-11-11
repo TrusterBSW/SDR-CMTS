@@ -250,6 +250,7 @@ Sagem F@st 3686, iperf3 à travers le modem :
 | Le même, speedtest depuis Internet (l'hôte faisant le NAT) | 205-228 Mbit/s descendant, aucun incident |
 | Deux B210, 2 + 2 DS + 2 US, sans 10 MHz commun, Threadripper 2950X | **188-189 / 49,5 Mbit/s**, 86 min avec la suiveuse recalée (12,4 ms) |
 | bladeRF 2.0 micro, 3 DS + 1 US | **138 / 24,5 Mbit/s** |
+| Un B210, 4 DS + 2 US, Xeon E5-2630 v4 (10 cœurs à 2,4 GHz), fils de décodage | **186 / 51,5 Mbit/s** (8 flux) |
 | L'effet de chaque option, vu par un second B210 (fréquence, niveau, QAM, spectre, MDD, UCD) | tous conformes (`tools/arg_effects.py`) |
 
 Proche des limites physiques des canaux (6 × 256-QAM ≈ 300 Mbit/s, 2 × 64-QAM ATDMA ≈ 50 Mbit/s).

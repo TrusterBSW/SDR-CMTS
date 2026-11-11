@@ -30,6 +30,12 @@ u.rx_tick0, u.decim = 0, 1
 u.tb = type("TB", (), {"ts": lambda self, t: 0})()
 got = []
 u.on_burst = got.append
+
+
+def handle(*job):
+    """_handle (search, decoding) then _emit (the events), as process() does for one interval."""
+    job = job + (False, True)                        # seg, ahead
+    return u._emit(u._handle(*job), *job)
 files = sorted(glob.glob(os.path.join(os.path.dirname(__file__), "data", "sagem3686", "atdma64_merged_tail_*.npz")))
 ok = 0
 for f in files:
@@ -38,7 +44,7 @@ for f in files:
     u.recent.clear()
     got.clear()
     u.floor = 10 ** -6.4                 # bench noise floor (-64 dBFS)
-    u._handle(z["iq"], 0, s0, s0 + g * u.demod.sps, 2 * u.ms_samples, 0.0, 0, mac.IUC_ADV_LONG, 1, mac.IUC_ADV_LONG)
+    handle(z["iq"], 0, s0, s0 + g * u.demod.sps, 2 * u.ms_samples, 0.0, 0, mac.IUC_ADV_LONG, 1, mac.IUC_ADV_LONG)
     b = got[0].burst if got else None
     good = b is not None and b.frame is not None
     ok += good
@@ -56,7 +62,7 @@ n0 = u.stats["searched"]
 t = time.perf_counter()
 for _ in range(50):
     u.floor = 10 ** -6.4
-    u._handle(x, 0, s0, s0 + 34 * 128 * u.demod.sps, 2 * u.ms_samples, 0.0, 0, mac.IUC_ADV_LONG, 1, mac.IUC_ADV_LONG)
+    handle(x, 0, s0, s0 + 34 * 128 * u.demod.sps, 2 * u.ms_samples, 0.0, 0, mac.IUC_ADV_LONG, 1, mac.IUC_ADV_LONG)
 dt = (time.perf_counter() - t) / 50
 empty = len(got) == 50 and all(e.burst is None for e in got) and u.stats["searched"] == n0
 print(f"{'OK ' if empty else 'KO '} grant vide avec la queue de la rafale précédente : vide, sans recherche, {dt * 1e3:.2f} ms")

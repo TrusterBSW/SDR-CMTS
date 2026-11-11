@@ -148,6 +148,19 @@ def physical_cores():
     return len(cores) or (os.cpu_count() or 1)
 
 
+def us_decode_threads(a):
+    """Decoding threads per upstream process (--us-decode-threads, 0 = auto): 3 when the host has
+    cores enough for the transmit side, the USB interrupts and two cores per upstream channel, else
+    1 (decoding in the process's own loop, as before). With the equalizer cache warm, 2/3/4 threads
+    decode 1.3/1.8/2.2x faster (tests/test_us_decode_threads.py, the Python part holds the GIL). 2026-11-11, Xeon E5-2630 v4 (10 cores at
+    2.4 GHz), 4 DS + 2 US: one thread decoding the segments of a channel was 91-100 % busy and up
+    to 190 ms behind under an upload, 33.5 Mbit/s upstream where the i5-9500 gave 48-52."""
+    if getattr(a, "us_decode_threads", 0):
+        return max(1, a.us_decode_threads)
+    need = tx_cores(a) + 1 + 2 * max(1, a.us_channels)
+    return 3 if physical_cores() >= need else 1
+
+
 def synth_threads(a, nr):
     """J.83 encoding + shaping threads of a radio sending nr downstream channels."""
     if nr < 4:
@@ -229,7 +242,7 @@ def build(a, log=print):
         decim = int(os.environ["SDR_CMTS_DECIM"])
     tb = Timebase(mcr, 0, a.sps)
     rx_kw = dict(gate_db=a.gate_db, save_dir=a.save_bursts, im_slack_us=a.im_slack_us,
-                 ko_dir=None if a.sim else "captures/bursts_ko")
+                 ko_dir=None if a.sim else "captures/bursts_ko", decode_threads=us_decode_threads(a))
     if a.us_process and not a.sim:             # upstream worker in its own process (cmts/usproc.py)
         rx = RemoteUpstream(mcr / decim, decim, symrate, tb, mux.ms_counts, core.on_burst, a.us_mode,
                             {"qpsk": 2, "16qam": 4, "64qam": 6}[a.us_mod], log=log, **rx_kw)
@@ -679,14 +692,17 @@ def _all_tasks(pid):
         return [pid]
 
 
-def split_cpus(child_pids, shared_pids=(), tx_need=2, mode="auto", prio=0):
+def split_cpus(child_pids, shared_pids=(), tx_need=2, mode="auto", prio=0, per_proc=1):
     """Give the upstream process (cmts/usproc.py) a physical core of its own, the last one
     allowed, and keep every thread of this process (TX feed, encoder, UHD) on the others: they
     no longer compete for the same cores (2026-10-09: TX gaps of 0.3-2 s under load).
     tx_need: cores the transmit side needs (6 DS: 4). When cores of their own would leave it
     fewer (mode "auto"), or mode "shared": the upstream processes run on every core at a lower
     real-time priority (prio - 10), the transmit side preempting them (2026-10-11, 6 DS + 2 US:
-    radio on 3 cores late, or both upstream processes on 1 core 0.6-1.6 s behind)."""
+    radio on 3 cores late, or both upstream processes on 1 core 0.6-1.6 s behind).
+    per_proc: physical cores per upstream process (2 with decoding threads, us_decode_threads()):
+    each process then gets cores of its own; with one mask for all, both processes of 4 DS + 2 US
+    often ran on the two hyperthreads of one core (Xeon E5-2630 v4, 2026-11-11)."""
     allowed = sorted(os.sched_getaffinity(0))
 
     def core(c):
@@ -699,6 +715,24 @@ def split_cpus(child_pids, shared_pids=(), tx_need=2, mode="auto", prio=0):
     # (auto: only from 5 DS on, the case measured; fewer channels keep the split below)
     if mode == "shared" or (mode == "auto" and tx_need >= 4 and len(cores) - len(child_pids) < tx_need):
         return share_cpus(child_pids, allowed, prio)
+    if per_proc > 1 and len(cores) - per_proc * len(child_pids) >= max(2, tx_need):
+        take = cores[-per_proc * len(child_pids):]
+        masks = [{c for c in allowed if core(c) in take[i * per_proc:(i + 1) * per_proc]}
+                 for i in range(len(child_pids))]
+        rest = set(allowed) - set().union(*masks)
+        try:
+            for pid, m in zip(child_pids, masks):
+                for tid in _all_tasks(pid):
+                    os.sched_setaffinity(tid, m)
+            for tid in _all_tasks(os.getpid()) + [t for pid in shared_pids for t in _all_tasks(pid)]:
+                try:
+                    os.sched_setaffinity(tid, rest)
+                except OSError:
+                    pass
+        except OSError as e:
+            return f"!! répartition des CPU impossible : {e}"
+        return (f"processus montants sur les CPU {' / '.join(','.join(map(str, sorted(m))) for m in masks)} "
+                f"({per_proc} cœurs chacun), émission sur {','.join(map(str, sorted(rest)))}")
     if len(cores) < 3:
         return f"processus montant : CPU partagés ({','.join(map(str, allowed))}, trop peu de cœurs pour en réserver un)"
     # one physical core per upstream process while at least two stay for the transmit side (a
@@ -1246,7 +1280,8 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
         + f" ; radio : pid {', '.join(str(rp.pid) for rp in radios)}")
     if a.cpus == "auto":
         log(split_cpus([r.pid for r in rxs], shared_pids=[rp.pid for rp in radios], tx_need=tx_cores(a),
-                       mode=a.us_cpus, prio=a.rt_prio))
+                       mode=a.us_cpus, prio=a.rt_prio,
+                       per_proc=2 if us_decode_threads(a) > 1 else 1))
     fill_prev, web_prev = {}, {}
     rc = 0
     try:
@@ -1533,7 +1568,8 @@ def run_usrp(a):
         log("réception montante dans un processus séparé (cmts/usproc.py)"
             + (f", un par canal ({len(rxs)})" if len(rxs) > 1 else ""))
         if a.cpus == "auto":
-            log(split_cpus([r.pid for r in rxs], tx_need=tx_cores(a), mode=a.us_cpus, prio=a.rt_prio))
+            log(split_cpus([r.pid for r in rxs], tx_need=tx_cores(a), mode=a.us_cpus, prio=a.rt_prio,
+                       per_proc=2 if us_decode_threads(a) > 1 else 1))
     workers = [rx_loop] + ([] if remote else [worker_timed if os.environ.get("SDR_CMTS_TIMING") else worker])
     for f in workers:
         threading.Thread(target=f, daemon=True).start()
@@ -1764,6 +1800,10 @@ def parser():
                         "them on every core at a lower real-time priority than the transmit side; 'auto': "
                         "own cores unless that leaves the transmit side of 5-6 DS fewer than 4 (6 DS + 2 US "
                         "on 6 cores)")
+    g.add_argument("--us-decode-threads", type=int, default=0, metavar="N",
+                   help="threads decoding the data bursts in each upstream process, results handed on in "
+                        "order; 0 = auto: 3 when the host has cores for the transmit side plus 2 per upstream "
+                        "channel (each upstream process then gets 2 cores of its own), else 1")
     g.add_argument("--mtc-std", action=argparse.BooleanOptionalAction, default=True,
                    help="multi-channel upstream registration per MULPIv3.0, as a real CMTS (ARRIS) does it: "
                         "Dynamic Range Window in the TCC (action 2, mandatory in MTC mode) instead of the RNG-RSPs, "
