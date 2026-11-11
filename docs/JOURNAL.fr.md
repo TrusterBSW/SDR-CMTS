@@ -1053,3 +1053,19 @@ adjusting Pr_n MUST be consistent with » Pr_n ≤ Phi_n − Pload_min_set (6.2.
 montants, la correction de puissance s'arrête à Phi − Pload_min_set d'après la puissance que le modem déclare dans ses
 RNG-REQ (MDD TLV 12), et le ranging réussit au plafond même un peu sous la cible ; avec un seul canal montant, ou un modem
 qui ne déclare rien, rien ne change (`tests/test_power_cap.py`).
+
+Edge PHY (11/11, après-midi). La session « dvbtx-fpga » fait de sa carte (Fishball, clone Pluto+, xc7z010 + AD9363) la
+couche physique du CMTS : le J.83-A de sdr-cmts dans le FPGA sur 4 canaux contigus (41,712 MS/s, 6 éch./symbole,
+validé en csim contre `cmts/j83a.py` : 0 symbole différent), et un canal montant isolé de son ADC (NCO, FIR, /4 :
+10,428 MS/s). `--sdr edgephy` (`cmts/edgephy.py`) remplace le B210 dans le processus radio : les blocs de paquets TS de
+la MAC partent en groupes d'embrouillage J.83-A numérotés (UDP 1100, « EPH1 »), le groupe n part à l'antenne au tick
+T0 + n x G de la carte, exactement (un groupe absent devient 8 paquets nuls) ; le bloc 0 de la MAC est le groupe n0
+choisi t_start en avance, d'où tick appareil = tick carte − base, et les horodatages DOCSIS sortent des numéros de
+groupe comme du compteur d'échantillons du B210, sans que la latence du réseau y entre. Les groupes partent 15 ms
+avant leur heure (le démon de la carte en range 512 par numéro, ~120 ms). Le montant revient en datagrammes « EUS1 »
+(UDP 1102, échantillon k = tick + 4 k) dans le SampleRing, aux mêmes ticks : une seule horloge pour les deux sens, plus
+de droite d'horloge entre radios. Contrôle « EPHQ » chaque seconde : calage du tick contre l'horloge de l'hôte, et un
+cœur redémarré (nouveau T0) arrête le processus radio, que le service relance. La carte démarre à 89,75 dB
+d'atténuation et le CMTS ne la baisse que sur `--edgephy-att`. Testé contre une carte simulée (`tests/test_edgephy.py` :
+numéros, contenu par emplacement, avance, rampe montante retrouvée aux bons ticks, datagramme perdu, cœur redémarré,
+puis le CMTS entier 9 s) ; pas encore sur la carte.

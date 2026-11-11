@@ -237,6 +237,7 @@ journalctl -u sdr-cmts -f                 # sa console
 | MAC | enregistrement DOCSIS 1.1 à 3.0, MDD, RCC, DSID, mode multi-canal MTC, CM-STATUS |
 | USRP B210 | UHD 4.3 à 4.9 ; jusqu'à 6 DS + 2 US sur un seul ; deux B210 se partagent le descendant |
 | bladeRF 2.0 micro | libbladeRF, 3 DS + 1 US ; choix et limites dans [`docs/BLADERF.fr.md`](docs/BLADERF.fr.md) |
+| Edge PHY (en cours) | une carte FPGA sur Ethernet qui fait elle-même le J.83-A, 4 DS + 1 US, `--sdr edgephy` (`configs/edgephy.toml`) ; testé contre une carte simulée seulement |
 | Non implémenté | DOCSIS nord-américain (annexe B), DOCSIS 3.1 (OFDM), chiffrement BPI+ |
 
 ## Mesures

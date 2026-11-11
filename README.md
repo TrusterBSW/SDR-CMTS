@@ -238,6 +238,7 @@ journalctl -u sdr-cmts -f                 # its console
 | MAC | DOCSIS 1.1 to 3.0 registration, MDD, RCC, DSID, Multiple Transmit Channel mode, CM-STATUS |
 | USRP B210 | UHD 4.3 to 4.9; up to 6 DS + 2 US on one; two B210s share the downstream |
 | bladeRF 2.0 micro | libbladeRF, 3 DS + 1 US; choices and limits in [`docs/BLADERF.md`](docs/BLADERF.md) |
+| Edge PHY (in progress) | an FPGA board over Ethernet doing J.83-A itself, 4 DS + 1 US, `--sdr edgephy` (`configs/edgephy.toml`); tested against a simulated board only |
 | Not implemented | North American DOCSIS (annex B), DOCSIS 3.1 (OFDM), BPI+ encryption |
 
 ## Measurements

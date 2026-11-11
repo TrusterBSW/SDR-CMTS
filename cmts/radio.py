@@ -409,6 +409,15 @@ def radio_main(p, pk_handle, ring_handle, q, stop_ev, origin=None, clock=None):
         shm_name, ctl_name, n, rfs, rdecim = ring_handle
         ring = SampleRing(rfs, rdecim, attach=(shm_name, ctl_name, n))
     mcr, fs_tx = p["mcr"], p["fs_tx"]
+    if p.get("driver") == "edgephy":            # an FPGA board over Ethernet (cmts/edgephy.py)
+        from cmts.edgephy import edgephy_main
+        try:
+            edgephy_main(p, pk, ring, q, stop_ev, log)
+        finally:
+            pk.close()
+            if ring is not None:
+                ring.detach()
+        return
     try:
         dev = open_radio(p, has_rx)
     except Exception as e:                     # noqa: BLE001 - reported to the main process

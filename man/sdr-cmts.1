@@ -64,8 +64,14 @@ UHD USB send frame size (bytes; UHD's default 8176): larger frames, fewer USB su
 \fB\-\-recv\-frame\-size\fR \fIRECV_FRAME_SIZE\fR
 UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX stream; 0 = UHD's (default: 16360)
 .TP
-\fB\-\-sdr\fR \fI{b210,bladerf}\fR
-the SDR: b210 (Ettus, UHD) or bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream) (default: b210)
+\fB\-\-sdr\fR \fI{b210,bladerf,edgephy}\fR
+the SDR: b210 (Ettus, UHD), bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream) or edgephy (an FPGA board over Ethernet doing J.83\-A itself: up to 4 adjacent DS + 1 US, \-\-edgephy\-host; cmts/edgephy.py) (default: b210)
+.TP
+\fB\-\-edgephy\-host\fR \fIEDGEPHY_HOST\fR
+\-\-sdr edgephy: the board's address (UDP 1100\-1102, HTTP 8080)
+.TP
+\fB\-\-edgephy\-att\fR \fIEDGEPHY_ATT\fR
+\-\-sdr edgephy: TX attenuation to set on the board (dB, 0\-89.75); unset = left as it is: the board starts at 89.75, nothing on the coax until it is lowered
 .TP
 \fB\-\-sdr\-args\fR \fISDR_ARGS\fR
 \-\-sdr bladerf: libbladeRF device identifier ("" = the first one, "*:serial=...")

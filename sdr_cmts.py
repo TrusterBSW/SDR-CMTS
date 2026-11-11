@@ -47,7 +47,7 @@ import time
 import numpy as np
 
 from cmts import docsis_mac as mac
-from cmts import cdsp, hoststate, modeminfo, netpkt, tomlconf
+from cmts import cdsp, edgephy, hoststate, modeminfo, netpkt, tomlconf
 from cmts.bridge import TapFeed, BondedForwarder, TapBridge, ensure_tap
 from cmts.downstream import CoDel, DownstreamMux, SecondaryMux, SYMRATE
 from cmts.j83a import PulseShaper
@@ -191,12 +191,29 @@ def radio_groups(chans, nradios):
     return [order[r * n:(r + 1) * n] for r in range(nradios) if order[r * n:(r + 1) * n]]
 
 
+def edgephy_check(a):
+    """--sdr edgephy: what the board can carry (cmts/edgephy.py), checked before anything starts."""
+    if not a.edgephy_host:
+        sys.exit("--sdr edgephy : --edgephy-host (adresse de la carte) manquant")
+    if a.ds_radios > 1 or a.us_channels != 1:
+        sys.exit("--sdr edgephy : une carte, un canal montant (--us-channels 1, --ds-radios 1)")
+    try:
+        edgephy.ds_plan([f for _, f in ds_channels(a)], a.ds_spacing)
+    except ValueError as e:
+        sys.exit(f"--sdr edgephy : {e}")
+    # its RX LO stops at 70 MHz and the channel must stay within ~17 MHz of it
+    if not 53e6 <= a.us_freq <= 65e6:
+        sys.exit(f"--sdr edgephy : canal montant entre 53 et 65 MHz (--us-freq {a.us_freq / 1e6:.2f} MHz)")
+
+
 def build(a, log=print):
     if a.gain is None:                         # same level per channel whatever their number
         # 45 for one channel (~12 dBmV at the Sagem); bonded: +10 log10(N) to keep each channel's
         # level, +2 dB (the 2-channel bench ran at 50 for its best results, 2026-10-10)
         a.gain = 45 + round(10 * np.log10(max(1, radio_channels(a)))) + (2 if a.ds_channels > 1 else 0)
     a.ds_radios = max(1, int(getattr(a, "ds_radios", 1) or 1))
+    if getattr(a, "sdr", "b210") == "edgephy":
+        edgephy_check(a)
     if a.ds_channels > 6 * a.ds_radios:
         sys.exit(f"--ds-channels : 1 à 6 par B210 ({6 * a.ds_radios} avec --ds-radios {a.ds_radios}) ; "
                  f"au-delà, la bande du B210 et l'USB ne suivent plus")
@@ -221,6 +238,10 @@ def build(a, log=print):
     if getattr(a, "sdr", "b210") == "bladerf":
         # its TX and RX share one sample rate and its counters count samples: one tick per sample
         a.mcr_mult = 1
+    if getattr(a, "sdr", "b210") == "edgephy":
+        # the board: 6 samples per symbol (41.712 MS/s) whatever the channel count, its tick at
+        # that rate, the upstream decimated by 4 in its FPGA (10.428 MS/s, 2.04 per symbol)
+        a.sps, a.mcr_mult = edgephy.SPS, 1
     if a.mcr_mult is None:   # 27.8 MHz is enough while the offset stays inside the AD9361 passband
         a.mcr_mult = 2 if abs(rx_lo_offset(a)) <= 8e6 else 4
     mux = DownstreamMux(qam=a.qam, sps=a.sps, us_freq=a.us_freq, us_symrate_mult=a.us_rate,
@@ -240,6 +261,8 @@ def build(a, log=print):
     decim = max(1, int(mcr // (2.5 * symrate)))
     if os.environ.get("SDR_CMTS_DECIM"):          # diagnostic: force the RX decimation
         decim = int(os.environ["SDR_CMTS_DECIM"])
+    if getattr(a, "sdr", "b210") == "edgephy":
+        decim = edgephy.US_DECIM
     tb = Timebase(mcr, 0, a.sps)
     rx_kw = dict(gate_db=a.gate_db, save_dir=a.save_bursts, im_slack_us=a.im_slack_us,
                  ko_dir=None if a.sim else "captures/bursts_ko", decode_threads=us_decode_threads(a))
@@ -1189,8 +1212,17 @@ def run_split(a, mux, core, rx, tb, mcr, decim, pcap, wall0, args, fs_tx, chans,
                       tx_untimed=a.tx_untimed, t_start=t_start, blk_ms=blk_ms,
                       pk_shape=(len(g), a.block, 2 if r == 0 else 8), rx=(r == 0), follow=(r > 0),
                       clock_source=getattr(a, "clock_source", "internal"),
-                      driver="bladerf" if a.sdr == "bladerf" else "uhd",
+                      driver={"bladerf": "bladerf", "edgephy": "edgephy"}.get(a.sdr, "uhd"),
                       tag="RADIO" if r == 0 else f"RADIO{r + 1}")
+        if a.sdr == "edgephy":
+            # the MAC order of the channels kept (block row i = channel g[i]); a deeper ring of
+            # TS blocks: no USB buffer behind it, the blocks wait here until their air time
+            f0, slots, mask = edgephy.ds_plan(fr)
+            params.update(ep_host=a.edgephy_host, ep_att=a.edgephy_att, ep_freq0=f0, ep_slots=slots,
+                          ep_mask=mask, ep_us_freq=a.us_freq, pk_shape=(len(g), a.block, 2 + a.tx_queue))
+            if os.environ.get("SDR_CMTS_EDGEPHY_PORTS"):    # (tests: data, control, upstream, HTTP)
+                ports = [int(x) for x in os.environ["SDR_CMTS_EDGEPHY_PORTS"].split(",")]
+                params.update(ep_ports=tuple(ports[:3]), ep_http=ports[3])
         # 2 blocks of TS packets in flight, as the 2 blocks of symbols between encoder and shaper did
         radios.append(RadioProcess(params, rx.ring if r == 0 else None, len(g), a.block, params["pk_shape"][2], log,
                                    origin=origin, name="radio" if r == 0 else f"radio{r + 1}", clock=clock))
@@ -1360,6 +1392,8 @@ def run_usrp(a):
     os.environ.setdefault("UHD_LOG_FASTPATH_DISABLE", "1")
     if a.sdr != "b210" and not a.radio_process:
         sys.exit(f"--sdr {a.sdr} : avec --radio-process uniquement")
+    if a.sdr == "edgephy" and not a.us_process:
+        sys.exit("--sdr edgephy : avec --us-process uniquement (la réception écrit dans l'anneau partagé)")
     mux, core, rx, tb, mcr, decim = build(a, log)
     wall0 = [time.time()]                       # Unix time of DOCSIS timestamp 0, set at start
     pcap = attach_pcap(a.pcap, mux, rx, lambda ts: wall0[0] + ts / TS_RATE) if a.pcap else None
@@ -1742,9 +1776,16 @@ def parser():
     g.add_argument("--recv-frame-size", type=int, default=16360,
                    help="UHD receive frame size in bytes (UHD: 8176): half the USB transfers of the RX "
                         "stream; 0 = UHD's")
-    g.add_argument("--sdr", choices=("b210", "bladerf"), default="b210",
-                   help="the SDR: b210 (Ettus, UHD) or bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at "
-                        "the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream)")
+    g.add_argument("--sdr", choices=("b210", "bladerf", "edgephy"), default="b210",
+                   help="the SDR: b210 (Ettus, UHD), bladerf (Nuand bladeRF 2.0 micro, libbladeRF; TX and RX at "
+                        "the same rate: up to 3 DS + the upstream at 27.8 MS/s; TX1 to the modem, RX1 upstream) or "
+                        "edgephy (an FPGA board over Ethernet doing J.83-A itself: up to 4 adjacent DS + 1 US, "
+                        "--edgephy-host; cmts/edgephy.py)")
+    g.add_argument("--edgephy-host", default="",
+                   help="--sdr edgephy: the board's address (UDP 1100-1102, HTTP 8080)")
+    g.add_argument("--edgephy-att", type=float, default=None,
+                   help="--sdr edgephy: TX attenuation to set on the board (dB, 0-89.75); unset = left as it "
+                        "is: the board starts at 89.75, nothing on the coax until it is lowered")
     g.add_argument("--sdr-args", default="",
                    help="--sdr bladerf: libbladeRF device identifier (\"\" = the first one, \"*:serial=...\")")
     g.add_argument("--args", default="type=b200", help="UHD device args")

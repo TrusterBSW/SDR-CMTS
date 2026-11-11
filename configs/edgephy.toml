@@ -1,0 +1,24 @@
+# An edge PHY instead of the B210: an FPGA board over Ethernet (Fishball / Pluto+ clone, xc7z010 +
+# AD9363) doing J.83-A on 4 adjacent DS channels and taking 1 US channel out of its ADC
+# (cmts/edgephy.py). The board must run its "edgephy" image (sh /boot/bascule.sh edgephy).
+#   python3 sdr_cmts.py --all-in-one --config configs/edgephy.toml
+# It starts silent (attenuation 89.75 dB): set edgephy_att only on a closed coax, never on a live
+# operator network.
+
+[radio]
+sdr = "edgephy"
+edgephy_host = "10.5.1.96"
+# edgephy_att = 40          # TX attenuation (dB); unset = left as it is on the board
+
+[downstream]
+freq = 306e6                # primary; 4 channels "around": 298-322 MHz, the board's LO at 310
+ds_channels = 4             # 1 to 4, adjacent (the board's 4 slots, FREQ + k x 8 MHz)
+
+[upstream]
+us_channels = 1             # one channel on the board, 53-65 MHz (its RX LO stops at 70 MHz)
+us_freq = 60e6
+us_target = -12             # dBFS of the ranged bursts in the board's 8-bit samples (+8 dB of
+                            # digital gain there: -20 at its ADC comes out at -12)
+
+[provisioning]
+dns = "1.1.1.1"
