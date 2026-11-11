@@ -328,40 +328,84 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
 
     noise = NoiseFill()
 
+    def seed_noise():
+        """The board's own noise floor (/status us.squelch.floor_dbfs, its 8-bit output): the level
+        of the fill before the first burst has shown one (a lone first burst, its window all zeros
+        around it, would be missed)."""
+        if noise.power is not None or not p.get("ep_http", HTTP_PORT):
+            return
+        try:
+            f = status_text(host, p.get("ep_http", HTTP_PORT))["us"]["squelch"]["floor_dbfs"]
+            noise.power = 10 ** (float(f) / 10)
+            log(f"[EDGEPHY] bruit montant de la carte : {float(f):.1f} dBFS (remplissage du squelch)")
+        except Exception:                      # noqa: BLE001 - an older daemon, or no squelch
+            pass
+
+    if us is not None:
+        seed_noise()
+
     def rx_loop():
-        last_seq, started, end = None, False, None
+        """Upstream datagrams into the ring at their ticks; holes filled (NoiseFill). The ring also
+        moves on by itself up to the board's time less a margin: with the squelch a quiet channel
+        sends nothing at all, and the upstream receiver's windows would wait for samples that never
+        come (20,000 queued in 40 s on the board, 2026-11-11). A datagram arriving behind that
+        point is cut (its late part only), counted."""
+        last_seq, end = None, tick0             # device ticks: the ring starts at downstream sample 0
+        lag_max, t_lag = 0.0, time.monotonic()
+        margin = 0.030                          # s behind the board's clock (>> its block + network)
+        us.settimeout(0.005)
         while not stop.is_set():
             try:
                 d = us.recv(65536)
             except socket.timeout:
-                continue
+                d = None
             except OSError:
                 return
-            u = parse_us(d)
-            if u is None:
-                continue
-            seq, tick, flags, _gaps, _lost, x = u
-            if last_seq is not None and seq != (last_seq + 1) & 0xFFFFFFFF:
-                counters["O"] += 1
-            last_seq = seq
-            dt = tick - base
-            if not started:                    # the ring starts at the first sample from tick0 on
-                if dt + US_DECIM * x.size <= tick0:
-                    continue
-                k = max(0, -(-(tick0 - dt) // US_DECIM))
-                x, dt, started = x[k:], dt + US_DECIM * k, True
-            elif dt > end:                      # samples the board did not send (squelch) or lost
-                if flags & US_FLAG_GATED:
-                    noise.observe(x)            # (the block before a burst: noise only)
-                fill = noise.samples((dt - end) // US_DECIM)
-                if fill is not None:
-                    ring.push(end, fill)
-            ring.push(dt, x)
-            end = dt + US_DECIM * x.size
-            now_p = time.monotonic()
-            if st["last_push"] is not None and not flags & US_FLAG_GATED:
-                st["gap_ms"] = max(st["gap_ms"], (now_p - st["last_push"]) * 1e3)
-            st["last_push"] = now_p
+            if d is not None:
+                u = parse_us(d)
+                if u is not None:
+                    seq, tick, flags, _gaps, _lost, x = u
+                    if last_seq is not None and seq != (last_seq + 1) & 0xFFFFFFFF:
+                        counters["O"] += 1
+                    last_seq = seq
+                    dt = tick - base
+                    lag = (ctl.tick_at(time.perf_counter()) - tick - US_DECIM * x.size) / mcr
+                    lag_max = max(lag_max, lag)
+                    if dt + US_DECIM * x.size > end:
+                        if dt < end:            # partly behind the ring's end already
+                            k = -(-(end - dt) // US_DECIM)
+                            x, dt = x[k:], dt + US_DECIM * k
+                            counters["us_cut"] = counters.get("us_cut", 0) + 1
+                        elif dt > end:          # samples the board did not send (squelch) or lost
+                            if flags & US_FLAG_GATED:
+                                noise.observe(x)    # (the block before a burst: noise only)
+                            _fill(end, (dt - end) // US_DECIM)
+                        ring.push(dt, x)
+                        end = dt + US_DECIM * x.size
+                        now_p = time.monotonic()
+                        if st["last_push"] is not None and not flags & US_FLAG_GATED:
+                            st["gap_ms"] = max(st["gap_ms"], (now_p - st["last_push"]) * 1e3)
+                        st["last_push"] = now_p
+                    else:
+                        counters["us_cut"] = counters.get("us_cut", 0) + 1
+            horizon = ctl.tick_at(time.perf_counter()) - base - margin * mcr
+            if horizon - end >= US_DECIM * 512:
+                n = int((horizon - end) // US_DECIM)
+                _fill(end, n)
+                end += US_DECIM * n
+            if time.monotonic() - t_lag > 10:
+                t_lag = time.monotonic()
+                if lag_max * 2 > margin:        # the board's datagrams later than planned
+                    margin = min(0.2, 2 * lag_max)
+                    log(f"[EDGEPHY] montant : datagrammes jusqu'à {lag_max * 1e3:.1f} ms après leur heure, "
+                        f"marge portée à {margin * 1e3:.0f} ms")
+                lag_max = 0.0
+
+    def _fill(at, n):
+        if n <= 0:
+            return
+        f = noise.samples(n)
+        ring.push(at, f if f is not None else np.zeros(n, np.complex64))
 
     def ctl_loop():
         nonlocal T0, epoch
@@ -379,6 +423,8 @@ def edgephy_main(p, pk, ring, q, stop_ev, log):
                 stop.set()
                 return
             st["board"] = rr
+            if us is not None:
+                seed_noise()
             d = {k: rr[k] - prev[k] for k in ("fpga_nulls", "fpga_late", "rx_late", "dac_underflows")}
             counters["U"] += d["dac_underflows"]
             if (any(d.values()) and time.monotonic() - last_log > 5) or time.monotonic() - last_log > 300:

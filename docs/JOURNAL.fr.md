@@ -1102,3 +1102,9 @@ recalculait bit à bit en Python les séquences sorties de son cache de 8 entré
 chemin C ~170 ms). Côté CMTS, avec plusieurs profils de rafale et canaux, la même éviction pouvait survenir. Elle est
 maintenant calculée une fois par graine (une période du registre, ≤ 32 767 bits) puis répétée ; identique au calcul bit
 à bit (`tests/test_upstream_phy.py`).
+Essai DS + US sur la carte (14:23, sans émission, squelch 6 dB) : descendant identique au premier essai (0 groupe en retard,
+0 sous-débit), montant muet (rien sur le RX de la carte) donc aucun datagramme. Le premier passage a montré que, sans
+datagramme, l'anneau montant n'avançait jamais : les fenêtres du récepteur s'empilaient (20 000 en 40 s). L'anneau
+avance maintenant seul, 30 ms derrière l'horloge de la carte (marge élargie si ses datagrammes arrivent plus tard),
+rempli de bruit au plancher qu'elle mesure (`/status` us.squelch.floor_dbfs, −42,6 dBFS) ; un datagramme arrivé derrière
+est coupé et compté. Au second passage : bruit vu par le récepteur −42,9 dBFS, file stable à ~40, retard ≤ 6 ms.

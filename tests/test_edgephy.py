@@ -73,7 +73,7 @@ class Board:
         self.d.bind(("127.0.0.1", PORTS[0]))
         self.d.settimeout(0.1)
         self.u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.gated, self.us_origin, self.rng = False, None, np.random.default_rng(2)
+        self.gated, self.silent, self.us_origin, self.rng = False, False, None, np.random.default_rng(2)
         self.us_seq, self.us_skip = 0, {1300}  # one "lost" (~0.25 s in: after the ring started)
         for f in (self._ctl, self._data, self._us):
             threading.Thread(target=f, daemon=True).start()
@@ -124,6 +124,9 @@ class Board:
                 iq[0::2] = (k % 200 - 100).astype(np.int8)       # I: the sample index (mod 200)
                 iq[1::2] = 7
                 flags = 0
+                if self.silent:                 # squelch on a quiet channel: nothing at all
+                    nxt += 4 * ns
+                    continue
                 if self.gated:                  # squelch: block 5 of 10 a "burst", 4 and 6 noise
                     b = (nxt - self.us_origin) // (4 * ns) % 10
                     if b not in (4, 5, 6):
@@ -262,6 +265,18 @@ ph = float(np.mean(np.abs(x[hole]) ** 2)) if hole.any() else 0.0
 check("squelch : trous remplis de bruit au niveau des blocs de bruit (±1,5 dB), pas de zéros",
       hole.any() and ph > 0 and abs(10 * np.log10(ph / pn)) < 1.5 and np.mean(x[hole] == 0) < 0.01,
       f"bruit {10 * np.log10(pn):.1f} dBFS, trous {10 * np.log10(ph + 1e-30):.1f} dBFS")
+
+# a quiet channel: the board sends nothing; the ring still moves on (noise), ~30 ms behind
+board.silent = True
+time.sleep(0.2)
+w_a, t_a = ring.written, time.monotonic()
+time.sleep(0.6)
+w_b, t_b = ring.written, time.monotonic()
+rate = (w_b - w_a) / (t_b - t_a) / (FS / 4)
+xs = ring.buf[np.arange(w_b - 20000, w_b) % ring.buf.size]
+check("canal muet : l'anneau avance seul au rythme réel, rempli de bruit", 0.8 < rate < 1.2 and np.mean(xs == 0) < 0.01,
+      f"{rate:.2f} x temps réel")
+board.silent = False
 
 # board core restarted -> fatal
 board.T0 += 5
