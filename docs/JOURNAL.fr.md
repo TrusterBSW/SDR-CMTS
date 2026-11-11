@@ -1108,3 +1108,14 @@ datagramme, l'anneau montant n'avançait jamais : les fenêtres du récepteur s'
 avance maintenant seul, 30 ms derrière l'horloge de la carte (marge élargie si ses datagrammes arrivent plus tard),
 rempli de bruit au plancher qu'elle mesure (`/status` us.squelch.floor_dbfs, −42,6 dBFS) ; un datagramme arrivé derrière
 est coupé et compté. Au second passage : bruit vu par le récepteur −42,9 dBFS, file stable à ~40, retard ≤ 6 ms.
+
+### 11/11 fin d'après-midi : avance de MAP avec le montant du modem SDR en C
+
+La session modem a passé le chemin critique montant du modem SDR en C (MAP lue, décision, codage, dépôt dans
+l'anneau TX : 103 µs jusqu'au premier morceau, contre 0,9 ms médians en Python rien que pour la MAP). Même série que
+T89, sur le CMTS du Xeon figé à chaque palier (un seul redémarrage par palier, `SDR_CMTS_MAP_LEAD_MS`) : à 4 ms,
+0 / 0,08 % de pertes UDP et 4,6 Mbit/s en TCP montant ; à 3 ms (valeur des CMTS commerciaux), 0 / 0,15 / 0,14 % et
+6,9 Mbit/s ; à 2 ms, 14 % à 5 Mbit/s, la limite étant l'avance du flux TX du modem plus la latence descendante. Le
+Sagem tient aussi à 2 ms. Défaut du CMTS laissé à 4 ms (T90). Vers 16:45, le modem SDR a vu le 306 MHz tomber à
+21 dB de MER sans changement côté CMTS ni carte edge PHY (repassée en image 4g à 16:38) : son récepteur B210 accroche
+parfois ainsi, contourné en décalant son OL RX de −8 MHz.
